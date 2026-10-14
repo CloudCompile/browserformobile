@@ -1,11 +1,9 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "browser-for-mobile",
+	"name": "Browser for Mobile",
 	"version": "1.0.0",
-	"minAppVersion": "1.0.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"minAppVersion": "1.13.0",
+	"description": "A tabbed web browser with history, bookmarks, and cookies that works on Obsidian mobile, where the built-in web viewer is unavailable.",
+	"author": "OpenHands",
 	"isDesktopOnly": false
 }

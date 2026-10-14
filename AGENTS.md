@@ -267,3 +267,59 @@ this.registerInterval(
 - Developer policies: https://docs.obsidian.md/Developer+policies
 - Plugin guidelines: https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines
 - Style guide: https://help.obsidian.md/style-guide
+
+## Browser for Mobile — project notes
+
+This repo is the **Browser for Mobile** plugin. Everything below is specific to
+this codebase.
+
+### Architecture
+
+- `src/main.ts` — plugin lifecycle only: settings load/save, view registration,
+  ribbon icon, command registration. Keep it minimal.
+- `src/view.ts` — the `ItemView` that renders toolbar, address bar, tab strip,
+  and content pane. Owns navigation, history, and renderer lifecycle.
+- `src/renderer.ts` — two renderers: `DirectRenderer` (iframe, works when the
+  site allows embedding) and `ProxyRenderer` (fetched HTML in a sandboxed frame).
+- `src/proxy.ts` — page fetching. `loadPage()` tries Obsidian's native
+  `requestUrl` first and only falls back to the CORS proxy. `rewriteHtml()`
+  injects `<base>`, strips `integrity`, neutralises restrictive meta tags, and
+  blocks remote scripts.
+- `src/bridge.ts` — script injected into proxied pages. Relays title, link
+  clicks, cookie reads/writes, and readiness back to the host via
+  `postMessage`, using a per-render channel id.
+- `src/store.ts` / `src/tabs.ts` — persisted state (history, bookmarks, cookies,
+  tabs) with a debounced writer.
+- `src/cookieStore.ts` — cookie parsing, merging, pruning, host matching, and
+  Netscape export.
+- `src/settings.ts` — uses the **declarative settings API**
+  (`getSettingDefinitions`). Do not re-add an imperative `display()`; lint flags
+  it once `minAppVersion` is 1.13.0.
+
+### Key constraints
+
+- **`minAppVersion` is 1.13.0.** The declarative settings API and
+  `setDestructive()` require it. Lowering it will fail lint
+  (`obsidianmd/no-unsupported-api`).
+- **Proxy mode is a fallback, not the default.** Obsidian's `requestUrl` is a
+  native HTTP client that bypasses CORS, so most pages load directly. Keep the
+  direct path primary.
+- **The sandboxed frame must never get `allow-same-origin`.** It is opaque on
+  purpose; the bridge is the only channel.
+- **Cross-origin frames cannot be inspected**, so titles and navigation come
+  from the injected bridge, never from reading the frame DOM.
+- Third-party proxy default is `https://api.allorigins.win/get?url=` (JSON
+  mode). It is flaky and may return 5xx; retries live in `proxyRequest`.
+
+### Build, lint, test
+
+```bash
+npm run build   # tsc --noEmit && esbuild production
+npm run lint    # eslint, must be clean (0 errors, 0 warnings)
+```
+
+There is no committed test runner. Ad-hoc harnesses were built under
+`/tmp/bfmtest` using a stubbed `obsidian` module (via esbuild `--alias`) plus
+`jsdom`, covering: utils, cookie parsing/merge/prune, TabStore navigation,
+HTML rewriting, the injected bridge, the proxy fetch/fallback logic, and the
+full view with a DOM.

@@ -1,92 +1,110 @@
-# Obsidian Sample Plugin
+# Browser for Mobile
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+A tabbed web browser that runs inside Obsidian, including on iOS and Android.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+Obsidian's desktop app ships a web viewer, but the mobile app does not. This
+plugin fills that gap with a browser pane you can open from the ribbon or the
+command palette. It supports tabs, back and forward history, bookmarks, a
+persistent cookie jar, and two rendering modes so it can cope with sites that
+refuse to be embedded.
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
+## What works, and what does not
 
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open modal (simple)" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and outputs a Notice on click.
-- Registers a global interval which logs 'setInterval' to the console.
+This is important to understand before you install it.
 
-## First time developing plugins?
+Obsidian mobile is not built on Electron, so there is no embedded Chromium you
+can drive the way the desktop app can. A plugin can only load a page in two
+ways:
 
-Quick starting guide for new plugin devs:
+- **Direct mode** loads the site in an iframe. The platform handles cookies and
+  sessions normally, so logins work. It only works for sites that allow being
+  embedded. Sites that send `X-Frame-Options` or a strict
+  `Content-Security-Policy` will show an error instead.
+- **Proxy mode** fetches the page with the app's own HTTP client, falling back to
+  a CORS proxy when needed, sanitises the HTML, and renders it in a locked-down
+  frame. This works for most sites, including ones that block framing, but it is
+  a snapshot: it is not suitable for sites that require a real login, and remote
+  scripts are stripped for safety.
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `src/main.ts` to `main.js`.
-- Make changes to `src/main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+The HTTP client Obsidian exposes to plugins is a native one, so it is not bound
+by the browser's same-origin rules. Most pages therefore load with no third
+party involved at all. The proxy is a fallback for the minority of sites that
+refuse the direct request, and it can be turned off entirely in settings.
 
-## Releasing new releases
+There is no way to build a full Chromium browser inside an Obsidian plugin on
+mobile. If a site needs a real engine, use **Open in system browser**.
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+## Features
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+- Tabs with titles, close buttons, and a scrolling tab strip that fits a phone.
+- Address bar that accepts URLs or search terms.
+- Back, forward, reload, home, and open-in-system-browser.
+- Per-tab history, plus a searchable global history.
+- Bookmarks with a fuzzy search picker.
+- A cookie jar that proxied pages can read and write, with a manager to inspect,
+  export, and clear cookies per site.
+- Responsive, touch-friendly layout built for narrow screens.
 
-## Adding your plugin to the community plugin list
+## Install
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+Copy `main.js`, `manifest.json`, and `styles.css` into
+`<Vault>/.obsidian/plugins/browser-for-mobile/`, then enable **Browser for
+Mobile** in **Settings → Community plugins**.
 
-## How to use
+## Use
 
-- Clone this repo.
-- Make sure your NodeJS is at least v18 (`node --version`).
-- `npm i` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+Open the browser from the ribbon globe icon or the **Open browser** command.
+Type an address or a search phrase and press enter.
 
-## Manually installing the plugin
+If a page shows "Site blocked embedding", choose **Retry with proxy** to load it
+through the proxy, or open it in your system browser.
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
+## Settings
 
-## Improve code quality with eslint
+- **Home page** — loaded for new tabs.
+- **Search template** — use `%s` where the search terms go.
+- **Fetch pages directly** — use the built-in HTTP client before the proxy.
+- **Proxy endpoint** — the fallback CORS proxy. The default is allorigins.win.
+- **Always use proxy** — route everything through the proxy.
+- **Enable cookie jar** — store cookies locally and share them with proxied pages.
+- **Confirm destructive actions** — confirm before clearing data.
+- **Open external links in system browser** — hand off links that cannot be shown.
 
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code.
-- This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
-- Together with a custom eslint [plugin](https://github.com/obsidianmd/eslint-plugin) for Obsidan specific code guidelines.
-- A GitHub action is preconfigured to automatically lint every commit on all branches.
+## Privacy
 
-## Funding URL
+Everything is stored locally in the plugin's `data.json` inside your vault.
+Nothing is collected or sent anywhere by the plugin itself.
 
-You can include funding URLs where people who use your plugin can financially support it.
+When proxy mode is used, the address you are visiting is sent to the configured
+proxy service so it can fetch the page for you. The default proxy is
+`allorigins.win`, a public service. If you would rather not use a third party,
+turn off **Fetch pages directly** only if you have set your own proxy, or leave
+the default so most pages never touch a third party.
 
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
+Cookies saved by the plugin are only sent to the site they belong to. Remote
+scripts are stripped from proxied pages so third-party tracking code cannot run.
 
-```json
-{
-	"fundingUrl": "https://buymeacoffee.com"
-}
+## Commands
+
+All actions are available from the command palette: open browser, new tab, close
+tab, next and previous tab, back, forward, reload, focus address bar, toggle
+proxy rendering, bookmark page, open bookmarks, open history, manage cookies, go
+home, and clear browsing data.
+
+## Development
+
+```bash
+npm install
+npm run dev      # watch build
+npm run build    # production build
+npm run lint
 ```
 
-If you have multiple URLs, you can also do:
+## Limitations
 
-```json
-{
-	"fundingUrl": {
-		"Buy Me a Coffee": "https://buymeacoffee.com",
-		"GitHub Sponsor": "https://github.com/sponsors",
-		"Patreon": "https://www.patreon.com/"
-	}
-}
-```
+- Some sites still cannot be shown, either because they block embedding or
+  because they need a full browser engine. Use the system browser for those.
+- Proxy mode shows a sanitised, script-limited copy of a page, not a live session.
+- Cross-origin frames cannot be inspected, so the plugin relies on the injected
+  bridge for titles and navigation rather than reading the frame directly.
 
-## API Documentation
-
-See https://docs.obsidian.md
