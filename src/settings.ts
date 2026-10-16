@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
 import type BrowserPlugin from './main';
+import { DEFAULT_PROXY_BASE } from './proxy';
 import { DEFAULT_SEARCH_TEMPLATE } from './utils';
 
 export interface BrowserSettings {
@@ -21,7 +22,7 @@ export interface BrowserSettings {
 export const DEFAULT_SETTINGS: BrowserSettings = {
 	homePage: 'https://duckduckgo.com/',
 	searchTemplate: DEFAULT_SEARCH_TEMPLATE,
-	proxyBase: 'https://api.allorigins.win/get?url=',
+	proxyBase: DEFAULT_PROXY_BASE,
 	directFetch: true,
 	preferProxy: false,
 	enableCookies: true,

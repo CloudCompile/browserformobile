@@ -283,8 +283,10 @@ this codebase.
   site allows embedding) and `ProxyRenderer` (fetched HTML in a sandboxed frame).
 - `src/proxy.ts` — page fetching. `loadPage()` tries Obsidian's native
   `requestUrl` first and only falls back to the CORS proxy. `rewriteHtml()`
-  injects `<base>`, strips `integrity`, neutralises restrictive meta tags, and
-  blocks remote scripts.
+  injects `<base>`, strips `integrity`, neutralises restrictive meta tags
+  (including `refresh`), and blocks remote scripts. `framePolicyFromHeaders()`
+  and `probeFramePolicy()` read a site's `X-Frame-Options` /
+  `Content-Security-Policy` to predict a refused embed before rendering.
 - `src/bridge.ts` — script injected into proxied pages. Relays title, link
   clicks, cookie reads/writes, and readiness back to the host via
   `postMessage`, using a per-render channel id.
@@ -304,12 +306,20 @@ this codebase.
 - **Proxy mode is a fallback, not the default.** Obsidian's `requestUrl` is a
   native HTTP client that bypasses CORS, so most pages load directly. Keep the
   direct path primary.
+- **A refused embed cannot be detected after the fact.** Chromium renders its
+  blocked-frame error page inside the frame, and for any cross-origin frame
+  `contentDocument` is `null` whether or not the load succeeded. Direct mode is
+  therefore gated on a header preflight (`probeFramePolicy`) in `view.ts`, which
+  switches to the proxy automatically. Do not reintroduce DOM-sniffing checks.
 - **The sandboxed frame must never get `allow-same-origin`.** It is opaque on
   purpose; the bridge is the only channel.
 - **Cross-origin frames cannot be inspected**, so titles and navigation come
   from the injected bridge, never from reading the frame DOM.
 - Third-party proxy default is `https://api.allorigins.win/get?url=` (JSON
-  mode). It is flaky and may return 5xx; retries live in `proxyRequest`.
+  mode, exported as `DEFAULT_PROXY_BASE`). It is flaky and often returns 5xx;
+  retries and the `FALLBACK_PROXIES` chain live in `proxyRequest`. `r.jina.ai`
+  is used as a fallback and needs the `x-respond-with: html` header or it
+  returns markdown.
 
 ### Build, lint, test
 

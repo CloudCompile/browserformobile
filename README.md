@@ -19,7 +19,9 @@ ways:
 - **Direct mode** loads the site in an iframe. The platform handles cookies and
   sessions normally, so logins work. It only works for sites that allow being
   embedded. Sites that send `X-Frame-Options` or a strict
-  `Content-Security-Policy` will show an error instead.
+  `Content-Security-Policy` will show an error instead. The plugin checks those
+  headers before loading and switches to proxy mode automatically when a site
+  refuses to be embedded, so you do not have to retry by hand.
 - **Proxy mode** fetches the page with the app's own HTTP client, falling back to
   a CORS proxy when needed, sanitises the HTML, and renders it in a locked-down
   frame. This works for most sites, including ones that block framing, but it is
@@ -29,7 +31,9 @@ ways:
 The HTTP client Obsidian exposes to plugins is a native one, so it is not bound
 by the browser's same-origin rules. Most pages therefore load with no third
 party involved at all. The proxy is a fallback for the minority of sites that
-refuse the direct request, and it can be turned off entirely in settings.
+refuse the direct request, and it can be turned off entirely in settings. Public
+proxies are unreliable, so when the configured proxy keeps failing the plugin
+tries a small set of built-in fallbacks before giving up.
 
 There is no way to build a full Chromium browser inside an Obsidian plugin on
 mobile. If a site needs a real engine, use **Open in system browser**.
@@ -56,8 +60,9 @@ Mobile** in **Settings → Community plugins**.
 Open the browser from the ribbon globe icon or the **Open browser** command.
 Type an address or a search phrase and press enter.
 
-If a page shows "Site blocked embedding", choose **Retry with proxy** to load it
-through the proxy, or open it in your system browser.
+If a page cannot be embedded, the plugin switches to the proxy automatically.
+If it still will not load, choose **Retry with proxy**, or open it in your
+system browser.
 
 ## Settings
 

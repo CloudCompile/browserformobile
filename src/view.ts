@@ -9,6 +9,7 @@ import {
 	ProxyFallbackModal,
 } from './modals';
 import { DirectRenderer, ProxyRenderer, type NavigateOptions, type Renderer } from './renderer';
+import { probeFramePolicy } from './proxy';
 import type { RenderMode, TabState } from './types';
 import { displayUrl, hostOf, normalizeInput } from './utils';
 
@@ -31,6 +32,8 @@ export class BrowserView extends ItemView {
 	private proxyButton!: HTMLButtonElement;
 	private renderer: Renderer | null = null;
 	private loading = false;
+	/** Bumped on every render so a slow preflight cannot clobber a newer load. */
+	private renderToken = 0;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -202,11 +205,47 @@ export class BrowserView extends ItemView {
 		this.unmountRenderer();
 		this.pageEl.empty();
 		this.loading = true;
+		const token = ++this.renderToken;
 		this.statusEl.setText(
 			tab.renderMode === 'proxy' ? 'Loading through proxy…' : 'Loading…',
 		);
 
-		const useProxy = tab.renderMode === 'proxy';
+		let renderMode = tab.renderMode;
+
+		// A refused embed is undetectable after the fact, so check the framing
+		// headers first and switch to the proxy rather than showing a blank frame.
+		if (renderMode === 'direct') {
+			const policy = await probeFramePolicy(tab.url, {
+				proxyBase: this.plugin.settings.proxyBase,
+			});
+			// The user may have navigated or switched tabs while we waited.
+			if (token !== this.renderToken) return;
+			if (policy.blocked) {
+				if (this.plugin.settings.proxyBase) {
+					renderMode = 'proxy';
+					this.plugin.store.tabs.update(tab.id, {
+						renderMode: 'proxy',
+						proxied: true,
+					});
+					this.plugin.store.markDirty();
+					this.updateToolbar();
+					this.statusEl.setText('Loading through proxy…');
+					new Notice(
+						`${policy.reason ?? 'This site refuses to be embedded.'} Loading it through the proxy instead.`,
+					);
+				} else {
+					this.loading = false;
+					this.handleError(
+						tab.id,
+						policy.reason ?? 'This site refuses to be embedded inside Obsidian.',
+						{ suggestProxy: false },
+					);
+					return;
+				}
+			}
+		}
+
+		const useProxy = renderMode === 'proxy';
 		const context = {
 			container: this.pageEl,
 			url: tab.url,
@@ -305,9 +344,13 @@ export class BrowserView extends ItemView {
 
 	private handleBridgeNavigate(url: string, options?: NavigateOptions): void {
 		const isPost = !!options?.method && options.method.toUpperCase() !== 'GET';
+		// Keep proxied pages in proxy mode: a proxied page's own links and forms
+		// point at the real site, which would fail to embed if we switched back to
+		// direct rendering. POST always needs the proxy.
+		const current = this.plugin.store.tabs.active?.renderMode ?? 'direct';
 		this.navigate(url, {
 			...options,
-			renderMode: isPost ? 'proxy' : undefined,
+			renderMode: isPost ? 'proxy' : current,
 		});
 	}
 
@@ -330,8 +373,7 @@ export class BrowserView extends ItemView {
 			this.newTab(normalized);
 			return;
 		}
-		const mode: RenderMode =
-			options.renderMode ?? (this.plugin.settings.preferProxy ? 'proxy' : 'direct');
+		const mode: RenderMode = options.renderMode ?? this.defaultRenderMode();
 		const isPost = !!options.method && options.method.toUpperCase() !== 'GET';
 		const renderMode: RenderMode = isPost ? 'proxy' : mode;
 
@@ -352,13 +394,24 @@ export class BrowserView extends ItemView {
 		this.renderActiveTab();
 	}
 
+	/**
+	 * The renderer a fresh tab should start with. "Fetch pages directly" off means
+	 * every request goes through the proxy, so the proxy renderer is required
+	 * regardless of the "always use proxy" preference.
+	 */
+	private defaultRenderMode(): RenderMode {
+		if (!this.plugin.settings.directFetch) return 'proxy';
+		return this.plugin.settings.preferProxy ? 'proxy' : 'direct';
+	}
+
 	private newTab(url?: string): void {
 		const target = url ? normalizeInput(url, this.plugin.settings.searchTemplate) : '';
+		const renderMode = this.defaultRenderMode();
 		const tab = this.plugin.store.tabs.create({
 			url: target,
 			displayUrl: target,
-			renderMode: this.plugin.settings.preferProxy ? 'proxy' : 'direct',
-			proxied: this.plugin.settings.preferProxy,
+			renderMode,
+			proxied: renderMode === 'proxy',
 		});
 		this.plugin.store.markDirty();
 		this.addressEl.value = target;

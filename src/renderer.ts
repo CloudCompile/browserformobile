@@ -38,7 +38,6 @@ export interface Renderer {
 
 const IFRAME_CLASS = 'bfm-frame';
 const LOAD_TIMEOUT_MS = 7000;
-const BLOCKED_RETRY_MS = 1200;
 const BRIDGE_READY_FALLBACK_MS = 1500;
 
 /**
@@ -46,15 +45,16 @@ const BRIDGE_READY_FALLBACK_MS = 1500;
  * benefits from the platform's own cookie and session handling, but a growing
  * number of sites refuse to be embedded.
  *
- * When a site blocks framing the browser fires `load` on the error page, so the
- * frame is checked shortly afterwards and reported as blocked when it cannot be
- * read from the same origin.
+ * A refused embed cannot be detected from the host: the browser renders an
+ * error page in the frame, and for any cross-origin frame `contentDocument` is
+ * null regardless of whether the load succeeded. The caller therefore checks
+ * the site's framing headers before choosing this renderer; here we only guard
+ * against a frame that never finishes loading.
  */
 export class DirectRenderer implements Renderer {
 	readonly kind: RenderMode = 'direct';
 	private frame: HTMLIFrameElement | null = null;
 	private timer: number | null = null;
-	private checkTimer: number | null = null;
 	private settled = false;
 
 	constructor(private readonly context: RendererContext) {}
@@ -78,7 +78,6 @@ export class DirectRenderer implements Renderer {
 			this.settled = true;
 			this.clearTimer();
 			events.onReady(url);
-			this.checkForBlockedFrame();
 		});
 
 		this.timer = window.setTimeout(() => {
@@ -91,38 +90,8 @@ export class DirectRenderer implements Renderer {
 		}, LOAD_TIMEOUT_MS);
 	}
 
-	/**
-	 * A frame the plugin cannot read is either cross-origin (normal and fine) or
-	 * an opaque error page. Chrome renders the blocked notice without a document
-	 * title, so an empty title is the practical signal for a refused embed.
-	 */
-	private checkForBlockedFrame(): void {
-		this.checkTimer = window.setTimeout(() => {
-			this.checkTimer = null;
-			const frame = this.frame;
-			if (!frame) return;
-			let blocked = false;
-			try {
-				const doc = frame.contentDocument;
-				if (doc && (!doc.title || doc.title.trim() === '')) blocked = true;
-			} catch {
-				blocked = false;
-			}
-			if (blocked) {
-				this.context.events.onError(
-					'This site refused to be embedded inside Obsidian.',
-					{ suggestProxy: true },
-				);
-			}
-		}, BLOCKED_RETRY_MS);
-	}
-
 	unmount(): void {
 		this.clearTimer();
-		if (this.checkTimer !== null) {
-			window.clearTimeout(this.checkTimer);
-			this.checkTimer = null;
-		}
 		this.frame?.remove();
 		this.frame = null;
 	}
