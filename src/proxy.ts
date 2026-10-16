@@ -29,6 +29,8 @@ export interface ProxyRequestOptions {
 	ignoreCookies?: boolean;
 	/** Set to false to force every request through the proxy. */
 	directFetch?: boolean;
+	/** Allow the page's own scripts to run in the sandboxed frame. */
+	runScripts?: boolean;
 }
 
 const MAX_ATTEMPTS = 3;
@@ -204,11 +206,12 @@ function injectAfterHeadOpen(html: string, injection: string): string {
 }
 
 /**
- * Add `<base>`, remove integrity attributes and restrictive meta tags, and
- * disable remote scripts. Inline scripts are kept so pages that render on the
- * client still work; the browser view runs them in a sandboxed frame.
+ * Add `<base>` and remove integrity attributes and restrictive meta tags.
+ * Remote scripts are disabled unless `runScripts` is set; when they are kept,
+ * inline scripts still run, so client-rendered pages work in the sandboxed
+ * frame. The frame is opaque either way, so pages cannot reach the plugin.
  */
-export function rewriteHtml(html: string, targetUrl: string): string {
+export function rewriteHtml(html: string, targetUrl: string, runScripts = false): string {
 	let target: URL;
 	try {
 		target = new URL(targetUrl);
@@ -218,7 +221,10 @@ export function rewriteHtml(html: string, targetUrl: string): string {
 	let output = transformOutsideOpaqueBlocks(html, (chunk) =>
 		stripIntegrity(neutraliseMeta(chunk)),
 	);
-	output = blockRemoteScripts(output);
+	// Blocking scripts is a privacy measure, not a requirement of the frame: the
+	// sandbox already runs scripts. Keeping them off breaks every site that
+	// renders on the client, so it is opt-out.
+	output = runScripts ? stripIntegrity(output) : blockRemoteScripts(output);
 	output = injectAfterHeadOpen(output, baseTag(target));
 	return output;
 }
@@ -251,6 +257,7 @@ function readProxyPayload(
 	contentType: string,
 	text: string,
 	targetUrl: string,
+	runScripts: boolean,
 ): ProxyResult {
 	if (status >= 400) {
 		return { ok: false, status, message: `Proxy responded with ${status}.` };
@@ -288,14 +295,14 @@ function readProxyPayload(
 			ok: true,
 			url: resolved,
 			contentType: record.status?.content_type ?? 'text/html',
-			html: rewriteHtml(contents, resolved),
+			html: rewriteHtml(contents, resolved, runScripts),
 		};
 	}
 	return {
 		ok: true,
 		url: targetUrl,
 		contentType: contentType || 'text/html',
-		html: rewriteHtml(text, targetUrl),
+		html: rewriteHtml(text, targetUrl, runScripts),
 	};
 }
 
@@ -354,7 +361,7 @@ async function directRequest(
 			ok: true,
 			url,
 			contentType: contentType || 'text/html',
-			html: rewriteHtml(response.text, url),
+			html: rewriteHtml(response.text, url, options.runScripts),
 		};
 	} catch (error) {
 		return {
@@ -539,7 +546,13 @@ export async function proxyRequest(
 				});
 				lastStatus = response.status;
 				const contentType = response.headers['content-type'] ?? '';
-				const result = readProxyPayload(response.status, contentType, response.text, url);
+				const result = readProxyPayload(
+					response.status,
+					contentType,
+					response.text,
+					url,
+					options.runScripts === true,
+				);
 				if (result.ok) return result;
 				lastMessage = result.message;
 				// A definitive client error will not be fixed by retrying, but a

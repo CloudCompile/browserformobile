@@ -14,6 +14,8 @@ export interface BrowserSettings {
 	preferProxy: boolean;
 	/** Persist a cookie jar and expose it to proxied pages. */
 	enableCookies: boolean;
+	/** Let proxied pages run their own scripts so client-rendered sites work. */
+	runScripts: boolean;
 	/** Ask before clearing history, cookies, or the cache. */
 	confirmDestructiveActions: boolean;
 	openExternalLinksInSystemBrowser: boolean;
@@ -26,6 +28,8 @@ export const DEFAULT_SETTINGS: BrowserSettings = {
 	directFetch: true,
 	preferProxy: false,
 	enableCookies: true,
+	// Off breaks every site that renders on the client (search engines, SPAs).
+	runScripts: true,
 	confirmDestructiveActions: true,
 	openExternalLinksInSystemBrowser: false,
 };
@@ -76,6 +80,11 @@ export class BrowserSettingTab extends PluginSettingTab {
 				name: 'Always use proxy',
 				desc: 'Route every page through the proxy. Slower and not suitable for sites that require a real login, but it works around sites that refuse to be embedded.',
 				control: { type: 'toggle', key: 'preferProxy' },
+			},
+			{
+				name: 'Run page scripts',
+				desc: 'Let proxied pages run their own scripts. Most modern sites render in the browser and come up blank or broken without this. Turning it off blocks third-party scripts but breaks those sites.',
+				control: { type: 'toggle', key: 'runScripts' },
 			},
 			{
 				name: 'Enable cookie jar',

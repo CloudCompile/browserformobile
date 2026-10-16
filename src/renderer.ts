@@ -26,6 +26,8 @@ export interface RendererContext {
 	proxyBase: string;
 	/** When false, the native HTTP client is used instead of the proxy. */
 	directFetch: boolean;
+	/** Allow the page's own scripts to run in the sandboxed frame. */
+	runScripts: boolean;
 	events: RendererEvents;
 }
 
@@ -123,7 +125,8 @@ export class ProxyRenderer implements Renderer {
 	constructor(private readonly context: RendererContext) {}
 
 	async mount(): Promise<void> {
-		const { container, url, cookies, proxyBase, directFetch, events } = this.context;
+		const { container, url, cookies, proxyBase, directFetch, runScripts, events } =
+			this.context;
 		registerBridgeChannel(this.channel, (message) => {
 			switch (message.type) {
 				case 'title':
@@ -154,6 +157,7 @@ export class ProxyRenderer implements Renderer {
 		const result = await loadPage(url, {
 			proxyBase,
 			directFetch,
+			runScripts,
 			cookies,
 			ignoreCookies: cookies.length === 0,
 		});

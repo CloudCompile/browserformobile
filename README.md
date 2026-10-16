@@ -25,8 +25,9 @@ ways:
 - **Proxy mode** fetches the page with the app's own HTTP client, falling back to
   a CORS proxy when needed, sanitises the HTML, and renders it in a locked-down
   frame. This works for most sites, including ones that block framing, but it is
-  a snapshot: it is not suitable for sites that require a real login, and remote
-  scripts are stripped for safety.
+  a snapshot: it is not suitable for sites that require a real login. Pages run
+  their own scripts so client-rendered sites work; turn off **Run page scripts**
+  to block them instead.
 
 The HTTP client Obsidian exposes to plugins is a native one, so it is not bound
 by the browser's same-origin rules. Most pages therefore load with no third
@@ -71,6 +72,7 @@ system browser.
 - **Fetch pages directly** — use the built-in HTTP client before the proxy.
 - **Proxy endpoint** — the fallback CORS proxy. The default is allorigins.win, with built-in fallbacks.
 - **Always use proxy** — route everything through the proxy.
+- **Run page scripts** — let proxied pages run their own scripts. On by default; without it, sites that render in the browser (search engines, apps) come up blank or broken.
 - **Enable cookie jar** — store cookies locally and share them with proxied pages.
 - **Confirm destructive actions** — confirm before clearing data.
 - **Open external links in system browser** — hand off links that cannot be shown.
@@ -95,8 +97,11 @@ your own **Proxy endpoint** to use a single, trusted service instead: when the
 endpoint is not the shipped default, no fallbacks are used and your address is
 never sent to any of the services above.
 
-Cookies saved by the plugin are only sent to the site they belong to. Remote
-scripts are stripped from proxied pages so third-party tracking code cannot run.
+Cookies saved by the plugin are only sent to the site they belong to. Proxied
+pages run in a sandboxed frame without same-origin access, so they cannot read
+your vault or the plugin's storage. By default they also run their own scripts,
+which is what makes client-rendered sites work but also lets third-party
+analytics on those pages run; turn off **Run page scripts** to block them.
 
 ## Commands
 
@@ -118,7 +123,9 @@ npm run lint
 
 - Some sites still cannot be shown, either because they block embedding or
   because they need a full browser engine. Use the system browser for those.
-- Proxy mode shows a sanitised, script-limited copy of a page, not a live session.
+- Proxy mode shows a copy of a page fetched for you, not a live session. It is
+  best-effort: sites that rely on cross-origin requests or complex scripting may
+  still render imperfectly.
 - Cross-origin frames cannot be inspected, so the plugin relies on the injected
   bridge for titles and navigation rather than reading the frame directly.
 

@@ -253,6 +253,7 @@ export class BrowserView extends ItemView {
 			cookies: this.plugin.settings.enableCookies ? this.plugin.store.cookies : [],
 			proxyBase: this.plugin.settings.proxyBase,
 			directFetch: this.plugin.settings.directFetch,
+			runScripts: this.plugin.settings.runScripts,
 			events: {
 				onTitle: (title: string) => this.handleTitle(tab.id, title),
 				onError: (message: string, options?: { suggestProxy?: boolean }) =>
