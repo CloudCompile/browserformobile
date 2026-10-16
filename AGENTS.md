@@ -317,9 +317,13 @@ this codebase.
   from the injected bridge, never from reading the frame DOM.
 - Third-party proxy default is `https://api.allorigins.win/get?url=` (JSON
   mode, exported as `DEFAULT_PROXY_BASE`). It is flaky and often returns 5xx;
-  retries and the `FALLBACK_PROXIES` chain live in `proxyRequest`. `r.jina.ai`
-  is used as a fallback and needs the `x-respond-with: html` header or it
-  returns markdown.
+  retries and the `FALLBACK_PROXIES` chain live in `proxyRequest`. The chain is
+  only used when `proxyBase` equals `DEFAULT_PROXY_BASE`, so a user's own proxy
+  is never bypassed. Order: the Cloudflare Worker
+  (`cors-proxy.christopher-j-hauser2025.workers.dev`, the only one that relays
+  POST, declared via `methods`), then `r.jina.ai` (needs `x-respond-with: html`
+  or it returns markdown), `api.cors.lol`, and `allorigins.win/raw`. HTTP 429
+  and 408 are treated as transient so the chain continues past a rate limit.
 
 ### Build, lint, test
 

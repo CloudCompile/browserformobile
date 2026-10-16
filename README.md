@@ -69,7 +69,7 @@ system browser.
 - **Home page** — loaded for new tabs.
 - **Search template** — use `%s` where the search terms go.
 - **Fetch pages directly** — use the built-in HTTP client before the proxy.
-- **Proxy endpoint** — the fallback CORS proxy. The default is allorigins.win.
+- **Proxy endpoint** — the fallback CORS proxy. The default is allorigins.win, with built-in fallbacks.
 - **Always use proxy** — route everything through the proxy.
 - **Enable cookie jar** — store cookies locally and share them with proxied pages.
 - **Confirm destructive actions** — confirm before clearing data.
@@ -81,10 +81,19 @@ Everything is stored locally in the plugin's `data.json` inside your vault.
 Nothing is collected or sent anywhere by the plugin itself.
 
 When proxy mode is used, the address you are visiting is sent to the configured
-proxy service so it can fetch the page for you. The default proxy is
-`allorigins.win`, a public service. If you would rather not use a third party,
-turn off **Fetch pages directly** only if you have set your own proxy, or leave
-the default so most pages never touch a third party.
+proxy service so it can fetch the page for you. The default is `allorigins.win`,
+a public service. Because public proxies are unreliable, when the default keeps
+failing the plugin also tries these fallbacks, in order:
+
+1. `cors-proxy.christopher-j-hauser2025.workers.dev` (a Cloudflare Worker, GET and POST)
+2. `r.jina.ai` (GET)
+3. `api.cors.lol` (GET)
+4. `allorigins.win/raw` (GET)
+
+Only the page HTML is requested; the response is sanitised before display. Set
+your own **Proxy endpoint** to use a single, trusted service instead: when the
+endpoint is not the shipped default, no fallbacks are used and your address is
+never sent to any of the services above.
 
 Cookies saved by the plugin are only sent to the site they belong to. Remote
 scripts are stripped from proxied pages so third-party tracking code cannot run.

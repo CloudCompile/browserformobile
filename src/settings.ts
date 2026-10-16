@@ -69,7 +69,7 @@ export class BrowserSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Proxy endpoint',
-				desc: 'Fallback endpoint for pages the browser cannot fetch or frame directly. The default is allorigins.win. Only page HTML is requested; the response is sanitised before it is displayed.',
+				desc: 'Fallback endpoint for pages the browser cannot fetch or frame directly. The default is allorigins.win, with built-in fallbacks (a Cloudflare Worker, r.jina.ai, cors.lol). Set your own endpoint to use only that one. Only page HTML is requested; the response is sanitised before it is displayed.',
 				control: { type: 'text', key: 'proxyBase' },
 			},
 			{

@@ -40,6 +40,8 @@ export const DEFAULT_PROXY_BASE = 'https://api.allorigins.win/get?url=';
 interface ProxyEndpoint {
 	base: string;
 	headers?: Record<string, string>;
+	/** Methods this endpoint relays. Defaults to GET only. */
+	methods?: string[];
 }
 
 /**
@@ -50,7 +52,12 @@ interface ProxyEndpoint {
  * needs an explicit header or it returns markdown instead of HTML.
  */
 const FALLBACK_PROXIES: ProxyEndpoint[] = [
+	{
+		base: 'https://cors-proxy.christopher-j-hauser2025.workers.dev/?url=',
+		methods: ['GET', 'POST'],
+	},
 	{ base: 'https://r.jina.ai/', headers: { 'x-respond-with': 'html' } },
+	{ base: 'https://api.cors.lol/?url=' },
 	{ base: 'https://api.allorigins.win/raw?url=' },
 ];
 
@@ -409,12 +416,15 @@ export async function proxyRequest(
 
 	const headers = buildHeaders(target, options);
 
-	// The configured endpoint is authoritative, so only add fallbacks for plain
-	// GETs; a POST body cannot be replayed against a different proxy.
+	// A user who points the plugin at their own proxy expects only that endpoint
+	// to be used, so the public fallbacks apply solely to the shipped default.
+	// Endpoints that cannot relay the current method (a POST body cannot be
+	// replayed everywhere) are skipped.
 	const endpoints: ProxyEndpoint[] = [{ base: proxyBase }];
-	if (method === 'GET') {
+	if (proxyBase === DEFAULT_PROXY_BASE) {
 		for (const fallback of FALLBACK_PROXIES) {
-			if (fallback.base !== proxyBase) endpoints.push(fallback);
+			const allowed = fallback.methods ?? ['GET'];
+			if (allowed.includes(method)) endpoints.push(fallback);
 		}
 	}
 
@@ -441,8 +451,10 @@ export async function proxyRequest(
 				const result = readProxyPayload(response.status, contentType, response.text, url);
 				if (result.ok) return result;
 				lastMessage = result.message;
-				// A definitive client error will not be fixed by retrying.
-				if (response.status < 500) return result;
+				// A definitive client error will not be fixed by retrying, but a
+				// rate limit or timeout is transient, so keep trying other endpoints.
+				const transient = response.status === 429 || response.status === 408;
+				if (response.status < 500 && !transient) return result;
 			} catch (error) {
 				lastMessage = error instanceof Error ? error.message : 'Network request failed.';
 				lastStatus = 0;
