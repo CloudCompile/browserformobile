@@ -315,6 +315,13 @@ this codebase.
   purpose; the bridge is the only channel.
 - **Cross-origin frames cannot be inspected**, so titles and navigation come
   from the injected bridge, never from reading the frame DOM.
+- **`rewriteHtml` must never rewrite inside a raw-text element body**
+  (`script`, `style`, `textarea`, `title`). A page may hold markup in a string
+  — DuckDuckGo's loader does `document.write('<script src="'+s+i+'"><\/script>')`
+  — and emitting a literal `</script>` there ends the real block early and
+  breaks the page with "Invalid or unexpected token". `blockRemoteScripts`
+  walks the document as the parser would and only neutralises tags at markup
+  level; `transformOutsideOpaqueBlocks` guards the meta/integrity pass.
 - Third-party proxy default is `https://api.allorigins.win/get?url=` (JSON
   mode, exported as `DEFAULT_PROXY_BASE`). It is flaky and often returns 5xx;
   retries and the `FALLBACK_PROXIES` chain live in `proxyRequest`. The chain is

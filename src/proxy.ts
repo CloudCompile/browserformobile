@@ -95,6 +95,100 @@ function neutraliseMeta(html: string): string {
 	);
 }
 
+/**
+ * Elements whose bodies are raw text: the HTML parser does not interpret markup
+ * inside them, so the rewriter must not either. `script` is handled separately
+ * by {@link blockRemoteScripts}; the rest are copied verbatim.
+ */
+const RAW_TEXT_ELEMENTS = 'script|style|textarea|title';
+const OTHER_RAW_TEXT = 'style|textarea|title';
+
+/**
+ * Run `transform` on the parts of the document that are markup, leaving opaque
+ * regions untouched. Script bodies are opaque: a page may hold markup in a
+ * string (DuckDuckGo's loader writes `<script src=...>` via `document.write`),
+ * and rewriting inside it would emit a literal `</script>` that ends the real
+ * block early and breaks the page.
+ */
+function transformOutsideOpaqueBlocks(
+	html: string,
+	transform: (chunk: string) => string,
+): string {
+	const opaque = new RegExp(
+		`<(${RAW_TEXT_ELEMENTS})\\b[^>]*>[\\s\\S]*?<\\/\\1\\s*>`,
+		'gi',
+	);
+	let result = '';
+	let last = 0;
+	let match: RegExpExecArray | null;
+	while ((match = opaque.exec(html)) !== null) {
+		result += transform(html.slice(last, match.index));
+		result += match[0];
+		last = match.index + match[0].length;
+	}
+	return result + transform(html.slice(last));
+}
+
+/**
+ * Replace remote `<script src=...>` tags with inert placeholders.
+ *
+ * This walks the document as the HTML parser would. An inline script body ends
+ * at the first real `</script>`, so any `<script src=...>` appearing before that
+ * is a string inside the script (DuckDuckGo's loader writes one via
+ * `document.write`) and must be left alone; rewriting it would emit a literal
+ * `</script>` and truncate the block. Only a tag at markup level is neutralised.
+ */
+function blockRemoteScripts(html: string): string {
+	const openTag = /^<script\b[^>]*>/i;
+	const rawText = new RegExp(`^<(${OTHER_RAW_TEXT})\\b[^>]*>`, 'i');
+	const closeTag = /<\/script\s*>/i;
+	let result = '';
+	let i = 0;
+	while (i < html.length) {
+		const lt = html.indexOf('<', i);
+		if (lt === -1) {
+			result += html.slice(i);
+			break;
+		}
+		result += html.slice(i, lt);
+		const rest = html.slice(lt);
+
+		// Raw-text bodies (style, textarea, title) contain no tags: copy verbatim.
+		const raw = rawText.exec(rest);
+		if (raw) {
+			const name = raw[1];
+			const after = lt + raw[0].length;
+			const close = new RegExp(`</${name}\\s*>`, 'i').exec(html.slice(after));
+			const end = close ? after + close.index + close[0].length : html.length;
+			result += html.slice(lt, end);
+			i = end;
+			continue;
+		}
+
+		const open = openTag.exec(rest);
+		if (!open) {
+			result += '<';
+			i = lt + 1;
+			continue;
+		}
+		const tag = open[0];
+		const after = lt + tag.length;
+		const close = closeTag.exec(html.slice(after));
+		const end = close ? after + close.index + close[0].length : html.length;
+
+		if (/\ssrc\s*=/i.test(tag)) {
+			// Replace the whole tag so the original src (and integrity) is gone.
+			const src = /\ssrc\s*=\s*(["']?)([^"'>\s]*)\1/i.exec(tag);
+			result += `<script data-blocked-src="${escapeHtml(src?.[2] ?? '')}">/* remote script blocked */</script>`;
+		} else {
+			// Inline script: copy the body verbatim so nothing inside is rewritten.
+			result += html.slice(lt, end);
+		}
+		i = end;
+	}
+	return result;
+}
+
 function injectAfterHeadOpen(html: string, injection: string): string {
 	const match = /<head\b[^>]*>/i.exec(html);
 	if (match && match.index >= 0) {
@@ -121,13 +215,10 @@ export function rewriteHtml(html: string, targetUrl: string): string {
 	} catch {
 		return html;
 	}
-	let output = neutraliseMeta(html);
-	output = stripIntegrity(output);
-	output = output.replace(
-		/<script\b([^>]*)\ssrc\s*=\s*(["'])(.*?)\2([^>]*)>/gi,
-		(_match, before: string, _quote: string, src: string, after: string) =>
-			`<script${before} data-blocked-src="${escapeHtml(src)}"${after}>/* remote script blocked */</script>`,
+	let output = transformOutsideOpaqueBlocks(html, (chunk) =>
+		stripIntegrity(neutraliseMeta(chunk)),
 	);
+	output = blockRemoteScripts(output);
 	output = injectAfterHeadOpen(output, baseTag(target));
 	return output;
 }
