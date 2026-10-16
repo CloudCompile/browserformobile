@@ -306,6 +306,16 @@ this codebase.
 - **Proxy mode is a fallback, not the default.** Obsidian's `requestUrl` is a
   native HTTP client that bypasses CORS, so most pages load directly. Keep the
   direct path primary.
+- **Proxied pages run their own scripts by default** (`runScripts`, the "Run
+  page scripts" setting). The proxy frame already has `allow-scripts`, so
+  blocking was a privacy choice, not a technical limit — and it left every
+  client-rendered site (DuckDuckGo, SPAs) blank or mangled. `rewriteHtml`'s
+  `runScripts` flag only decides whether `<script src>` tags are neutralised;
+  integrity and restrictive meta tags are stripped either way.
+- **The bridge shims what an opaque origin lacks.** `localStorage` /
+  `sessionStorage` throw on access in the sandbox and `innerWidth` is 0, both
+  of which crash framework boot. Keep the `safeStorage` / viewport shims in
+  `bridge.ts` ahead of any page script.
 - **A refused embed cannot be detected after the fact.** Chromium renders its
   blocked-frame error page inside the frame, and for any cross-origin frame
   `contentDocument` is `null` whether or not the load succeeded. Direct mode is
