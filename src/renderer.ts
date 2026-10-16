@@ -12,6 +12,8 @@ export interface NavigateOptions {
 export interface RendererEvents {
 	onTitle(title: string): void;
 	onError(message: string, options?: { suggestProxy?: boolean }): void;
+	/** A script error inside the page. Not fatal: the page is still on screen. */
+	onPageError(): void;
 	onNavigate(url: string, options?: NavigateOptions): void;
 	onOpenExternal(url: string): void;
 	onCookie(raw: string, url: string): void;
@@ -146,7 +148,9 @@ export class ProxyRenderer implements Renderer {
 					events.onCookie(message.raw, message.url);
 					break;
 				case 'error':
-					events.onError(message.message);
+					// A page's own script error does not mean the page failed to
+					// load; treating it as fatal would blank a page that rendered.
+					events.onPageError();
 					break;
 				case 'ready':
 					events.onReady(url);

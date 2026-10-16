@@ -69,10 +69,28 @@ export function buildBridgeScript(config: BridgeConfig): string {
 		"  'use strict';",
 		`  var CONFIG = ${json};`,
 		'  var jar = (CONFIG.cookies || []).slice();',
+		// Capture the real host before the shim below: postMessage has to reach the
+		// plugin, so it must keep pointing at the frame that actually contains us.
+		'  var HOST = window.parent;',
 		'  function post(type, data) {',
 		'    var msg = { __bfm: true, channel: CONFIG.channel, type: type };',
 		'    if (data) { for (var k in data) { if (Object.prototype.hasOwnProperty.call(data, k)) { msg[k] = data[k]; } } }',
-		"    try { (window.parent || window.top).postMessage(msg, '*'); } catch (e) {}",
+		"    try { (HOST || window.top).postMessage(msg, '*'); } catch (e) {}",
+		'  }',
+		// An opaque-origin frame reads as cross-origin, so a page that probes
+		// window.parent.document (framebusting, embed detection, analytics) throws
+		// a SecurityError and often aborts its own boot. Present this frame as
+		// top-level so those reads resolve to this document instead of throwing.
+		'  function isOpaqueFrame() {',
+		'    try { return window.parent !== window && typeof window.parent.document === "undefined"; }',
+		'    catch (e) { return true; }',
+		'  }',
+		'  if (isOpaqueFrame()) {',
+		'    try { Object.defineProperty(window, "parent", { get: function () { return window; }, configurable: true }); }',
+		'    catch (e) { try { window.parent = window; } catch (e2) {} }',
+		'    try { Object.defineProperty(window, "top", { get: function () { return window; }, configurable: true }); }',
+		'    catch (e) { try { window.top = window; } catch (e2) {} }',
+		'    try { Object.defineProperty(window, "frameElement", { get: function () { return null; }, configurable: true }); } catch (e) {}',
 		'  }',
 		'  function now() { return Date.now(); }',
 		'  function host() { return (CONFIG.host || "").toLowerCase(); }',

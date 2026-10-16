@@ -315,7 +315,16 @@ this codebase.
 - **The bridge shims what an opaque origin lacks.** `localStorage` /
   `sessionStorage` throw on access in the sandbox and `innerWidth` is 0, both
   of which crash framework boot. Keep the `safeStorage` / viewport shims in
-  `bridge.ts` ahead of any page script.
+  `bridge.ts` ahead of any page script. `window.parent` is also shimmed to
+  `window` so a page probing `parent.document` (framebusting, embed detection)
+  resolves instead of throwing a `SecurityError` mid-boot. `window.top` is an
+  own, non-configurable property and **cannot** be shimmed, which is why page
+  errors must never be treated as fatal (below).
+- **A page script error is not a load failure.** The bridge forwards page errors
+  to `onPageError`; `view.ts` marks the tab and shows **page error** in the
+  status bar without touching the DOM. Routing them through `onError` made
+  `renderErrorState` call `pageEl.empty()` and blank pages that had rendered
+  fine — the reported `SecurityError` from `window.top` did exactly that.
 - **A refused embed cannot be detected after the fact.** Chromium renders its
   blocked-frame error page inside the frame, and for any cross-origin frame
   `contentDocument` is `null` whether or not the load succeeded. Direct mode is

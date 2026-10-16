@@ -128,4 +128,8 @@ npm run lint
   still render imperfectly.
 - Cross-origin frames cannot be inspected, so the plugin relies on the injected
   bridge for titles and navigation rather than reading the frame directly.
+- A page script that fails is reported in the status bar (**page error**) but
+  does not replace the page, since the document has already rendered. The bridge
+  presents the proxied frame as top-level so framebusting checks that read
+  `window.parent.document` do not abort a page's own startup.
 

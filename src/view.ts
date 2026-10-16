@@ -32,6 +32,8 @@ export class BrowserView extends ItemView {
 	private proxyButton!: HTMLButtonElement;
 	private renderer: Renderer | null = null;
 	private loading = false;
+	/** Tab ids whose current page raised a script error. Non-fatal, but shown in the status bar. */
+	private readonly pageErrors = new Set<string>();
 	/** Bumped on every render so a slow preflight cannot clobber a newer load. */
 	private renderToken = 0;
 
@@ -198,12 +200,16 @@ export class BrowserView extends ItemView {
 		const mode = tab.renderMode === 'proxy' ? 'Proxy' : 'Direct';
 		const host = hostOf(tab.displayUrl) || displayUrl(tab.displayUrl, 40);
 		const cookieCount = this.plugin.store.cookies.length;
-		this.statusEl.setText(`${mode} · ${host} · ${cookieCount} cookies`);
+		const base = `${mode} · ${host} · ${cookieCount} cookies`;
+		// A page script error is not fatal, but it is worth surfacing so a page that
+		// half-renders is not mistaken for one that loaded cleanly.
+		this.statusEl.setText(this.pageErrors.has(tab.id) ? `${base} · page error` : base);
 	}
 
 	private async mountRenderer(tab: TabState): Promise<void> {
 		this.unmountRenderer();
 		this.pageEl.empty();
+		this.pageErrors.delete(tab.id);
 		this.loading = true;
 		const token = ++this.renderToken;
 		this.statusEl.setText(
@@ -258,6 +264,7 @@ export class BrowserView extends ItemView {
 				onTitle: (title: string) => this.handleTitle(tab.id, title),
 				onError: (message: string, options?: { suggestProxy?: boolean }) =>
 					this.handleError(tab.id, message, options),
+				onPageError: () => this.handlePageError(),
 				onNavigate: (url: string, navigateOptions?: NavigateOptions) =>
 					this.handleBridgeNavigate(url, navigateOptions),
 				onOpenExternal: (url: string) => this.openExternal(url),
@@ -312,6 +319,18 @@ export class BrowserView extends ItemView {
 		this.plugin.store.tabs.update(tabId, { lastError: message });
 		if (this.plugin.store.tabs.activeTabId !== tabId) return;
 		this.renderErrorState(message, options?.suggestProxy ?? false);
+		this.updateStatus();
+	}
+
+	/**
+	 * A script error raised by the page itself. The document is already on
+	 * screen, so this is reported without replacing it — a page that rendered
+	 * correctly must not be blanked because one of its scripts threw.
+	 */
+	private handlePageError(): void {
+		const tab = this.plugin.store.tabs.active;
+		if (!tab) return;
+		this.pageErrors.add(tab.id);
 		this.updateStatus();
 	}
 
@@ -423,6 +442,7 @@ export class BrowserView extends ItemView {
 	closeTab(id?: string): void {
 		const tabId = id ?? this.plugin.store.tabs.activeTabId;
 		if (!tabId) return;
+		this.pageErrors.delete(tabId);
 		this.plugin.store.tabs.remove(tabId);
 		this.plugin.store.markDirty();
 		if (this.plugin.store.tabs.count === 0) {
