@@ -1,4 +1,4 @@
-import { ItemView, Notice, WorkspaceLeaf, setIcon } from 'obsidian';
+import { ItemView, Notice, Platform, WorkspaceLeaf, setIcon } from 'obsidian';
 import { parseCookieString } from './cookieStore';
 import type BrowserPlugin from './main';
 import {
@@ -9,7 +9,6 @@ import {
 	ProxyFallbackModal,
 } from './modals';
 import { DirectRenderer, ProxyRenderer, type NavigateOptions, type Renderer } from './renderer';
-import { probeFramePolicy } from './proxy';
 import type { RenderMode, TabState } from './types';
 import { displayUrl, hostOf, normalizeInput } from './utils';
 
@@ -34,8 +33,8 @@ export class BrowserView extends ItemView {
 	private loading = false;
 	/** Tab ids whose current page raised a script error. Non-fatal, but shown in the status bar. */
 	private readonly pageErrors = new Set<string>();
-	/** Bumped on every render so a slow preflight cannot clobber a newer load. */
-	private renderToken = 0;
+	/** `tabId|url` pairs already auto-retried through the proxy, so a failure cannot loop. */
+	private readonly autoProxied = new Set<string>();
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -211,45 +210,11 @@ export class BrowserView extends ItemView {
 		this.pageEl.empty();
 		this.pageErrors.delete(tab.id);
 		this.loading = true;
-		const token = ++this.renderToken;
 		this.statusEl.setText(
 			tab.renderMode === 'proxy' ? 'Loading through proxy…' : 'Loading…',
 		);
 
-		let renderMode = tab.renderMode;
-
-		// A refused embed is undetectable after the fact, so check the framing
-		// headers first and switch to the proxy rather than showing a blank frame.
-		if (renderMode === 'direct') {
-			const policy = await probeFramePolicy(tab.url, {
-				proxyBase: this.plugin.settings.proxyBase,
-			});
-			// The user may have navigated or switched tabs while we waited.
-			if (token !== this.renderToken) return;
-			if (policy.blocked) {
-				if (this.plugin.settings.proxyBase) {
-					renderMode = 'proxy';
-					this.plugin.store.tabs.update(tab.id, {
-						renderMode: 'proxy',
-						proxied: true,
-					});
-					this.plugin.store.markDirty();
-					this.updateToolbar();
-					this.statusEl.setText('Loading through proxy…');
-					new Notice(
-						`${policy.reason ?? 'This site refuses to be embedded.'} Loading it through the proxy instead.`,
-					);
-				} else {
-					this.loading = false;
-					this.handleError(
-						tab.id,
-						policy.reason ?? 'This site refuses to be embedded inside Obsidian.',
-						{ suggestProxy: false },
-					);
-					return;
-				}
-			}
-		}
+		const renderMode = tab.renderMode;
 
 		const useProxy = renderMode === 'proxy';
 		const context = {
@@ -317,6 +282,35 @@ export class BrowserView extends ItemView {
 	private handleError(tabId: string, message: string, options?: { suggestProxy?: boolean }): void {
 		this.loading = false;
 		this.plugin.store.tabs.update(tabId, { lastError: message });
+		const tab = this.plugin.store.tabs.get(tabId);
+		// A direct load that fails cannot be diagnosed from the host: a blocked frame
+		// and an allowed cross-origin frame both fire `load` with an opaque
+		// `contentDocument`, and the native client strips the framing headers, so
+		// neither runtime inspection nor a header preflight can tell them apart.
+		// Retry through the proxy once rather than dead-ending on a manual click.
+		if (
+			tab &&
+			options?.suggestProxy &&
+			tab.renderMode === 'direct' &&
+			this.plugin.settings.proxyBase &&
+			!this.autoProxied.has(`${tabId}|${tab.url}`)
+		) {
+			this.autoProxied.add(`${tabId}|${tab.url}`);
+			if (this.plugin.store.tabs.activeTabId === tabId) {
+				new Notice('Direct loading failed. Retrying through the proxy…');
+			}
+			this.plugin.store.tabs.update(tabId, {
+				renderMode: 'proxy',
+				proxied: true,
+				lastError: null,
+			});
+			this.plugin.store.markDirty();
+			if (this.plugin.store.tabs.activeTabId === tabId) {
+				this.updateToolbar();
+				this.renderActiveTab();
+			}
+			return;
+		}
 		if (this.plugin.store.tabs.activeTabId !== tabId) return;
 		this.renderErrorState(message, options?.suggestProxy ?? false);
 		this.updateStatus();
@@ -397,6 +391,11 @@ export class BrowserView extends ItemView {
 		const isPost = !!options.method && options.method.toUpperCase() !== 'GET';
 		const renderMode: RenderMode = isPost ? 'proxy' : mode;
 
+		// A fresh navigation earns a fresh chance at direct mode.
+		for (const key of this.autoProxied) {
+			if (key.startsWith(`${tab.id}|`)) this.autoProxied.delete(key);
+		}
+
 		this.plugin.store.tabs.update(tab.id, {
 			url: normalized,
 			displayUrl: normalized,
@@ -421,7 +420,17 @@ export class BrowserView extends ItemView {
 	 */
 	private defaultRenderMode(): RenderMode {
 		if (!this.plugin.settings.directFetch) return 'proxy';
-		return this.plugin.settings.preferProxy ? 'proxy' : 'direct';
+		if (this.plugin.settings.preferProxy) return 'proxy';
+		// Mobile WebView enforces X-Frame-Options and CSP frame-ancestors, so a
+		// site that refuses framing renders as a browser error page. That refusal
+		// cannot be detected from the host — a blocked frame and an allowed
+		// cross-origin frame both fire `load` and expose an opaque
+		// `contentDocument` — and the native client strips the framing headers, so
+		// there is nothing to preflight either. Start on the proxy, which always
+		// renders, rather than showing the user a dead frame. Desktop Electron
+		// ignores framing headers, so direct mode stays the better default there.
+		if (Platform.isMobile) return 'proxy';
+		return 'direct';
 	}
 
 	private newTab(url?: string): void {
@@ -443,6 +452,9 @@ export class BrowserView extends ItemView {
 		const tabId = id ?? this.plugin.store.tabs.activeTabId;
 		if (!tabId) return;
 		this.pageErrors.delete(tabId);
+		for (const key of this.autoProxied) {
+			if (key.startsWith(`${tabId}|`)) this.autoProxied.delete(key);
+		}
 		this.plugin.store.tabs.remove(tabId);
 		this.plugin.store.markDirty();
 		if (this.plugin.store.tabs.count === 0) {

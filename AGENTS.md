@@ -303,9 +303,22 @@ this codebase.
 - **`minAppVersion` is 1.13.0.** The declarative settings API and
   `setDestructive()` require it. Lowering it will fail lint
   (`obsidianmd/no-unsupported-api`).
-- **Proxy mode is a fallback, not the default.** Obsidian's `requestUrl` is a
-  native HTTP client that bypasses CORS, so most pages load directly. Keep the
-  direct path primary.
+- **Direct mode is desktop-only in practice.** Electron ignores
+  `X-Frame-Options` and CSP `frame-ancestors`, so on desktop most sites frame
+  fine and direct stays the default. Android WebView enforces both, so a
+  refusing site renders Chromium's `ERR_BLOCKED_BY_RESPONSE` error page inside
+  the frame. `view.ts` therefore defaults to proxy mode when `Platform.isMobile`.
+- **A refused embed cannot be detected.** A blocked frame and an allowed
+  cross-origin frame are observationally identical from the host: both fire
+  `load` in ~100 ms, both expose `contentDocument === null` and
+  `contentWindow.length === 0`, and no `securitypolicyviolation` event or
+  resource-timing gap distinguishes them. A header preflight cannot help either:
+  Obsidian's `requestUrl` strips `X-Frame-Options` outright and drops the
+  `frame-ancestors` directive from `Content-Security-Policy` (a CSP of
+  `default-src 'self'; frame-ancestors 'none'; img-src *` comes back as
+  `default-src 'self'; img-src *`). There is no reliable pre-check, which is why
+  mobile defaults to the proxy instead of probing. Do not reintroduce
+  DOM-sniffing checks or a framing-header preflight.
 - **Proxied pages run their own scripts by default** (`runScripts`, the "Run
   page scripts" setting). The proxy frame already has `allow-scripts`, so
   blocking was a privacy choice, not a technical limit — and it left every
@@ -325,11 +338,6 @@ this codebase.
   status bar without touching the DOM. Routing them through `onError` made
   `renderErrorState` call `pageEl.empty()` and blank pages that had rendered
   fine — the reported `SecurityError` from `window.top` did exactly that.
-- **A refused embed cannot be detected after the fact.** Chromium renders its
-  blocked-frame error page inside the frame, and for any cross-origin frame
-  `contentDocument` is `null` whether or not the load succeeded. Direct mode is
-  therefore gated on a header preflight (`probeFramePolicy`) in `view.ts`, which
-  switches to the proxy automatically. Do not reintroduce DOM-sniffing checks.
 - **The sandboxed frame must never get `allow-same-origin`.** It is opaque on
   purpose; the bridge is the only channel.
 - **Cross-origin frames cannot be inspected**, so titles and navigation come

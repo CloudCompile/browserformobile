@@ -14,6 +14,13 @@ export interface ProxyFailure {
 	ok: false;
 	status: number;
 	message: string;
+	/**
+	 * True when this endpoint could not serve the request but a different
+	 * endpoint still might (bad payload, empty body, upstream error page). A
+	 * definitive failure — the site itself returning 404 — leaves this unset so
+	 * the chain stops instead of hammering every proxy.
+	 */
+	endpointFailure?: boolean;
 }
 
 export type ProxyResult = ProxySuccess | ProxyFailure;
@@ -259,6 +266,15 @@ function readProxyPayload(
 	targetUrl: string,
 	runScripts: boolean,
 ): ProxyResult {
+	if (status >= 500) {
+		// A 5xx is the proxy failing, not the site: another endpoint may still work.
+		return {
+			ok: false,
+			status,
+			message: `Proxy responded with ${status}.`,
+			endpointFailure: true,
+		};
+	}
 	if (status >= 400) {
 		return { ok: false, status, message: `Proxy responded with ${status}.` };
 	}
@@ -268,14 +284,29 @@ function readProxyPayload(
 		try {
 			payload = JSON.parse(text);
 		} catch {
-			return { ok: false, status, message: 'The proxy returned invalid JSON.' };
+			return {
+				ok: false,
+				status,
+				message: 'The proxy returned invalid JSON.',
+				endpointFailure: true,
+			};
 		}
 		const record = payload as {
 			contents?: unknown;
 			status?: { http_code?: number; url?: string; content_type?: string };
 		};
 		const upstreamStatus = record.status?.http_code ?? 200;
+		if (upstreamStatus >= 500) {
+			// The site errored transiently; a different proxy may reach it.
+			return {
+				ok: false,
+				status: upstreamStatus,
+				message: `The site returned ${upstreamStatus}.`,
+				endpointFailure: true,
+			};
+		}
 		if (upstreamStatus >= 400) {
+			// 4xx is the site's own verdict — retrying elsewhere will not help.
 			return {
 				ok: false,
 				status: upstreamStatus,
@@ -288,6 +319,7 @@ function readProxyPayload(
 				ok: false,
 				status,
 				message: 'The proxy returned an empty page for this address.',
+				endpointFailure: true,
 			};
 		}
 		const resolved = record.status?.url ?? targetUrl;
@@ -373,97 +405,6 @@ async function directRequest(
 }
 
 /**
- * Decide whether a page can be framed from its response headers. Cross-origin
- * frames cannot be inspected from the host, and Chromium's blocked-frame error
- * page looks exactly like a normal cross-origin document (`contentDocument` is
- * null either way), so headers are the only reliable signal. A blocked embed
- * otherwise renders an empty frame with no error, which is what made direct
- * mode look broken.
- */
-export function framePolicyFromHeaders(headers: Record<string, string>): {
-	blocked: boolean;
-	reason?: string;
-} {
-	const lower: Record<string, string> = {};
-	for (const [key, value] of Object.entries(headers)) {
-		lower[key.toLowerCase()] = value;
-	}
-	const xfo = lower['x-frame-options']?.trim().toLowerCase();
-	if (xfo) {
-		if (xfo.includes('deny')) {
-			return { blocked: true, reason: 'This site refuses to be embedded (X-Frame-Options: deny).' };
-		}
-		if (xfo.includes('sameorigin')) {
-			return {
-				blocked: true,
-				reason: 'This site only allows being embedded by itself (X-Frame-Options: SAMEORIGIN).',
-			};
-		}
-	}
-	const csp = lower['content-security-policy'];
-	if (csp) {
-		const match = /frame-ancestors([^;]*)/i.exec(csp);
-		if (match && match[1]) {
-			const value = match[1].trim().toLowerCase();
-			if (value.includes('none') || value.includes("'self'") || value.includes('self')) {
-				return {
-					blocked: true,
-					reason: 'This site only allows being embedded by itself (Content-Security-Policy frame-ancestors).',
-				};
-			}
-		}
-	}
-	return { blocked: false };
-}
-
-const framePolicyCache = new Map<string, { blocked: boolean; reason?: string }>();
-
-/**
- * Ask the site for its framing policy with a lightweight HEAD request. Direct
- * mode cannot detect a refused embed after the fact, so the plugin checks the
- * headers up front and picks the proxy instead of rendering an empty frame.
- * Failures here are non-fatal: an unknown policy is treated as frameable.
- */
-export async function probeFramePolicy(
-	url: string,
-	options: ProxyRequestOptions = {},
-): Promise<{ blocked: boolean; reason?: string }> {
-	let target: URL;
-	try {
-		target = new URL(url);
-	} catch {
-		return { blocked: false };
-	}
-	const cached = framePolicyCache.get(target.origin);
-	if (cached) return cached;
-	const headers = buildHeaders(target, options);
-	try {
-		const head = await requestUrl({
-			url,
-			method: 'HEAD',
-			headers,
-			throw: false,
-		});
-		if (head.status < 400) {
-			const policy = framePolicyFromHeaders(head.headers ?? {});
-			framePolicyCache.set(target.origin, policy);
-			return policy;
-		}
-	} catch {
-		/* Fall through to a GET, which some servers prefer over HEAD. */
-	}
-	try {
-		const get = await requestUrl({ url, method: 'GET', headers, throw: false });
-		if (get.status >= 400) return { blocked: false };
-		const policy = framePolicyFromHeaders(get.headers ?? {});
-		framePolicyCache.set(target.origin, policy);
-		return policy;
-	} catch {
-		return { blocked: false };
-	}
-}
-
-/**
  * Fetch a page for the browser view. Tries the native HTTP client first and
  * falls back to the configured CORS proxy, which is only needed when the direct
  * request is refused or the user has opted to always proxy.
@@ -534,6 +475,7 @@ export async function proxyRequest(
 		const endpointHeaders = endpoint.headers
 			? { ...headers, ...endpoint.headers }
 			: headers;
+		let endpointFailed = false;
 		for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
 			try {
 				const response = await requestUrl({
@@ -555,6 +497,12 @@ export async function proxyRequest(
 				);
 				if (result.ok) return result;
 				lastMessage = result.message;
+				// The endpoint answered but could not serve the page. Move on to
+				// the next proxy rather than retrying a body that will not change.
+				if (result.endpointFailure) {
+					endpointFailed = true;
+					break;
+				}
 				// A definitive client error will not be fixed by retrying, but a
 				// rate limit or timeout is transient, so keep trying other endpoints.
 				const transient = response.status === 429 || response.status === 408;
@@ -567,6 +515,7 @@ export async function proxyRequest(
 				await sleep(RETRY_DELAY_MS * (attempt + 1));
 			}
 		}
+		if (endpointFailed) continue;
 	}
 
 	return { ok: false, status: lastStatus, message: lastMessage };
