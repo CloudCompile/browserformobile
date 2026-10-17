@@ -9,6 +9,7 @@ import {
 	ProxyFallbackModal,
 } from './modals';
 import { DirectRenderer, ProxyRenderer, type NavigateOptions, type Renderer } from './renderer';
+import { probeFramePolicy } from './proxy';
 import type { RenderMode, TabState } from './types';
 import { displayUrl, hostOf, normalizeInput } from './utils';
 
@@ -35,6 +36,8 @@ export class BrowserView extends ItemView {
 	private readonly pageErrors = new Set<string>();
 	/** `tabId|url` pairs already auto-retried through the proxy, so a failure cannot loop. */
 	private readonly autoProxied = new Set<string>();
+	/** Bumped on every render so a slow framing preflight cannot clobber a newer load. */
+	private renderToken = 0;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -210,11 +213,46 @@ export class BrowserView extends ItemView {
 		this.pageEl.empty();
 		this.pageErrors.delete(tab.id);
 		this.loading = true;
+		const token = ++this.renderToken;
 		this.statusEl.setText(
 			tab.renderMode === 'proxy' ? 'Loading through proxy…' : 'Loading…',
 		);
 
-		const renderMode = tab.renderMode;
+		let renderMode = tab.renderMode;
+
+		// A refused embed cannot be detected after the fact: a blocked frame and an
+		// allowed cross-origin frame both fire `load` and expose an opaque
+		// `contentDocument`. Without this check the browser renders
+		// `ERR_BLOCKED_BY_RESPONSE` inside the frame and the page looks dead. Check
+		// the framing headers up front and switch to the proxy instead.
+		if (renderMode === 'direct') {
+			const policy = await probeFramePolicy(tab.url);
+			// The user may have navigated or switched tabs while we waited.
+			if (token !== this.renderToken) return;
+			if (policy.blocked) {
+				if (this.plugin.settings.proxyBase) {
+					renderMode = 'proxy';
+					this.plugin.store.tabs.update(tab.id, {
+						renderMode: 'proxy',
+						proxied: true,
+					});
+					this.plugin.store.markDirty();
+					this.updateToolbar();
+					this.statusEl.setText('Loading through proxy…');
+					new Notice(
+						`${policy.reason ?? 'This site refuses to be embedded.'} Loading it through the proxy instead.`,
+					);
+				} else {
+					this.loading = false;
+					this.handleError(
+						tab.id,
+						policy.reason ?? 'This site refuses to be embedded inside Obsidian.',
+						{ suggestProxy: false },
+					);
+					return;
+				}
+			}
+		}
 
 		const useProxy = renderMode === 'proxy';
 		const context = {

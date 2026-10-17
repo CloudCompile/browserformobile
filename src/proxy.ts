@@ -405,6 +405,101 @@ async function directRequest(
 }
 
 /**
+ * Decide whether a page can be framed from its response headers. Cross-origin
+ * frames cannot be inspected from the host, and Chromium's blocked-frame error
+ * page looks exactly like a normal cross-origin document (`contentDocument` is
+ * null either way), so headers are the only reliable signal. Without this check
+ * a blocked embed renders `ERR_BLOCKED_BY_RESPONSE` and looks like a dead page.
+ */
+export function framePolicyFromHeaders(headers: Record<string, string>): {
+	blocked: boolean;
+	reason?: string;
+} {
+	const lower: Record<string, string> = {};
+	for (const [key, value] of Object.entries(headers)) {
+		lower[key.toLowerCase()] = value;
+	}
+	const xfo = lower['x-frame-options']?.trim().toLowerCase();
+	if (xfo) {
+		if (xfo.includes('deny')) {
+			return {
+				blocked: true,
+				reason: 'This site refuses to be embedded (X-Frame-Options: deny).',
+			};
+		}
+		if (xfo.includes('sameorigin')) {
+			return {
+				blocked: true,
+				reason: 'This site only allows being embedded by itself (X-Frame-Options: SAMEORIGIN).',
+			};
+		}
+	}
+	const csp = lower['content-security-policy'];
+	if (csp) {
+		const match = /frame-ancestors([^;]*)/i.exec(csp);
+		if (match && match[1]) {
+			const value = match[1].trim().toLowerCase();
+			if (value.includes('none') || value.includes('self')) {
+				return {
+					blocked: true,
+					reason: 'This site only allows being embedded by itself (Content-Security-Policy frame-ancestors).',
+				};
+			}
+		}
+	}
+	return { blocked: false };
+}
+
+const framePolicyCache = new Map<string, { blocked: boolean; reason?: string }>();
+
+/**
+ * Ask the site for its framing policy before choosing the direct renderer.
+ * Direct mode cannot detect a refused embed after the fact, so the plugin reads
+ * the headers up front and picks the proxy instead of rendering a blocked frame.
+ *
+ * A GET is used rather than a HEAD because some servers only attach framing
+ * headers to a real navigation — news.ycombinator.com sends
+ * `X-Frame-Options: DENY` on GET but nothing on HEAD, so a HEAD-only check would
+ * miss it. Results are cached per origin. Failures are non-fatal: an unknown
+ * policy is treated as frameable so the direct path still gets its chance.
+ */
+export async function probeFramePolicy(
+	url: string,
+): Promise<{ blocked: boolean; reason?: string }> {
+	let target: URL;
+	try {
+		target = new URL(url);
+	} catch {
+		return { blocked: false };
+	}
+	const cached = framePolicyCache.get(target.origin);
+	if (cached) return cached;
+	const headers = buildHeaders(target, {});
+	// A cheap HEAD is conclusive when it already advertises a refusal.
+	try {
+		const head = await requestUrl({ url, method: 'HEAD', headers, throw: false });
+		if (head.status < 400) {
+			const policy = framePolicyFromHeaders(head.headers ?? {});
+			if (policy.blocked) {
+				framePolicyCache.set(target.origin, policy);
+				return policy;
+			}
+		}
+	} catch {
+		/* Fall through to a GET, which some servers prefer over HEAD. */
+	}
+	try {
+		const get = await requestUrl({ url, method: 'GET', headers, throw: false });
+		if (get.status >= 400) return { blocked: false };
+		const policy = framePolicyFromHeaders(get.headers ?? {});
+		framePolicyCache.set(target.origin, policy);
+		return policy;
+	} catch {
+		return { blocked: false };
+	}
+}
+
+/**
  * Fetch a page for the browser view. Tries the native HTTP client first and
  * falls back to the configured CORS proxy, which is only needed when the direct
  * request is refused or the user has opted to always proxy.

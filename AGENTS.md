@@ -308,17 +308,20 @@ this codebase.
   fine and direct stays the default. Android WebView enforces both, so a
   refusing site renders Chromium's `ERR_BLOCKED_BY_RESPONSE` error page inside
   the frame. `view.ts` therefore defaults to proxy mode when `Platform.isMobile`.
-- **A refused embed cannot be detected.** A blocked frame and an allowed
-  cross-origin frame are observationally identical from the host: both fire
-  `load` in ~100 ms, both expose `contentDocument === null` and
-  `contentWindow.length === 0`, and no `securitypolicyviolation` event or
-  resource-timing gap distinguishes them. A header preflight cannot help either:
-  Obsidian's `requestUrl` strips `X-Frame-Options` outright and drops the
-  `frame-ancestors` directive from `Content-Security-Policy` (a CSP of
-  `default-src 'self'; frame-ancestors 'none'; img-src *` comes back as
-  `default-src 'self'; img-src *`). There is no reliable pre-check, which is why
-  mobile defaults to the proxy instead of probing. Do not reintroduce
-  DOM-sniffing checks or a framing-header preflight.
+- **A refused embed cannot be detected from the frame, so it is preflighted by
+  header.** A blocked frame and an allowed cross-origin frame are observationally
+  identical from the host: both fire `load` in ~100 ms, both expose
+  `contentDocument === null` and `contentWindow.length === 0`, and no
+  `securitypolicyviolation` event or resource-timing gap distinguishes them.
+  `probeFramePolicy` (`src/proxy.ts`) instead reads `X-Frame-Options` /
+  CSP `frame-ancestors` from the response through `requestUrl`, and
+  `mountRenderer` switches to the proxy when the site refuses framing — without
+  it the frame shows Chromium's `ERR_BLOCKED_BY_RESPONSE` and looks dead. Probe
+  with **GET**, not HEAD: some servers (news.ycombinator.com) send
+  `X-Frame-Options: DENY` only on a real navigation, so a HEAD-only check misses
+  them. Results are cached per origin and a failed probe is treated as frameable,
+  so the direct path still gets its chance. Do not replace this with DOM sniffing
+  of the frame; that genuinely cannot work.
 - **Proxied pages run their own scripts by default** (`runScripts`, the "Run
   page scripts" setting). The proxy frame already has `allow-scripts`, so
   blocking was a privacy choice, not a technical limit — and it left every
