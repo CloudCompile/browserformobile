@@ -2,6 +2,7 @@ import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
 import { DEFAULT_SETTINGS, BrowserSettingTab, type BrowserSettings } from './settings';
 import { BrowserStore } from './store';
 import type { BrowserData } from './types';
+import { DEFAULT_SEARCH_TEMPLATE, LEGACY_SEARCH_TEMPLATE } from './utils';
 import { BrowserView, VIEW_TYPE_BROWSER } from './view';
 
 interface PersistedShape extends Partial<BrowserData> {
@@ -198,6 +199,11 @@ export default class BrowserPlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const raw = (await this.loadData()) as PersistedShape | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, raw?.settings ?? {});
+		// Move the old JS-app search URL to the server-rendered endpoint; a
+		// user-chosen engine is left untouched.
+		if (this.settings.searchTemplate === LEGACY_SEARCH_TEMPLATE) {
+			this.settings.searchTemplate = DEFAULT_SEARCH_TEMPLATE;
+		}
 		this.browserData = raw ?? {};
 	}
 

@@ -338,13 +338,27 @@ function readProxyPayload(
 	};
 }
 
+/**
+ * Identify as a real browser. DuckDuckGo and others serve an anti-bot
+ * challenge instead of results when a request arrives without a User-Agent, so
+ * every fetch — page loads and the framing preflight — carries a browser UA and
+ * the `Sec-Fetch` navigation headers a top-level document request would send.
+ */
+const BROWSER_USER_AGENT =
+	'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
 function buildHeaders(
 	target: URL,
 	options: ProxyRequestOptions,
 ): Record<string, string> {
 	const headers: Record<string, string> = {
+		'User-Agent': BROWSER_USER_AGENT,
 		Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
 		'Accept-Language': 'en-US,en;q=0.9',
+		'Sec-Fetch-Dest': 'document',
+		'Sec-Fetch-Mode': 'navigate',
+		'Sec-Fetch-Site': 'none',
+		'Upgrade-Insecure-Requests': '1',
 	};
 	if (!options.ignoreCookies && options.cookies && options.cookies.length > 0) {
 		const cookie = cookieHeaderFor(target, options.cookies);

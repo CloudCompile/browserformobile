@@ -1,6 +1,19 @@
 /** Pure helpers with no Obsidian or DOM dependencies. */
 
-export const DEFAULT_SEARCH_TEMPLATE = 'https://duckduckgo.com/?q=%s';
+/**
+ * The server-rendered DuckDuckGo endpoint, not the JavaScript app at
+ * `duckduckgo.com/?q=`. Search results are fetched through the proxy, where the
+ * SPA shell renders empty and is far heavier; this endpoint returns usable
+ * result markup directly.
+ */
+export const DEFAULT_SEARCH_TEMPLATE = 'https://html.duckduckgo.com/html/?q=%s';
+
+/**
+ * The pre-1.0.6 default. The JavaScript app at this address renders empty when
+ * fetched through the proxy, so stored settings still pointing here are moved to
+ * the server-rendered endpoint. A user-chosen search engine is left alone.
+ */
+export const LEGACY_SEARCH_TEMPLATE = 'https://duckduckgo.com/?q=%s';
 
 export function generateId(): string {
 	const cryptoObj = typeof crypto !== 'undefined' ? crypto : undefined;
