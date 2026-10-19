@@ -1,4 +1,6 @@
 import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
+import { DownloadManager, type DownloaderOptions } from './downloader';
+import { DownloadModal, type DownloadModalOptions } from './downloadModal';
 import { DEFAULT_SETTINGS, BrowserSettingTab, type BrowserSettings } from './settings';
 import { BrowserStore } from './store';
 import type { BrowserData } from './types';
@@ -12,8 +14,10 @@ interface PersistedShape extends Partial<BrowserData> {
 export default class BrowserPlugin extends Plugin {
 	settings!: BrowserSettings;
 	store!: BrowserStore;
+	downloader!: DownloadManager;
 
 	private browserData: Partial<BrowserData> = {};
+	private downloadModal: DownloadModal | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -23,10 +27,18 @@ export default class BrowserPlugin extends Plugin {
 		});
 		this.store.load(this.browserData);
 
+		this.downloader = new DownloadManager(this.app, this.downloaderOptions(), () => {
+			this.downloadModal?.refresh();
+		});
+
 		this.registerView(VIEW_TYPE_BROWSER, (leaf: WorkspaceLeaf) => new BrowserView(leaf, this));
 
 		this.addRibbonIcon('globe', 'Open browser', () => {
 			void this.activateView();
+		});
+
+		this.addRibbonIcon('download', 'Download anime', () => {
+			this.openDownloader();
 		});
 
 		this.registerCommands();
@@ -39,6 +51,71 @@ export default class BrowserPlugin extends Plugin {
 
 	onunload(): void {
 		this.store.dispose();
+		this.downloader.dispose();
+	}
+
+	/** Snapshot the persisted settings in the shape the download manager wants. */
+	downloaderOptions(): DownloaderOptions {
+		return {
+			apiBase: this.settings.animeApiBase,
+			quality: this.settings.downloadQuality,
+			format: this.settings.downloadFormat,
+			segmentConcurrency: this.settings.downloadSegmentConcurrency,
+			maxConcurrentJobs: this.settings.downloadMaxConcurrentJobs,
+			filenameTemplate: this.settings.downloadFilenameTemplate,
+			destination: {
+				external: this.settings.downloadExternal,
+				folder: this.settings.downloadFolder,
+			},
+		};
+	}
+
+	openDownloader(): void {
+		if (this.downloadModal) {
+			this.downloadModal.close();
+			this.downloadModal = null;
+		}
+		const modal = new DownloadModal(
+			this.app,
+			this.downloader,
+			{
+				apiBase: this.settings.animeApiBase,
+				quality: this.settings.downloadQuality,
+				format: this.settings.downloadFormat,
+				folder: this.settings.downloadFolder,
+				external: this.settings.downloadExternal,
+				filenameTemplate: this.settings.downloadFilenameTemplate,
+				segmentConcurrency: this.settings.downloadSegmentConcurrency,
+				maxConcurrentJobs: this.settings.downloadMaxConcurrentJobs,
+			},
+			{
+				onOptionsChanged: (patch) => {
+					void this.applyDownloadOptions(patch);
+				},
+			},
+		);
+		this.downloadModal = modal;
+		modal.open();
+	}
+
+	/** Persist options changed from the download modal and refresh the manager. */
+	private async applyDownloadOptions(patch: Partial<DownloadModalOptions>): Promise<void> {
+		if (patch.quality !== undefined) this.settings.downloadQuality = patch.quality;
+		if (patch.format !== undefined) this.settings.downloadFormat = patch.format;
+		if (patch.apiBase !== undefined) this.settings.animeApiBase = patch.apiBase;
+		if (patch.segmentConcurrency !== undefined) {
+			this.settings.downloadSegmentConcurrency = patch.segmentConcurrency;
+		}
+		if (patch.maxConcurrentJobs !== undefined) {
+			this.settings.downloadMaxConcurrentJobs = patch.maxConcurrentJobs;
+		}
+		if (patch.filenameTemplate !== undefined) {
+			this.settings.downloadFilenameTemplate = patch.filenameTemplate;
+		}
+		if (patch.folder !== undefined) this.settings.downloadFolder = patch.folder;
+		if (patch.external !== undefined) this.settings.downloadExternal = patch.external;
+		await this.saveSettings();
+		this.downloader.setOptions(this.downloaderOptions());
 	}
 
 	private registerCommands(): void {
@@ -167,6 +244,14 @@ export default class BrowserPlugin extends Plugin {
 			name: 'Clear browsing data',
 			callback: () => {
 				void this.withView((view) => view.clearBrowsingData());
+			},
+		});
+
+		this.addCommand({
+			id: 'open-anime-downloader',
+			name: 'Open anime downloader',
+			callback: () => {
+				this.openDownloader();
 			},
 		});
 	}

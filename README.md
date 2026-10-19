@@ -49,6 +49,68 @@ mobile. If a site needs a real engine, use **Open in system browser**.
 - A cookie jar that proxied pages can read and write, with a manager to inspect,
   export, and clear cookies per site.
 - Responsive, touch-friendly layout built for narrow screens.
+- An anime downloader: search a catalogue, pick episodes, and save them to disk.
+
+## Anime downloader
+
+The downloader is a separate tool from the browser. Open it from the download
+ribbon icon or the **Open anime downloader** command.
+
+Search for a series, pick it, then choose episodes. You can select all, select
+none, invert the selection, skip filler, or add a numeric range such as 12–24.
+Downloads run in the background and keep going if you close the window.
+
+Each episode is fetched from the stream catalogue, its quality variants are read
+from the playlist, and the closest one to your preferred quality is downloaded.
+
+### Quality
+
+Streams are **720p only** in practice. Every series and server probed returned a
+single 1280×720 variant, so the quality setting picks the closest match rather
+than promising a resolution the source does not have. Requesting 1080p or 480p
+still downloads the 720p stream.
+
+### Output format
+
+- **MP4** produces one playable file. Converting the stream needs the whole
+  episode in memory at once, which is about 100 MB per episode.
+- **TS** writes the raw stream straight to disk, a segment at a time, so memory
+  stays low. The result plays in most players but is not an MP4.
+
+On mobile, prefer **TS** for long series.
+
+### Where files are saved
+
+On mobile, files are written to a folder **inside your vault**. This is not a
+preference: Obsidian's mobile app has no access to absolute paths, and Android
+11 and later blocks writes to an SD card unless the app holds
+`MANAGE_EXTERNAL_STORAGE`, which Obsidian does not request. A plugin therefore
+cannot write to an SD card on Android.
+
+On desktop you can turn on **Save outside the vault** and give an absolute path,
+such as a mounted card. That option is hidden where it cannot work.
+
+Because downloads land in the vault, they sync with it if you sync your vault.
+An SD card is a better home for a large library, but only the desktop app can
+write there.
+
+### Download settings
+
+- **Anime API endpoint** — the catalogue used for search and streams.
+- **Download quality** — preferred height; the closest available is used.
+- **Download format** — MP4 or TS, as above.
+- **Download folder** — where files go, relative to the vault.
+- **Save outside the vault** — desktop only; write to an absolute path.
+- **Filename template** — `{series}`, `{ep}`, `{ep:02}`, `{title}`, `{ext}`.
+- **Parallel segments** — segments fetched at once per episode. The stream CDN
+  starts refusing requests above four, so the default is 3.
+- **Parallel episodes** — episodes downloaded at once. The default is 2.
+
+### Legal
+
+The downloader is pointed at a third-party catalogue of copyrighted material.
+Downloading from it may be illegal where you live, and using it is your
+responsibility. The plugin does not host, index, or vouch for any content.
 
 ## Install
 
@@ -108,7 +170,7 @@ analytics on those pages run; turn off **Run page scripts** to block them.
 All actions are available from the command palette: open browser, new tab, close
 tab, next and previous tab, back, forward, reload, focus address bar, toggle
 proxy rendering, bookmark page, open bookmarks, open history, manage cookies, go
-home, and clear browsing data.
+home, clear browsing data, and open the anime downloader.
 
 ## Development
 

@@ -374,3 +374,66 @@ There is no committed test runner. Ad-hoc harnesses were built under
 `jsdom`, covering: utils, cookie parsing/merge/prune, TabStore navigation,
 HTML rewriting, the injected bridge, the proxy fetch/fallback logic, and the
 full view with a DOM.
+
+## Anime downloader — project notes
+
+Added in 1.1.0. A separate feature from the browser view; shares only the
+settings object and the plugin instance.
+
+### Architecture
+
+- `src/animeApi.ts` — client for `animeapi.cjhauser.me` (default
+  `DEFAULT_API_BASE`). Three endpoints, no schema endpoint: `/api/search?keyword=`
+  (`q=` is silently ignored), `/api/episodes/<seriesId>`, and
+  `/api/stream?id=<urlencoded episode id>` where ids look like
+  `naruto-76396?ep=76396_1`. Also `parseMasterPlaylist`, `selectVariant`, and
+  `STREAM_REFERER`.
+- `src/hls.ts` — playlist parsing and the segment fetcher. `requestUrl`-based
+  (the CDN's CORS allowlist is `https://play.echovideo.ru` only, so page `fetch`
+  fails). `downloadSegments` buffers; `downloadSegmentsStreaming` hands segments
+  to a callback in playlist order for low-memory `.ts` writes. Retry with
+  exponential backoff; 408/425/429/5xx are transient.
+- `src/transmux.ts` — MPEG-TS to fragmented MP4 via mux.js, plus `patchDuration`.
+- `src/destination.ts` — `VaultDestination` and `ExternalDestination`, filename
+  sanitising, and `externalStorageAvailable()`.
+- `src/downloader.ts` — `DownloadManager`: job queue, concurrency, cancel,
+  progress, filename template.
+- `src/downloadModal.ts` — the three-stage modal (search, episodes, queue).
+- `src/mux.d.ts` — hand-written types for mux.js, which ships none.
+
+### Key constraints
+
+- **Streams are 720p only.** Every series and server probed returned a single
+  `1280x720` variant. `selectVariant` picks the closest height so a 1080p request
+  still downloads; the UI must not imply higher quality exists.
+- **The API's `filler` field is always `false`** and `dubbed` is unreliable.
+  The filters are wired but effectively inert. Do not present them as accurate.
+- **The CDN rate-limits above ~4 parallel segment requests** (HTTP 429).
+  Default `downloadSegmentConcurrency` is 3; do not raise the default.
+- **`requestUrl` has no timeout option.** `withTimeout` in `hls.ts` races the
+  promise against a timer; the request itself is not cancelled.
+- **mux.js only emits on `flush()`**, so MP4 requires the whole episode in
+  memory (~100 MB). Per-segment transmux was tested and rejected: each segment's
+  `tfdt` restarts at 0, which breaks playback. Carrying `baseMediaDecodeTime`
+  across segments also failed (non-monotonic across the two tracks). TS output
+  streams instead and is the mobile default recommendation.
+- **mux.js writes the "unknown duration" sentinel into `mvhd`** and emits no
+  `mehd`, so some players will not seek. `patchDuration` writes the real duration
+  (timescale 90000) and inserts a version 1 `mehd`.
+- **Mobile cannot write outside the vault.** `getBasePath()` is desktop-only and
+  Android 11+ needs `MANAGE_EXTERNAL_STORAGE` to write to an SD card, which
+  Obsidian does not hold. Vault folder is the only cross-platform location;
+  external paths are desktop-only and the toggle is hidden when unavailable.
+- **Vault writes use `adapter.appendBinary`** (available since app 1.12.3; this
+  plugin requires 1.13.0), so `.ts` never buffers the whole episode.
+
+### Verification
+
+No committed test runner. Ad-hoc harnesses live in `/tmp/bfmdl/harness/`:
+`e2e.ts` exercises the API client, playlist parsing, template rendering, ordered
+streaming, and transmux against the live API; `manager.ts` runs the real
+`DownloadManager` against a filesystem-backed fake vault adapter and checks file
+contents, duplicate refusal, cancel cleanup, and the patched `mvhd` duration.
+Bundle them with the repo's local esbuild
+(`node_modules/.bin/esbuild ... --alias:obsidian=./obsidian-stub.ts`) and a
+`window` shim; `npx esbuild` hangs in this environment.
