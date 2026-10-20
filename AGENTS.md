@@ -495,15 +495,24 @@ path.
   still downloads; the UI must not imply higher quality exists.
 - **The API's `filler` field is always `false`** and `dubbed` is unreliable.
   The filters are wired but effectively inert. Do not present them as accurate.
-- **The CDN's rate limit is not a fixed "four parallel requests".** Benchmarked
-  against the live CDN (48-segment runs, and a sustained 96-request run): 3 → 11
-  MB/s, 6 → 22 MB/s, 8 → 30 MB/s, 16 → 48 MB/s, 24 → 74 MB/s, with **no 429 at
-  any level**. The default is 6, but concurrency is a *target* rather than a
-  fixed pool: `downloadSegmentsStreaming` drops it by one on a 429 and holds it
-  down for a cooldown (`RATE_LIMIT_COOLDOWN_MS`) before creeping back up, so
-  raising the setting is safe even if the limit returns. The old "above four"
-  note did not reproduce; do not treat 4 as a hard ceiling, but do not remove the
-  backoff — the limit is per-IP and may return under load.
+- **The CDN rate limit is real and roughly per-IP, and high concurrency makes
+  downloads *slower*, not faster.** Measured against the live CDN (a 138-segment
+  episode, real `downloadSegmentsStreaming` via a `requestUrl`→`fetch` stub):
+  starting concurrency 3 → ~9 s, 4 → ~12 s, 6 → ~20 s, 8 → ~20 s, **12 → ~242 s**.
+  The CDN starts answering 429 above roughly four in flight, and a naive fixed
+  pool spends the whole run retrying. An earlier note here claimed "no 429 at any
+  level" and throughput climbing to 24 workers; that does **not** reproduce and
+  the numbers almost certainly counted 429 responses as throughput. Do not trust
+  a single sweep — the limit is per-IP, so probe with a cooldown between runs and
+  check the response status, not just bytes.
+  The gate in `downloadSegmentsStreaming` is a *target*, not a fixed pool: on a
+  429 it **halves** the target and sets `ceiling = target - 1`, then creeps back
+  up one worker per `RATE_LIMIT_COOLDOWN_MS` and stops at the ceiling. Halving
+  converges in a few rounds where the old one-step shed took minutes, and the
+  ceiling is what stops the pool oscillating back into the limit. The default
+  `downloadSegmentConcurrency` is 6; anything above ~6 is now safe (it no longer
+  stalls) but rarely faster. Keep the backoff — the limit is per-IP and moves
+  with load.
 - **`requestUrl` has no timeout option.** `withTimeout` in `hls.ts` races the
   promise against a timer; the request itself is not cancelled.
 - **mux.js only emits on `flush()`.** Flushing once at the end materialises the
@@ -596,12 +605,26 @@ path.
   by renaming `.part` into place (sidecar removed only after the rename
   succeeds); MP4 writes the final file and only then discards the stage.
 - **A throttled run is parked, not failed.** A 429 that outlasts the per-segment
-  retries (`RateLimitError` from `hls.ts`) moves the job to `paused`, to the
-  bottom of `jobs`, and a timer re-queues it after `RATE_LIMIT_RETRY_MS`. It keeps
-  its `.part`, so the retry resumes instead of restarting, and other episodes run
-  while it waits. `rateLimitRetries` caps this at ten consecutive parks so a dead
-  stream cannot retry forever. The parked timer is tracked in `retryTimers` and
-  cleared in `dispose`, otherwise an unload leaves it to fire into a dead view.
+  retries (`RateLimitError` from `hls.ts`) moves the job to `waiting` — a status
+  distinct from the user's own `paused` — to the bottom of `jobs`, and a timer
+  re-queues it after a wait that doubles per park up to `RATE_LIMIT_MAX_WAIT_MS`.
+  It keeps its `.part`, so the retry resumes instead of restarting, and other
+  episodes run while it waits. `rateLimitRetries` caps this at 12 consecutive
+  parks; the job then surfaces as `failed` but the partial is kept, so Resume
+  still continues it. A plain (non-rate-limit) failure is retried up to
+  `MAX_AUTO_RETRIES` times on its own with a growing delay, but only when
+  `DownloadError.retryable` is set — validation and "already exists" failures are
+  deterministic and would only spin. The parked timer is tracked in `retryTimers`
+  and cleared in `dispose`, otherwise an unload leaves it to fire into a dead view.
+- **A job list does not survive a restart; the staging files do.** On mobile the
+  app is killed in the background constantly, so `DownloadManager.restore()`
+  rebuilds the queue from `.part.meta` sidecars found by `destination.list()`,
+  surfacing each as failed-but-resumable. The sidecar carries the episode number
+  and title (v3) so a restored job can name itself without an API call; v2
+  sidecars are still read (label falls back to the id), v1 is discarded. A
+  staging file *longer* than its sidecar's byte count is a torn batch from a
+  crash between append and sidecar write, so it is truncated back rather than
+  thrown away; a shorter one is not recoverable and is discarded.
 - **The queue updates in place, it does not re-render.** Progress ticks arrive
   every 150 ms; rebuilding the job list each time stalls the window on a phone.
   `tickQueue` patches the status text and progress bar of existing rows and falls

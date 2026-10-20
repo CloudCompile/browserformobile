@@ -9,6 +9,7 @@ import {
 import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat } from './downloader';
 import { externalStorageAvailable } from './destination';
 import { repairFolder } from './doctor';
+import { ConfirmModal } from './modals';
 
 export interface DownloadModalOptions {
         apiBase: string;
@@ -19,6 +20,8 @@ export interface DownloadModalOptions {
         filenameTemplate: string;
         segmentConcurrency: number;
         maxConcurrentJobs: number;
+        /** Ask before a destructive action (cancel/discard losing progress). */
+        confirmDestructiveActions: boolean;
 }
 
 export interface DownloadModalCallbacks {
@@ -78,6 +81,20 @@ export class DownloadModal extends Modal {
                 this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-dl-body' });
                 this.statusEl = this.contentEl.createDiv({ cls: 'bfm-dl-status' });
                 this.render();
+                // Recover downloads left behind by a previous session. On mobile the
+                // app is killed in the background constantly, so this is the normal
+                // way a queue comes back, not an edge case.
+                void this.restoreInterrupted();
+        }
+
+        private async restoreInterrupted(): Promise<void> {
+                const restored = await this.manager.restore();
+                if (restored > 0) {
+                        new Notice(
+                                `Recovered ${restored} interrupted download${restored === 1 ? '' : 's'}. Resume to continue.`,
+                        );
+                        this.render();
+                }
         }
 
         private setFullscreen(full: boolean): void {
@@ -487,18 +504,40 @@ export class DownloadModal extends Modal {
                                 text: `Resume all (${resumable.length})`,
                         });
                         resumeAll.addEventListener('click', () => {
-                                this.manager.enqueue({
-                                        seriesTitle: resumable[0]?.seriesTitle ?? '',
-                                        episodes: resumable.map((job) => job.episode),
-                                });
+                                for (const job of resumable) this.manager.resume(job.id);
                                 new Notice(`Resuming ${resumable.length} download${resumable.length === 1 ? '' : 's'}.`);
+                                this.render();
+                        });
+                }
+                const paused = this.manager.pausedJobs;
+                if (paused.length > 0) {
+                        const resumePaused = actions.createEl('button', {
+                                cls: 'mod-cta',
+                                text: `Resume paused (${paused.length})`,
+                        });
+                        resumePaused.addEventListener('click', () => {
+                                for (const job of paused) this.manager.resume(job.id);
                                 this.render();
                         });
                 }
                 const cancelAll = actions.createEl('button', { text: 'Cancel all' });
                 cancelAll.addEventListener('click', () => {
-                        this.manager.cancelAll();
-                        this.render();
+                        const working = this.manager.jobs.filter(
+                                (job) => job.partialFound && job.status !== 'done',
+                        ).length;
+                        const run = (): void => {
+                                this.manager.cancelAll();
+                                this.render();
+                        };
+                        if (working > 0 && this.options.confirmDestructiveActions) {
+                                new ConfirmModal(
+                                        this.app,
+                                        `Cancel every download? ${working} unfinished download${working === 1 ? '' : 's'} will lose their progress.`,
+                                        run,
+                                ).open();
+                                return;
+                        }
+                        run();
                 });
                 const clear = actions.createEl('button', { text: 'Clear finished' });
                 clear.addEventListener('click', () => {
@@ -523,14 +562,50 @@ export class DownloadModal extends Modal {
                 });
                 const status = head.createSpan({ cls: 'bfm-dl-job-status', text: describeProgress(job) });
                 if (job.status === 'failed') status.addClass('is-error');
-                if (job.status === 'paused') status.addClass('is-paused');
-                if (job.status === 'running' || job.status === 'queued' || job.status === 'paused') {
+                if (job.status === 'paused' || job.status === 'waiting') status.addClass('is-paused');
+                if (job.status === 'running' || job.status === 'queued' || job.status === 'waiting') {
+                        // A running download can be paused to keep its progress; a
+                        // queued one is simply pulled back out of the queue.
+                        const pause = head.createEl('button', { cls: 'bfm-dl-job-cancel' });
+                        setIcon(pause, 'pause');
+                        pause.setAttribute('title', 'Pause');
+                        pause.addEventListener('click', () => {
+                                this.manager.pause(job.id);
+                                this.render();
+                        });
+                }
+                if (job.status === 'paused') {
+                        const play = head.createEl('button', { cls: 'bfm-dl-job-cancel' });
+                        setIcon(play, 'play');
+                        play.setAttribute('title', 'Resume');
+                        play.addEventListener('click', () => {
+                                this.manager.resume(job.id);
+                                this.render();
+                        });
+                }
+                if (
+                        job.status === 'running' ||
+                        job.status === 'queued' ||
+                        job.status === 'paused' ||
+                        job.status === 'waiting'
+                ) {
                         const cancel = head.createEl('button', { cls: 'bfm-dl-job-cancel' });
                         setIcon(cancel, 'x');
                         cancel.setAttribute('title', 'Cancel');
                         cancel.addEventListener('click', () => {
-                                this.manager.cancel(job.id);
-                                this.render();
+                                const run = (): void => {
+                                        this.manager.cancel(job.id);
+                                        this.render();
+                                };
+                                if (job.partialFound && job.resumeSegments > 0 && this.options.confirmDestructiveActions) {
+                                        new ConfirmModal(
+                                                this.app,
+                                                `Cancel this download? The ${job.resumeSegments} segments already saved will be deleted.`,
+                                                run,
+                                        ).open();
+                                        return;
+                                }
+                                run();
                         });
                 }
                 if (job.total && job.total > 0 && job.completed !== null && job.status !== 'done') {
@@ -588,13 +663,24 @@ export class DownloadModal extends Modal {
                 info.createSpan({ cls: 'bfm-dl-resume-text', text: `${saved} — resume continues from there.` });
                 const resume = info.createEl('button', { cls: 'mod-cta', text: 'Resume' });
                 resume.addEventListener('click', () => {
-                        this.manager.enqueue({ seriesTitle: job.seriesTitle, episodes: [job.episode] });
+                        this.manager.resume(job.id);
                         new Notice(`Resuming ${job.seriesTitle} · Episode ${job.episode.number}.`);
                         this.render();
                 });
                 const discard = info.createEl('button', { text: 'Discard' });
                 discard.addEventListener('click', () => {
-                        void this.manager.discard(job.id).then(() => this.render());
+                        const run = (): void => {
+                                void this.manager.discard(job.id).then(() => this.render());
+                        };
+                        if (this.options.confirmDestructiveActions) {
+                                new ConfirmModal(
+                                        this.app,
+                                        `Discard this download? The ${job.resumeSegments} segments already saved will be deleted.`,
+                                        run,
+                                ).open();
+                                return;
+                        }
+                        run();
                 });
         }
 
@@ -637,12 +723,14 @@ export class DownloadModal extends Modal {
         private renderStatus(): void {
                 this.statusEl.empty();
                 const active = this.manager.activeCount;
+                const waiting = this.manager.waitingJobs.length;
                 const paused = this.manager.pausedJobs.length;
                 const done = this.manager.jobs.filter((job) => job.status === 'done').length;
                 const failed = this.manager.jobs.filter((job) => job.status === 'failed').length;
                 const parts: string[] = [];
                 if (active > 0) parts.push(`${active} active`);
-                if (paused > 0) parts.push(`${paused} waiting on rate limit`);
+                if (waiting > 0) parts.push(`${waiting} waiting to retry`);
+                if (paused > 0) parts.push(`${paused} paused`);
                 if (done > 0) parts.push(`${done} done`);
                 if (failed > 0) parts.push(`${failed} failed`);
                 if (this.options.external && externalStorageAvailable()) {

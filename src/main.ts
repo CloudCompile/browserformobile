@@ -201,6 +201,7 @@ export default class BrowserPlugin extends Plugin {
 				filenameTemplate: this.settings.downloadFilenameTemplate,
 				segmentConcurrency: this.settings.downloadSegmentConcurrency,
 				maxConcurrentJobs: this.settings.downloadMaxConcurrentJobs,
+				confirmDestructiveActions: this.settings.confirmDestructiveActions,
 			},
 			{
 				onOptionsChanged: (patch) => {

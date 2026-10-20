@@ -50,7 +50,19 @@ export interface DownloadOptions {
         resumeBytes?: number;
 }
 
-export class DownloadError extends Error {}
+/**
+ * A download failed. `retryable` marks a failure the queue should try again on
+ * its own: a dropped connection or a flaky server. Validation failures and
+ * "already exists" are not retryable, so retrying them would only spin.
+ */
+export class DownloadError extends Error {
+        readonly retryable: boolean;
+
+        constructor(message: string, retryable = false) {
+                super(message);
+                this.retryable = retryable;
+        }
+}
 
 /**
  * The CDN is rate limiting us (HTTP 429), including after the retries were
@@ -91,7 +103,7 @@ function backoffMs(attempt: number): number {
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
         let timer: number | undefined;
         const timeout = new Promise<never>((_resolve, reject) => {
-                timer = window.setTimeout(() => reject(new DownloadError('The request timed out.')), ms);
+                timer = window.setTimeout(() => reject(new DownloadError('The request timed out.', true)), ms);
         });
         try {
                 return await Promise.race([promise, timeout]);
@@ -212,7 +224,7 @@ async function fetchSegment(
                 // The whole run is throttled; the queue can wait and try again.
                 throw new RateLimitError(`The server is rate limiting downloads (HTTP 429).`);
         }
-        throw new DownloadError(`A segment failed after ${MAX_ATTEMPTS} attempts: ${detail}`);
+        throw new DownloadError(`A segment failed after ${MAX_ATTEMPTS} attempts: ${detail}`, true);
 }
 
 /**
@@ -268,25 +280,33 @@ export async function downloadSegmentsStreaming(
         const workers = Math.max(1, Math.min(options.concurrency, total - resumeFrom));
 
         /**
-         * Concurrency is a target rather than a fixed pool. A 429 drops it by one
-         * (the CDN is telling us we are asking too fast) and starts a cooldown
-         * during which parked workers wait, so the pool stays low long enough for
-         * the limit to clear before it recovers. Every worker re-checks the target
-         * before starting a segment, which is what makes the reduction take effect
-         * without cancelling in-flight requests.
+         * Concurrency is a target rather than a fixed pool. A 429 means the CDN is
+         * refusing us *right now*, so the target is halved and the level that just
+         * failed becomes a ceiling the pool may not climb back past. Measured
+         * against the live CDN, shedding one worker at a time converges far too
+         * slowly from a high setting, and every worker that keeps firing while it
+         * converges earns another 429 — a 138-segment episode took 242 s starting at
+         * 12 versus 9 s at 3. Recovery then creeps up one worker per cooldown and
+         * stops at the ceiling, so a run settles near the rate the CDN will actually
+         * sustain instead of oscillating into the limit.
          */
         const minWorkers = 1;
         let targetWorkers = workers;
+        let ceiling = workers;
         let recoverAt = 0;
         const onRateLimit = (): void => {
-                if (targetWorkers > minWorkers) targetWorkers--;
+                ceiling = Math.max(minWorkers, targetWorkers - 1);
+                targetWorkers = Math.max(minWorkers, Math.floor(targetWorkers / 2));
                 recoverAt = Date.now() + RATE_LIMIT_COOLDOWN_MS;
         };
         const gate = async (): Promise<void> => {
-                while (targetWorkers < workers) {
+                while (targetWorkers < ceiling) {
                         if (internal.signal.aborted) throw new DownloadError('Download cancelled.');
                         if (Date.now() >= recoverAt) {
                                 targetWorkers++;
+                                // Hold the next increment back by another cooldown so
+                                // the pool climbs gradually instead of all at once.
+                                recoverAt = Date.now() + RATE_LIMIT_COOLDOWN_MS;
                                 return;
                         }
                         await delay(GATE_POLL_MS, internal.signal);
@@ -335,20 +355,21 @@ export async function downloadSegmentsStreaming(
                 options.signal?.removeEventListener('abort', forwardAbort);
         }
 
-        // Let every write already in the chain finish, even after a failure, so
-        // the file and its sidecar are frozen and consistent before the caller
-        // records the resume point. The in-memory tail is dropped: it was never
-        // written, so a resume re-fetches it.
-        await writes.catch(() => undefined);
-        if (failure) throw failure;
-
+        // Freeze the write chain even if one write failed, so the file and its
+        // sidecar are consistent before the caller records the resume point.
+        writes = writes.catch(() => undefined);
+        // Write the contiguous tail even when the run was aborted or failed.
+        // Those segments are complete and in order, so keeping them saves a
+        // resume from re-fetching up to a whole batch; anything after a gap was
+        // never contiguous and is dropped as before.
         flushBuffer();
         await writes;
+        if (failure) throw failure;
 
         // Every segment must have reached the writer, or the file is short and
         // would play as a truncated episode with no indication why.
         if (nextToWrite !== total) {
-                throw new DownloadError(`Only ${nextToWrite} of ${total} segments were written.`);
+                throw new DownloadError(`Only ${nextToWrite} of ${total} segments were written.`, true);
         }
 }
 

@@ -61,17 +61,44 @@ const DURATION_TOLERANCE_SECONDS = 1;
  * instead of the download.
  */
 const RATE_LIMIT_RETRY_MS = 60_000;
+/** Longest a rate-limited job waits before being retried again. */
+const RATE_LIMIT_MAX_WAIT_MS = 15 * 60_000;
 /** Bounds the retry wait shown to the user, so a clock skew cannot hide it. */
-const MAX_RATE_LIMIT_RETRIES = 10;
+const MAX_RATE_LIMIT_RETRIES = 12;
 /**
  * Sidecar layout version. Bumped when the staging file's contents change shape:
  * v1 held the raw MPEG-TS stream for every format, v2 holds the converted MP4
- * for the MP4 format. An older sidecar is discarded rather than appended to,
- * which would corrupt the file.
+ * for the MP4 format. v3 adds the episode number and title so a queue restored
+ * after a restart can name a job without calling the API.
+ *
+ * The staging file's shape is unchanged from v2 to v3, so a v2 sidecar is still
+ * readable and is accepted rather than discarded — the only thing missing is the
+ * episode label, which falls back to the id. A v1 sidecar must be discarded:
+ * appending to it would corrupt the file.
  */
-const PARTIAL_VERSION = 2;
+const PARTIAL_VERSION = 3;
+/** Sidecar versions whose staging file this build can still append to. */
+const COMPATIBLE_PARTIAL_VERSIONS = new Set([2, 3]);
+/**
+ * How many times a job is retried automatically after a non-rate-limit failure
+ * before it is surfaced as failed. Mobile connectivity drops constantly and a
+ * drop mid-download used to strand the job until the user noticed and tapped
+ * Resume.
+ */
+const MAX_AUTO_RETRIES = 3;
+/** First automatic retry delay; doubles per attempt, capped below. */
+const AUTO_RETRY_BASE_MS = 4000;
+const AUTO_RETRY_MAX_MS = 60_000;
 
-export type JobStatus = 'queued' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled';
+export type JobStatus =
+        | 'queued'
+        | 'running'
+        | 'paused'
+        /** Parked by the queue waiting out a rate limit. Distinct from `paused`, which is the user's own pause. */
+        | 'waiting'
+        | 'done'
+        | 'failed'
+        | 'cancelled';
 
 export type OutputFormat = 'mp4' | 'ts';
 
@@ -110,6 +137,8 @@ export interface DownloadJob {
         retryAt: number | null;
         /** How many times the job has been parked for rate limiting. */
         rateLimitRetries: number;
+        /** How many times the job has been retried automatically after a plain failure. */
+        autoRetries: number;
         /** Timestamp and byte count of the last speed sample. */
         speedSampleAt?: number;
         speedSampleBytes?: number;
@@ -144,6 +173,10 @@ interface PartialState {
         durationSeconds: number;
         segments: number;
         bytes: number;
+        /** Episode number, so a restored job can name itself without the API. */
+        episodeNumber?: number;
+        /** Episode title, for the same reason. Absent in v2 sidecars. */
+        episodeTitle?: string;
 }
 
 function partialStatePath(finalPath: string): string {
@@ -154,7 +187,7 @@ function partialMetaPath(finalPath: string): string {
         return `${finalPath}${PART_META_SUFFIX}`;
 }
 
-/** Read a job's sidecar, or null when it is missing or unreadable. */
+/** Read a job's sidecar, or null when it is missing, unreadable, or too old. */
 async function readPartial(
         destination: Destination,
         finalPath: string,
@@ -163,7 +196,7 @@ async function readPartial(
         if (!raw) return null;
         try {
                 const parsed = JSON.parse(new TextDecoder().decode(raw)) as PartialState;
-                if (parsed.version !== PARTIAL_VERSION) return null;
+                if (!COMPATIBLE_PARTIAL_VERSIONS.has(parsed.version)) return null;
                 return parsed;
         } catch {
                 return null;
@@ -232,11 +265,12 @@ export class DownloadManager {
                                 existing &&
                                 (existing.status === 'queued' ||
                                         existing.status === 'running' ||
-                                        existing.status === 'paused')
+                                        existing.status === 'paused' ||
+                                        existing.status === 'waiting')
                         ) {
                                 continue;
                         }
-                        if (existing && existing.status === 'failed') {
+                        if (existing && (existing.status === 'failed' || existing.status === 'cancelled')) {
                                 existing.status = 'queued';
                                 existing.error = null;
                                 existing.startedAt = null;
@@ -246,6 +280,7 @@ export class DownloadManager {
                                 existing.resumed = false;
                                 existing.retryAt = null;
                                 existing.rateLimitRetries = 0;
+                                existing.autoRetries = 0;
                                 created.push(existing);
                                 continue;
                         }
@@ -272,6 +307,7 @@ export class DownloadManager {
                                 eta: null,
                                 retryAt: null,
                                 rateLimitRetries: 0,
+                                autoRetries: 0,
                         };
                         this.jobs.push(job);
                         created.push(job);
@@ -306,7 +342,11 @@ export class DownloadManager {
         cancel(jobId: string): void {
                 const job = this.jobs.find((entry) => entry.id === jobId);
                 if (!job) return;
-                if (job.status === 'queued' || job.status === 'paused') {
+                if (
+                        job.status === 'queued' ||
+                        job.status === 'paused' ||
+                        job.status === 'waiting'
+                ) {
                         job.status = 'cancelled';
                         job.retryAt = null;
                         job.finishedAt = Date.now();
@@ -316,9 +356,58 @@ export class DownloadManager {
                 this.controllers.get(jobId)?.abort();
         }
 
+        /**
+         * Hold a download without losing what it has fetched. The run is aborted
+         * the same way a cancel is, but the staging file is kept and the job stays
+         * resumable, so pausing is safe to do to save bandwidth or battery.
+         */
+        pause(jobId: string): void {
+                const job = this.jobs.find((entry) => entry.id === jobId);
+                if (!job) return;
+                if (job.status === 'queued' || job.status === 'waiting') {
+                        job.status = 'paused';
+                        job.retryAt = null;
+                        this.scheduleUpdate();
+                        return;
+                }
+                if (job.status !== 'running') return;
+                // Set the status before aborting: the run's catch block reads it to
+                // tell a pause from a cancel and keep the partial accordingly.
+                job.status = 'paused';
+                job.speed = null;
+                job.eta = null;
+                this.scheduleUpdate();
+                this.controllers.get(jobId)?.abort();
+        }
+
+        /**
+         * Put a job back in the queue. Covers the three states the queue offers to
+         * continue: paused by the user, parked waiting on a retry, and failed with
+         * a partial still on disk. A finished job is left alone — its file exists,
+         * so re-running it would only hit "already exists".
+         */
+        resume(jobId: string): void {
+                const job = this.jobs.find((entry) => entry.id === jobId);
+                if (!job) return;
+                if (job.status === 'running' || job.status === 'queued' || job.status === 'done') return;
+                job.status = 'queued';
+                job.error = null;
+                // A manual resume gets a fresh retry budget: the counters exist to
+                // stop the automatic paths looping, not to punish the user.
+                job.autoRetries = 0;
+                job.rateLimitRetries = 0;
+                this.scheduleUpdate();
+                this.pump();
+        }
+
         cancelAll(): void {
                 for (const job of this.jobs) {
-                        if (job.status === 'running' || job.status === 'queued' || job.status === 'paused') {
+                        if (
+                                job.status === 'running' ||
+                                job.status === 'queued' ||
+                                job.status === 'paused' ||
+                                job.status === 'waiting'
+                        ) {
                                 this.cancel(job.id);
                         }
                 }
@@ -340,7 +429,11 @@ export class DownloadManager {
 
         get activeCount(): number {
                 return this.jobs.filter(
-                        (job) => job.status === 'running' || job.status === 'queued' || job.status === 'paused',
+                        (job) =>
+                                job.status === 'running' ||
+                                job.status === 'queued' ||
+                                job.status === 'paused' ||
+                                job.status === 'waiting',
                 ).length;
         }
 
@@ -353,23 +446,36 @@ export class DownloadManager {
         }
 
         /**
+         * How long to wait before retrying a rate-limited job. The wait grows with
+         * each park so a sustained throttle is not hammered every minute forever,
+         * and is capped so a long block still gets retried within a session.
+         */
+        private rateLimitWaitMs(retries: number): number {
+                const wait = RATE_LIMIT_RETRY_MS * 2 ** Math.max(0, retries - 1);
+                return Math.min(wait, RATE_LIMIT_MAX_WAIT_MS);
+        }
+
+        /**
          * Move a rate-limited job to the bottom of the queue and schedule it to
          * run again. Failing the job instead would throw away a nearly complete
-         * download over a transient throttle, so it waits rather than dies.
+         * download over a transient throttle, so it waits rather than dies. Only
+         * after many consecutive parks does it surface as failed, and even then
+         * the partial is kept so Resume continues it.
          */
         private parkForRateLimit(job: DownloadJob): boolean {
                 job.rateLimitRetries++;
                 if (job.rateLimitRetries > MAX_RATE_LIMIT_RETRIES) {
                         job.status = 'failed';
-                        job.error = 'The server kept rate limiting the download. Try again later.';
+                        job.error = 'The server kept rate limiting the download. Resume continues where it stopped.';
                         job.retryAt = null;
                         return false;
                 }
-                job.status = 'paused';
+                job.status = 'waiting';
                 job.error = null;
                 job.speed = null;
                 job.eta = null;
-                job.retryAt = Date.now() + RATE_LIMIT_RETRY_MS;
+                const wait = this.rateLimitWaitMs(job.rateLimitRetries);
+                job.retryAt = Date.now() + wait;
                 // Re-queue behind everything else, so other episodes get their turn
                 // while this one waits out the throttle.
                 const index = this.jobs.indexOf(job);
@@ -378,17 +484,22 @@ export class DownloadManager {
                 this.scheduleUpdate();
                 const timer = window.setTimeout(() => {
                         this.retryTimers.delete(timer);
-                        if (job.status !== 'paused') return;
+                        if (job.status !== 'waiting') return;
                         job.retryAt = null;
                         job.status = 'queued';
                         this.scheduleUpdate();
                         this.pump();
-                }, RATE_LIMIT_RETRY_MS);
+                }, wait);
                 this.retryTimers.add(timer);
                 return true;
         }
 
-        /** Jobs waiting out a rate limit, oldest retry first. */
+        /** Jobs parked waiting out a rate limit, oldest retry first. */
+        get waitingJobs(): DownloadJob[] {
+                return this.jobs.filter((job) => job.status === 'waiting');
+        }
+
+        /** Jobs the user paused. */
         get pausedJobs(): DownloadJob[] {
                 return this.jobs.filter((job) => job.status === 'paused');
         }
@@ -403,7 +514,7 @@ export class DownloadManager {
                 job.startedAt = Date.now();
                 job.speed = null;
                 job.eta = null;
-                let parked = false;
+                let deferred = false;
                 const controller = new AbortController();
                 this.controllers.set(job.id, controller);
                 this.scheduleUpdate();
@@ -413,28 +524,40 @@ export class DownloadManager {
                         job.status = 'done';
                 } catch (error) {
                         if (controller.signal.aborted) {
-                                job.status = 'cancelled';
-                                // An explicit cancel abandons the download, so the
-                                // staging file and sidecar are removed rather than
-                                // left behind for a resume the user did not ask for.
-                                await this.forgetPartial(job);
+                                // A pause aborts the run but must keep the work, so
+                                // the status set by pause() decides which way to go.
+                                if (this.isPaused(job)) {
+                                        await this.markPartial(job);
+                                } else {
+                                        job.status = 'cancelled';
+                                        // An explicit cancel abandons the download, so
+                                        // the staging file and sidecar are removed
+                                        // rather than left for a resume the user did
+                                        // not ask for.
+                                        await this.forgetPartial(job);
+                                }
                         } else if (error instanceof RateLimitError) {
                                 // Keep whatever landed on disk: the retry resumes it.
                                 await this.markPartial(job);
-                                parked = this.parkForRateLimit(job);
+                                deferred = this.parkForRateLimit(job);
                         } else {
-                                job.status = 'failed';
-                                job.error = error instanceof Error ? error.message : String(error);
-                                // A failure leaves whatever landed on disk in place
-                                // so the queue can offer to continue it.
+                                // A dropped connection or a flaky server is usually
+                                // transient, so retry it a few times before showing a
+                                // failure. The partial is kept either way.
                                 await this.markPartial(job);
+                                if (this.scheduleAutoRetry(job, error)) {
+                                        deferred = true;
+                                } else {
+                                        job.status = 'failed';
+                                        job.error = error instanceof Error ? error.message : String(error);
+                                }
                         }
                 } finally {
-                        // A parked job is only waiting on a timer, so let the screen
+                        // A deferred job is only waiting on a timer, so let the screen
                         // sleep during the pause and re-acquire when it retries.
                         this.wakeLock.release();
-                        // A parked job has not finished; it is only waiting.
-                        if (!parked) job.finishedAt = Date.now();
+                        // A deferred job has not finished; it is only waiting.
+                        if (!deferred) job.finishedAt = Date.now();
                         job.speed = null;
                         job.eta = null;
                         this.controllers.delete(job.id);
@@ -442,6 +565,48 @@ export class DownloadManager {
                         this.scheduleUpdate();
                         this.pump();
                 }
+        }
+
+        /**
+         * Whether the user paused this job. Read through a method so the compiler
+         * does not narrow `status` to the values assigned earlier in `run`: the
+         * pause handler mutates it from outside that flow.
+         */
+        private isPaused(job: DownloadJob): boolean {
+                return job.status === 'paused';
+        }
+
+        /**
+         * Re-queue a job that failed for a reason that is likely transient, with a
+         * growing delay. Returns false when the failure is not retryable or the
+         * retries are spent, so the caller surfaces the failure instead. A job
+         * that has already made progress is always worth retrying: the partial
+         * means the retry costs only the remaining segments.
+         */
+        private scheduleAutoRetry(job: DownloadJob, error: unknown): boolean {
+                if (job.autoRetries >= MAX_AUTO_RETRIES) return false;
+                // A validation failure or "already exists" is deterministic; retrying
+                // it would spin for no reason.
+                if (error instanceof DownloadError && !error.retryable) return false;
+                job.autoRetries++;
+                const wait = Math.min(AUTO_RETRY_BASE_MS * 2 ** (job.autoRetries - 1), AUTO_RETRY_MAX_MS);
+                job.status = 'waiting';
+                job.error = error instanceof Error ? error.message : String(error);
+                job.retryAt = Date.now() + wait;
+                const index = this.jobs.indexOf(job);
+                if (index !== -1) this.jobs.splice(index, 1);
+                this.jobs.push(job);
+                this.scheduleUpdate();
+                const timer = window.setTimeout(() => {
+                        this.retryTimers.delete(timer);
+                        if (job.status !== 'waiting') return;
+                        job.retryAt = null;
+                        job.status = 'queued';
+                        this.scheduleUpdate();
+                        this.pump();
+                }, wait);
+                this.retryTimers.add(timer);
+                return true;
         }
 
         /**
@@ -526,7 +691,17 @@ export class DownloadManager {
                                 Math.abs(partial.durationSeconds - playlist.duration) <=
                                         DURATION_TOLERANCE_SECONDS;
                         const onDisk = await destination.size(partialStatePath(path));
-                        if (matches && onDisk === partial.bytes && partial.segments > 0) {
+                        // The sidecar is written after each batch, so a crash
+                        // between the append and that write leaves the staging
+                        // file longer than the recorded byte count. Those extra
+                        // bytes are a torn batch: cut them off rather than
+                        // discarding a download that may be almost complete. A
+                        // file *shorter* than recorded is not recoverable, so
+                        // that is still thrown away.
+                        if (matches && partial.segments > 0 && onDisk !== null && onDisk >= partial.bytes) {
+                                if (onDisk > partial.bytes) {
+                                        await destination.truncate(partialStatePath(path), partial.bytes);
+                                }
                                 resumeFrom = Math.min(partial.segments, playlist.segments.length);
                                 resumeBytes = partial.bytes;
                                 job.partialFound = true;
@@ -636,6 +811,8 @@ export class DownloadManager {
                         durationSeconds: playlist.duration,
                         segments,
                         bytes,
+                        episodeNumber: job.episode.number,
+                        episodeTitle: job.episode.title,
                 };
         }
 
@@ -821,11 +998,90 @@ export class DownloadManager {
                                         job.episode.id === episode.id &&
                                         (job.status === 'queued' ||
                                                 job.status === 'running' ||
-                                                job.status === 'paused'),
+                                                job.status === 'paused' ||
+                                                job.status === 'waiting'),
                         );
                         if (!active && !(await destination.exists(path))) missing.push(episode);
                 }
                 return missing;
+        }
+
+        /**
+         * Rebuild the queue from staging files left by an earlier session. The job
+         * list only lives in memory, and on mobile the app is killed in the
+         * background constantly, so without this an interrupted download vanishes
+         * from the UI even though its partial is still on disk. Restored jobs are
+         * shown as failed-but-resumable, which is exactly the state the queue's
+         * Resume action expects.
+         *
+         * Returns how many jobs were restored.
+         */
+        async restore(): Promise<number> {
+                const destination = this.destinationFor();
+                let entries: string[];
+                try {
+                        entries = await destination.list();
+                } catch {
+                        return 0;
+                }
+                let restored = 0;
+                for (const entry of entries) {
+                        if (!entry.endsWith(PART_META_SUFFIX)) continue;
+                        const finalPath = entry.slice(0, -PART_META_SUFFIX.length);
+                        if (!finalPath) continue;
+                        // A finished file alongside a stale sidecar means the run
+                        // got far enough to finalise; the sidecar is junk.
+                        if (await destination.exists(finalPath)) {
+                                await destination.remove(entry);
+                                continue;
+                        }
+                        const partial = await readPartial(destination, finalPath);
+                        if (!partial || partial.segments <= 0) continue;
+                        // Only a partial this build could append to is worth
+                        // restoring; a format change makes the bytes meaningless.
+                        if (partial.format !== this.options.format) continue;
+                        const onDisk = await destination.size(partialStatePath(finalPath));
+                        if (onDisk === null || onDisk < partial.bytes) continue;
+                        if (this.jobs.some((job) => job.episode.id === partial.episodeId)) continue;
+                        const episode: EpisodeSummary = {
+                                id: partial.episodeId,
+                                number: partial.episodeNumber ?? 0,
+                                title: partial.episodeTitle ?? '',
+                                filler: false,
+                                subbed: true,
+                                dubbed: false,
+                        };
+                        const job: DownloadJob = {
+                                id: generateId(),
+                                seriesTitle: partial.seriesTitle,
+                                episode,
+                                status: 'failed',
+                                completed: partial.segments,
+                                total: partial.totalSegments,
+                                bytes: partial.bytes,
+                                fileSize: null,
+                                filePath: destination.displayPath(finalPath),
+                                error: 'Interrupted before it finished.',
+                                startedAt: null,
+                                finishedAt: null,
+                                resumed: false,
+                                resumeSegments: partial.segments,
+                                resumeBytes: partial.bytes,
+                                partialFound: true,
+                                writtenSegments: partial.segments,
+                                writtenBytes: partial.bytes,
+                                speed: null,
+                                eta: null,
+                                retryAt: null,
+                                rateLimitRetries: 0,
+                                autoRetries: 0,
+                        };
+                        this.jobs.push(job);
+                        this.stagingPaths.set(job.id, finalPath);
+                        restored++;
+                }
+                if (restored > 0) this.scheduleUpdate();
+                return restored;
         }
 
         private scheduleUpdate(): void {
@@ -885,9 +1141,11 @@ export function describeProgress(job: DownloadJob): string {
         if (job.status === 'queued') return 'Queued';
         if (job.status === 'cancelled') return 'Cancelled';
         if (job.status === 'failed') return job.error ?? 'Failed';
-        if (job.status === 'paused') {
+        if (job.status === 'paused') return 'Paused';
+        if (job.status === 'waiting') {
                 const wait = job.retryAt ? Math.max(0, Math.round((job.retryAt - Date.now()) / 1000)) : 0;
-                return `Rate limited · retrying in ${formatDuration(wait)}`;
+                const reason = job.rateLimitRetries > 0 ? 'Rate limited' : 'Retrying';
+                return `${reason} · retrying in ${formatDuration(wait)}`;
         }
         if (job.status === 'done') return `Saved${job.fileSize ? ` · ${formatBytes(job.fileSize)}` : ''}`;
         if (job.total && job.completed !== null) {

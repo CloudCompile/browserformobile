@@ -1,4 +1,5 @@
 import { FileSystemAdapter, Platform, normalizePath } from 'obsidian';
+import { collectFiles } from './utils';
 
 /**
  * Where a download is written.
@@ -50,6 +51,17 @@ export interface Destination {
         remove(path: string): Promise<void>;
         /** Move a file, replacing any file already at the target. */
         rename(from: string, to: string): Promise<void>;
+        /**
+         * Cut a file back to `size` bytes. Used to reconcile a staging file with
+         * its sidecar after a crash: the sidecar only ever describes whole
+         * segments, so anything past its byte count is a torn write.
+         */
+        truncate(path: string, size: number): Promise<void>;
+        /**
+         * Every file under the destination folder, as paths relative to it. Used
+         * to find staging files left by an interrupted run.
+         */
+        list(): Promise<string[]>;
 }
 
 interface NodeRequire {
@@ -78,6 +90,11 @@ interface NodeFs {
                 unlink(path: string): Promise<void>;
                 access(path: string): Promise<void>;
                 open(path: string, flags: string): Promise<NodeFileHandle>;
+                readdir(
+                        path: string,
+                        options: { withFileTypes: true },
+                ): Promise<{ name: string; isFile(): boolean; isDirectory(): boolean }[]>;
+                truncate(path: string, length: number): Promise<void>;
         };
 }
 
@@ -341,6 +358,7 @@ export class VaultDestination implements Destination {
                         mkdir(path: string): Promise<void>;
                         exists(path: string): Promise<boolean>;
                         stat(path: string): Promise<{ size: number } | null>;
+                        list(path: string): Promise<{ files: string[]; folders: string[] }>;
                 },
                 private readonly folder: string,
                 /**
@@ -430,6 +448,32 @@ export class VaultDestination implements Destination {
                 // one must not block finalising a resumed download.
                 await this.remove(to);
                 await this.adapter.rename(this.fullPath(from), target);
+        }
+
+        async truncate(path: string, size: number): Promise<void> {
+                const normalized = this.fullPath(path);
+                if (this.disk) {
+                        await this.disk.fs.promises.truncate(joinPath(this.disk.basePath, normalized), size);
+                        return;
+                }
+                // The mobile adapter has no truncate, so the file is read back,
+                // cut, and rewritten. This only runs when a crash left a torn
+                // batch past the last recorded segment boundary, which is rare;
+                // it costs one extra whole-file pass, the same order as the
+                // adapter's own append.
+                const current = await this.size(path);
+                if (current === null || current <= size) return;
+                const data = await this.read(path);
+                if (!data) return;
+                await this.adapter.writeBinary(normalized, toArrayBuffer(data.subarray(0, size)));
+        }
+
+        async list(): Promise<string[]> {
+                const found = await collectFiles(this.adapter, this.folder, () => true);
+                const prefix = this.folder ? `${this.folder}/` : '';
+                return prefix
+                        ? found.map((path) => (path.startsWith(prefix) ? path.slice(prefix.length) : path))
+                        : found;
         }
 
         private async ensureParents(normalizedPath: string): Promise<void> {
@@ -522,6 +566,34 @@ export class ExternalDestination implements Destination {
                 const parent = target.slice(0, target.lastIndexOf('/'));
                 if (parent) await this.fs.promises.mkdir(parent, { recursive: true });
                 await this.fs.promises.rename(joinPath(this.folder, from), target);
+        }
+
+        async truncate(path: string, size: number): Promise<void> {
+                const full = joinPath(this.folder, path);
+                const current = await this.size(path);
+                if (current === null || current <= size) return;
+                await this.fs.promises.truncate(full, size);
+        }
+
+        async list(): Promise<string[]> {
+                const found: string[] = [];
+                const walk = async (current: string): Promise<void> => {
+                        let entries: { name: string; isFile(): boolean; isDirectory(): boolean }[];
+                        try {
+                                entries = await this.fs.promises.readdir(joinPath(this.folder, current), {
+                                        withFileTypes: true,
+                                });
+                        } catch {
+                                return;
+                        }
+                        for (const entry of entries) {
+                                const path = current ? `${current}/${entry.name}` : entry.name;
+                                if (entry.isDirectory()) await walk(path);
+                                else if (entry.isFile()) found.push(path);
+                        }
+                };
+                await walk('');
+                return found;
         }
 }
 

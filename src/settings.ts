@@ -58,8 +58,11 @@ export const DEFAULT_SETTINGS: BrowserSettings = {
 	downloadFolder: 'Anime',
 	downloadExternal: false,
 	downloadFilenameTemplate: '{series} - {ep:02} - {title}.{ext}',
-	// Measured at ~30 MB/s against the CDN with no 429s; the download drops
-	// this automatically if the server starts rate limiting.
+	// Benchmarked against the live CDN: throughput plateaus around four to six
+	// parallel segments and does not improve above that — the CDN starts
+	// answering 429 above roughly four in flight. The pool halves on a 429 and
+	// will not climb back past the level that failed, so a higher setting is now
+	// safe (it used to stall for minutes) but is rarely any faster.
 	downloadSegmentConcurrency: 6,
 	downloadMaxConcurrentJobs: 1,
 };
@@ -175,8 +178,8 @@ export class BrowserSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Parallel segments',
-				desc: 'Segments fetched at the same time per episode. Higher is faster; the download backs off on its own if the stream CDN starts refusing requests.',
-				control: { type: 'slider', key: 'downloadSegmentConcurrency', min: 1, max: 8, step: 1 },
+				desc: 'Segments fetched at the same time per episode. The stream CDN refuses requests above a few in flight, so higher is not faster — the download halves this on its own when it is refused.',
+				control: { type: 'slider', key: 'downloadSegmentConcurrency', min: 1, max: 16, step: 1 },
 			},
 			{
 				name: 'Parallel episodes',
