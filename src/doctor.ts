@@ -1,4 +1,5 @@
 import { patchDuration } from './transmux';
+import { collectFiles } from './utils';
 
 /**
  * Repairs already-downloaded MP4s.
@@ -182,21 +183,5 @@ export async function repairFolder(
 }
 
 async function collectMp4(adapter: VaultAdapter, folder: string): Promise<string[]> {
-        const found: string[] = [];
-        const walk = async (current: string): Promise<void> => {
-                let listing: { files: string[]; folders: string[] };
-                try {
-                        listing = await adapter.list(current);
-                } catch {
-                        return;
-                }
-                for (const file of listing.files) {
-                        if (/\.mp4$/i.test(file)) found.push(current ? `${current}/${file}` : file);
-                }
-                for (const child of listing.folders) {
-                        await walk(current ? `${current}/${child}` : child);
-                }
-        };
-        if (await adapter.exists(folder)) await walk(folder);
-        return found;
+	return collectFiles(adapter, folder, (path) => /\.mp4$/i.test(path));
 }

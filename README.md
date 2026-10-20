@@ -51,6 +51,8 @@ mobile. If a site needs a real engine, use **Open in system browser**.
 - Responsive, touch-friendly layout built for narrow screens, with safe-area
   insets for notched phones and larger tap targets on touch devices.
 - An anime downloader: search a catalogue, pick episodes, and save them to disk.
+- A video library that lists your downloaded episodes and plays them, resuming
+  where you left off.
 
 ## Anime downloader
 
@@ -184,6 +186,39 @@ The downloader is pointed at a third-party catalogue of copyrighted material.
 Downloading from it may be illegal where you live, and using it is your
 responsibility. The plugin does not host, index, or vouch for any content.
 
+## Video library
+
+The library lists the episodes you have downloaded and plays them inside
+Obsidian. Open it from the film ribbon icon or the **Open video library**
+command.
+
+The list is built by scanning your download folder each time you open it, so a
+file you add or remove by hand shows up without any re-import. Series, episode
+number, and title are read back out of the filename using the same template the
+downloader writes with, so a renamed template will not hide older files — a name
+that does not match is kept whole as the title.
+
+- **Play** starts a video, resuming from where you stopped last time.
+- **Start over** clears the saved position and plays from the beginning.
+- **Search** filters across series, episode number, and title.
+- **Filters** narrow the list to everything, unwatched, or in progress.
+- **Delete** removes the file from your vault after a confirmation.
+
+Progress is saved every few seconds and when you close the player, and it is
+stored with your other plugin data. The library marks a file **Watched** once
+you reach the end.
+
+### Formats and playback
+
+MP4 files play directly. MPEG-TS files (the low-memory **TS** output) cannot be
+played by a browser engine, so the library says so instead of showing a black
+rectangle. If you want to watch in the library, keep the download format set to
+**MP4**.
+
+Only videos inside your vault are listed. Downloads saved outside the vault
+(desktop only) are written where the plugin cannot enumerate them, so they do
+not appear here.
+
 ## Install
 
 Copy `main.js`, `manifest.json`, and `styles.css` into
@@ -242,8 +277,8 @@ analytics on those pages run; turn off **Run page scripts** to block them.
 All actions are available from the command palette: open browser, new tab, close
 tab, next and previous tab, back, forward, reload, focus address bar, toggle
 proxy rendering, bookmark page, open bookmarks, open history, manage cookies, go
-home, clear browsing data, open the anime downloader, and repair downloaded
-videos.
+home, clear browsing data, open the anime downloader, repair downloaded
+videos, and open the video library.
 
 ## Development
 

@@ -1,9 +1,9 @@
 {
 	"id": "browser-for-mobile",
 	"name": "Browser for Mobile",
-	"version": "1.5.0",
+	"version": "1.6.0",
 	"minAppVersion": "1.13.0",
-	"description": "A tabbed web browser with history, bookmarks, and cookies that works on Obsidian mobile, where the built-in web viewer is unavailable.",
+	"description": "A tabbed web browser for Obsidian mobile, with history, bookmarks, cookies, an anime downloader, and an offline video library.",
 	"author": "OpenHands",
 	"isDesktopOnly": false
 }

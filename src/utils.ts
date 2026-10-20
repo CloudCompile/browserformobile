@@ -117,3 +117,59 @@ export function matchesGlob(value: string, pattern: string): boolean {
 		.replace(/\?/g, '.');
 	return new RegExp(`^${escaped}$`, 'i').test(value);
 }
+
+/** What `VaultAdapter.list` reports for one folder. */
+export interface FolderListing {
+	files: string[];
+	folders: string[];
+}
+
+/**
+ * `VaultAdapter.list` returns the *vault-relative path* of each child, not the
+ * bare name, so a child must be used as-is. Joining the folder back on produces
+ * `folder/folder/child`. This normalises either shape to a vault-relative path:
+ * a child that already starts with the folder is kept, and a bare name is joined
+ * to it. An empty folder yields the child unchanged.
+ */
+export function childPath(folder: string, child: string): string {
+	const base = folder.replace(/^\/+|\/+$/g, '');
+	if (!base) return child;
+	if (child === base || child.startsWith(`${base}/`)) return child;
+	return `${base}/${child}`;
+}
+
+/**
+ * Walk a folder tree and return every file that matches `accept`, as
+ * vault-relative paths. An empty `folder` walks the vault root. `adapter.list`
+ * can throw on a folder that vanished mid-walk; that folder is skipped rather
+ * than failing the whole scan.
+ */
+export async function collectFiles(
+	adapter: {
+		list(path: string): Promise<FolderListing>;
+		exists(path: string): Promise<boolean>;
+	},
+	folder: string,
+	accept: (path: string) => boolean,
+): Promise<string[]> {
+	const found: string[] = [];
+	const walk = async (current: string): Promise<void> => {
+		let listing: FolderListing;
+		try {
+			listing = await adapter.list(current);
+		} catch {
+			return;
+		}
+		for (const file of listing.files) {
+			const path = childPath(current, file);
+			if (accept(path)) found.push(path);
+		}
+		for (const child of listing.folders) {
+			await walk(childPath(current, child));
+		}
+	};
+	const root = folder.replace(/^\/+|\/+$/g, '');
+	if (root && !(await adapter.exists(root))) return found;
+	await walk(root);
+	return found;
+}

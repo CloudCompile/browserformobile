@@ -2,6 +2,10 @@ import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
 import { DownloadManager, type DownloaderOptions } from './downloader';
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
 import { repairFolder } from './doctor';
+import { externalStorageAvailable } from './destination';
+import { VideoLibrary, type LibraryItem, type WatchRecord } from './library';
+import { LibraryModal } from './libraryModal';
+import { PlayerModal } from './playerModal';
 import { DEFAULT_SETTINGS, BrowserSettingTab, type BrowserSettings } from './settings';
 import { BrowserStore } from './store';
 import type { BrowserData } from './types';
@@ -10,15 +14,21 @@ import { BrowserView, VIEW_TYPE_BROWSER } from './view';
 
 interface PersistedShape extends Partial<BrowserData> {
 	settings?: Partial<BrowserSettings>;
+	/** Watch progress per vault path, so the library survives a reload. */
+	watch?: Record<string, WatchRecord>;
 }
 
 export default class BrowserPlugin extends Plugin {
 	settings!: BrowserSettings;
 	store!: BrowserStore;
 	downloader!: DownloadManager;
+	library!: VideoLibrary;
 
 	private browserData: Partial<BrowserData> = {};
 	private downloadModal: DownloadModal | null = null;
+	private libraryModal: LibraryModal | null = null;
+	private playerModal: PlayerModal | null = null;
+	private watchRecords: Record<string, WatchRecord> = {};
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -27,6 +37,9 @@ export default class BrowserPlugin extends Plugin {
 			saveData: (data) => this.persist(data as BrowserData),
 		});
 		this.store.load(this.browserData);
+
+		this.library = new VideoLibrary();
+		this.library.load(this.watchRecords);
 
 		this.downloader = new DownloadManager(this.app, this.downloaderOptions(), () => {
 			this.downloadModal?.refresh();
@@ -42,6 +55,10 @@ export default class BrowserPlugin extends Plugin {
 			this.openDownloader();
 		});
 
+		this.addRibbonIcon('film', 'Video library', () => {
+			this.openLibrary();
+		});
+
 		this.registerCommands();
 		this.addSettingTab(new BrowserSettingTab(this.app, this));
 
@@ -53,6 +70,102 @@ export default class BrowserPlugin extends Plugin {
 	onunload(): void {
 		this.store.dispose();
 		this.downloader.dispose();
+		this.playerModal?.close();
+	}
+
+	/**
+	 * The folder the library scans. External downloads live outside the vault,
+	 * where the vault adapter cannot enumerate them, so only the in-vault folder
+	 * is indexed and the modal says so.
+	 */
+	private libraryFolder(): string {
+		return this.settings.downloadFolder;
+	}
+
+	private externalLibraryHint(): string {
+		if (!this.settings.downloadExternal || !externalStorageAvailable()) return '';
+		return 'Downloads saved outside the vault are not listed here. Only videos inside your vault appear in the library.';
+	}
+
+	/**
+	 * Open the video library, re-scanning the folder first so a file added
+	 * outside the plugin still shows up.
+	 */
+	openLibrary(): void {
+		if (this.libraryModal) {
+			this.libraryModal.close();
+			this.libraryModal = null;
+		}
+		const modal = new LibraryModal(this.app, this.library, {
+			onPlay: (item) => this.playItem(item),
+			onDelete: (item) => this.deleteItem(item),
+			onRefresh: () => this.refreshLibrary(),
+			onClosed: () => {
+				this.libraryModal = null;
+			},
+			emptyHint: this.externalLibraryHint(),
+		});
+		this.libraryModal = modal;
+		modal.open();
+		void modal.refresh();
+	}
+
+	/** Re-scan the download folder and drop progress for files that are gone. */
+	async refreshLibrary(): Promise<void> {
+		const adapter = this.app.vault.adapter as unknown as {
+			list(path: string): Promise<{ files: string[]; folders: string[] }>;
+			exists(path: string): Promise<boolean>;
+			stat(path: string): Promise<{ size: number; mtime: number } | null>;
+		};
+		await this.library.refresh(adapter, this.libraryFolder(), this.settings.downloadFilenameTemplate);
+		this.library.prune();
+	}
+
+	/** Play an entry, resuming from its saved position. */
+	playItem(item: LibraryItem): void {
+		if (this.playerModal) {
+			this.playerModal.close();
+			this.playerModal = null;
+		}
+		let source: string;
+		try {
+			source = this.app.vault.adapter.getResourcePath(item.path);
+		} catch {
+			new Notice('This file is outside the vault and cannot be played.');
+			return;
+		}
+		const modal = new PlayerModal(this.app, item, source, this.library.getProgress(item.path), {
+			onProgress: (path, position, duration) => this.recordProgress(path, position, duration),
+			onReset: (path) => {
+				this.library.clearProgress(path);
+				void this.saveWatchRecords();
+			},
+			onClosed: () => {
+				this.playerModal = null;
+			},
+		});
+		this.playerModal = modal;
+		modal.open();
+	}
+
+	private recordProgress(path: string, position: number, duration: number): void {
+		this.library.record(path, position, duration);
+		void this.saveWatchRecords();
+	}
+
+	private async deleteItem(item: LibraryItem): Promise<void> {
+		const adapter = this.app.vault.adapter as unknown as {
+			remove(path: string): Promise<void>;
+		};
+		await adapter.remove(item.path);
+		this.library.clearProgress(item.path);
+		await this.saveWatchRecords();
+	}
+
+	/** Persist the watch map alongside the browser data. */
+	private async saveWatchRecords(): Promise<void> {
+		this.watchRecords = this.library.toJSON();
+		await this.saveSettings();
 	}
 
 	/** Snapshot the persisted settings in the shape the download manager wants. */
@@ -266,6 +379,14 @@ export default class BrowserPlugin extends Plugin {
 				void this.repairDownloads();
 			},
 		});
+
+		this.addCommand({
+			id: 'open-video-library',
+			name: 'Open video library',
+			callback: () => {
+				this.openLibrary();
+			},
+		});
 	}
 
 	/**
@@ -338,14 +459,15 @@ export default class BrowserPlugin extends Plugin {
 			this.settings.searchTemplate = DEFAULT_SEARCH_TEMPLATE;
 		}
 		this.browserData = raw ?? {};
+		this.watchRecords = raw?.watch ?? {};
 	}
 
 	async saveSettings(): Promise<void> {
-		await this.saveData({ ...this.browserData, settings: this.settings });
+		await this.saveData({ ...this.browserData, settings: this.settings, watch: this.watchRecords });
 	}
 
 	private async persist(data: BrowserData): Promise<void> {
 		this.browserData = data;
-		await this.saveData({ ...data, settings: this.settings });
+		await this.saveData({ ...data, settings: this.settings, watch: this.watchRecords });
 	}
 }

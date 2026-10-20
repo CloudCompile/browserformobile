@@ -437,6 +437,57 @@ settings object and the plugin instance.
 - `src/downloadModal.ts` — the three-stage modal (search, episodes, queue).
 - `src/mux.d.ts` — hand-written types for mux.js, which ships none.
 
+### Video library
+
+Added in 1.6.0. A separate feature again: it reads the download folder and plays
+what it finds. It shares the settings object and the plugin instance, nothing
+else.
+
+- `src/library.ts` — `VideoLibrary`: a scan of the download folder, filename
+  parsing, and the per-path watch-progress map. No index file; the folder is the
+  index, so a file added or deleted outside the plugin is picked up on the next
+  open.
+- `src/libraryModal.ts` — the browse UI: search, the all/unwatched/in-progress
+  filter, progress bars, play, and delete.
+- `src/playerModal.ts` — `PlayerModal`: a `<video>` pointed at the file's
+  resource path, with resume, periodic progress saves, and start-over.
+
+Progress lives in the plugin's saved data under the `watch` key, keyed by vault
+path.
+
+### Key constraints
+
+- **The library is a folder scan, not an index.** `VideoLibrary.refresh` walks
+  the download folder with `adapter.list` and `stat`s each file. `.part` and
+  `.part.json` staging files are skipped, so an interrupted download is not shown
+  as an episode. `prune` then drops progress for paths that are gone.
+- **Filenames are parsed with the downloader's own template.** `buildNameRegex`
+  turns `{series} - {ep:02} - {title}.{ext}` into a named-group matcher, so the
+  parts the downloader wrote can be read back. The template's `{ext}` token is
+  what consumes the extension, so `parseEntryName` matches the *whole* name, not
+  a stripped base — matching the base silently fails every file. A name that does
+  not match is kept whole as the title rather than dropped.
+- **Only MP4 plays.** The `.ts` output is a raw MPEG-TS stream, which no browser
+  engine plays; `PlayerModal` reports that instead of rendering a dead `<video>`.
+  The README points users at MP4 for library playback.
+- **Playback uses `adapter.getResourcePath`.** The file is in the vault, so
+  Obsidian can hand the media element a URL for it; the bytes are never read into
+  memory. A path outside the vault throws, which is caught and reported.
+- **Only in-vault videos are listed.** External downloads (desktop only) go
+  where `adapter.list` cannot enumerate them, so `libraryFolder()` returns the
+  vault-relative folder and the modal shows a hint when external saving is on.
+- **`VaultAdapter.list` returns vault-relative paths, not bare names.** Every
+  folder walk goes through `collectFiles`/`childPath` in `utils.ts`, which keep an
+  already-prefixed child as-is and only join a bare name. Joining the folder back
+  on produces `folder/folder/child`, which is how the repair path silently
+  reported every file as failed (`doctor.ts` had the same bug and now shares the
+  helper). `collectFiles('')` walks the vault root, which is what external mode
+  needs.
+- **Progress is written on a timer and on close, not on every `timeupdate`.** A
+  position under five seconds is treated as "not started" and dropped, and a
+  saved position within a second of the end is reset rather than resumed (an
+  instant jump to the end reads as a hang).
+
 ### Key constraints
 
 - **Streams are 720p only.** Every series and server probed returned a single
@@ -591,6 +642,15 @@ releases and unhooks, an unsupported platform is a silent no-op, and the real
 exported `batchCeiling()` steps 16/32/64 MB with `deviceMemory`. Node's
 `navigator` is getter-only, so the harness installs the stub with
 `Object.defineProperty`.
+
+The library has its own harnesses in `/tmp/bfmh`: `library.test.ts` covers
+filename parsing (including a template whose `{ext}` token must consume the
+extension, not a stripped base), a real-filesystem folder scan that skips `.part`
+staging files and non-videos, progress round-tripping, the watched threshold, the
+trivial-position drop, and `prune`. `library-ui.test.ts` renders both modals in
+jsdom and checks the list, search, the filters, play from the row and the play
+control, the delete confirmation, the player's resume and close-time save, the
+reset when the saved position is the end, and the `.ts` refusal.
 Bundle them with the repo's local esbuild
 (`node_modules/.bin/esbuild ... --alias:obsidian=./obsidian-stub.ts`) and a
 `window` shim; `npx esbuild` hangs in this environment.
