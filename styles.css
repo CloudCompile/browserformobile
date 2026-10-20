@@ -5,7 +5,18 @@
 	overflow: hidden;
 }
 
+/*
+ * Safe-area insets. A phone with a notch or a home indicator draws over the
+ * top and bottom of the view unless the chrome is inset by `env(safe-area-*)`.
+ * Obsidian renders with `viewport-fit=cover`, so without these the toolbar sits
+ * under the status bar and the status line under the home indicator. The `0px`
+ * fallback keeps the rule inert where the env() is unsupported.
+ */
 .bfm-root {
+	--bfm-inset-top: env(safe-area-inset-top, 0px);
+	--bfm-inset-bottom: env(safe-area-inset-bottom, 0px);
+	--bfm-inset-left: env(safe-area-inset-left, 0px);
+	--bfm-inset-right: env(safe-area-inset-right, 0px);
 	display: flex;
 	flex-direction: column;
 	height: 100%;
@@ -22,6 +33,9 @@
 	align-items: center;
 	gap: 4px;
 	padding: 6px 8px;
+	padding-top: calc(6px + var(--bfm-inset-top, 0px));
+	padding-left: calc(8px + var(--bfm-inset-left, 0px));
+	padding-right: calc(8px + var(--bfm-inset-right, 0px));
 	border-bottom: 1px solid var(--background-modifier-border);
 	background: var(--background-secondary);
 	flex-wrap: nowrap;
@@ -92,6 +106,8 @@
 	align-items: center;
 	gap: 6px;
 	padding: 6px 8px;
+	padding-left: calc(8px + var(--bfm-inset-left, 0px));
+	padding-right: calc(8px + var(--bfm-inset-right, 0px));
 	overflow-x: auto;
 	overflow-y: hidden;
 	background: var(--background-secondary);
@@ -187,6 +203,9 @@
 .bfm-status {
 	flex: 0 0 auto;
 	padding: 4px 12px;
+	padding-bottom: calc(4px + var(--bfm-inset-bottom, 0px));
+	padding-left: calc(12px + var(--bfm-inset-left, 0px));
+	padding-right: calc(12px + var(--bfm-inset-right, 0px));
 	font-size: 12px;
 	color: var(--text-faint);
 	border-top: 1px solid var(--background-modifier-border);
@@ -628,9 +647,14 @@
 
 .bfm-download-modal.is-fullscreen {
 	width: 100vw;
+	/* 100vh is the *large* viewport on mobile: with the URL bar hidden it is
+	   taller than the visible area, so the bottom of the modal is clipped. dvh
+	   tracks the visible height. The vh line is the fallback for older WebViews. */
 	height: 100vh;
+	height: 100dvh;
 	max-width: 100vw;
 	max-height: 100vh;
+	max-height: 100dvh;
 	border-radius: 0;
 }
 
@@ -660,6 +684,10 @@
 
 .bfm-download-modal.is-fullscreen .bfm-dl-body {
 	padding: 14px;
+	padding-top: calc(14px + env(safe-area-inset-top, 0px));
+	padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+	padding-left: calc(14px + env(safe-area-inset-left, 0px));
+	padding-right: calc(14px + env(safe-area-inset-right, 0px));
 }
 
 .bfm-download-modal.is-fullscreen .bfm-dl-jobs,
@@ -675,3 +703,52 @@
 	color: var(--text-warning, var(--color-orange));
 }
 
+
+
+/* Touch devices ------------------------------------------------------------ */
+
+/*
+ * A coarse pointer means a finger, not a mouse. Two mobile problems follow:
+ *
+ *  - iOS Safari/WebView zooms the whole page when a focused input's font is
+ *    under 16px, which then leaves the page scrolled and hard to recover. The
+ *    address bar and the downloader inputs are 15px, so they trip it.
+ *  - 28-36px buttons are comfortable with a cursor and fiddly with a thumb.
+ *    Apple's guidance is 44px; we grow the small controls to meet it.
+ *
+ * Both are scoped to coarse pointers so the desktop layout is untouched.
+ */
+@media (pointer: coarse) {
+	.bfm-address,
+	.bfm-dl-input {
+		font-size: 16px;
+	}
+
+	.bfm-tab-close {
+		width: 34px;
+		height: 34px;
+	}
+
+	.bfm-dl-job-cancel {
+		width: 40px;
+		height: 40px;
+	}
+
+	.bfm-dl-window-close {
+		width: 44px;
+		height: 44px;
+	}
+
+	.bfm-dl-chip {
+		min-height: 40px;
+	}
+
+	.bfm-dl-resume button {
+		min-height: 40px;
+	}
+
+	.bfm-dl-episode {
+		padding-top: 12px;
+		padding-bottom: 12px;
+	}
+}

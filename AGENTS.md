@@ -460,6 +460,31 @@ settings object and the plugin instance.
   window and peak memory. Writing per segment made the phone unusable. The MP4
   path streams init then fragments instead of assembling a second copy, halving
   peak memory.
+- **Batch size scales with device memory.** `batchCeiling()` reads
+  `navigator.deviceMemory` (approximate RAM in GB; Chromium-only, absent on iOS)
+  and caps the coalesced write at 64 MB on a 4 GB+ device, 32 MB at 2 GB, and
+  16 MB below that. A batch is held in memory while it is written and the MP4
+  path holds the transmux window too, so the 64 MB ceiling that suits a 4 GB
+  phone can OOM a 1 GB one. An unknown value keeps the full ceiling, because the
+  only platform without the property is iOS and scaling down costs write passes.
+- **The screen is held awake while a job runs** (`src/wakelock.ts`). Android
+  suspends the WebView when the screen sleeps, which stalls the segment requests
+  and can let the OS reclaim the app mid-episode; the Screen Wake Lock API is
+  Chromium-only, so this is a no-op on iOS. Holds are reference-counted so
+  concurrent jobs share one lock, and a lock the browser drops on hide is
+  re-requested on `visibilitychange`. A parked (rate-limited) job releases the
+  lock and re-acquires on retry. `ensure()` coalesces concurrent requests onto a
+  single in-flight promise — without that, two jobs starting together each issue
+  a request and only the last is tracked, so the screen stays on forever.
+- **Chrome on a phone needs safe-area insets and 16px inputs.** Obsidian renders
+  with `viewport-fit=cover`, so the toolbar draws under the status bar and the
+  status line under the home indicator unless the chrome is inset by
+  `env(safe-area-*)`; `--bfm-inset-*` on `.bfm-root` carries the four values. A
+  fullscreen modal uses `100dvh`, not `100vh`, or the collapsing URL bar clips
+  its bottom. iOS zooms the page when a focused input's font is under 16px, so
+  the address bar and downloader inputs are 16px under `@media (pointer: coarse)`,
+  which also grows the sub-44px touch targets. All of it is scoped to coarse
+  pointers so the desktop layout is untouched.
 - **`src/doctor.ts` repairs files written before 1.1.1** by recovering the length
   from `mvhd`/`mehd` and re-running `patchDuration`. Surfaced as a command and a
   button; it only rewrites files that still hold the sentinel.
@@ -523,6 +548,13 @@ than truncates. It needs `window.require` (a `createRequire` shim) and a stub
 `/tmp/bfmh/gate.test.ts` covers the adaptive concurrency gate against a local
 server that returns 429 mid-run: the pool sheds below the configured target
 during the limit, recovers afterwards, and still delivers every segment in order.
+`/tmp/bfmh/mobile.test.ts` covers the mobile additions with a fake Screen Wake
+Lock API and a stubbed `navigator`: two acquires share one lock, the lock is held
+until the last release, a lock dropped on hide is re-acquired on show, dispose
+releases and unhooks, an unsupported platform is a silent no-op, and the real
+exported `batchCeiling()` steps 16/32/64 MB with `deviceMemory`. Node's
+`navigator` is getter-only, so the harness installs the stub with
+`Object.defineProperty`.
 Bundle them with the repo's local esbuild
 (`node_modules/.bin/esbuild ... --alias:obsidian=./obsidian-stub.ts`) and a
 `window` shim; `npx esbuild` hangs in this environment.

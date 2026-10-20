@@ -48,7 +48,8 @@ mobile. If a site needs a real engine, use **Open in system browser**.
 - Bookmarks with a fuzzy search picker.
 - A cookie jar that proxied pages can read and write, with a manager to inspect,
   export, and clear cookies per site.
-- Responsive, touch-friendly layout built for narrow screens.
+- Responsive, touch-friendly layout built for narrow screens, with safe-area
+  insets for notched phones and larger tap targets on touch devices.
 - An anime downloader: search a catalogue, pick episodes, and save them to disk.
 
 ## Anime downloader
@@ -252,6 +253,19 @@ npm run dev      # watch build
 npm run build    # production build
 npm run lint
 ```
+
+## On mobile
+
+- **The screen stays awake while a download runs**, so a long episode is not
+  frozen when the phone sleeps. This uses the Screen Wake Lock API, which is
+  available in Android's WebView; on iOS it is a no-op and a download can stall
+  if the screen turns off.
+- **Batch size follows the device's memory.** Downloads are written in batches
+  (16-64 MB) sized from `navigator.deviceMemory`, so a low-memory phone is not
+  pushed into an out-of-memory restart by a batch meant for a 4 GB device.
+- **MP4 and TS both stream.** MP4 is converted as it downloads rather than held
+  whole in memory, so either format is safe on a phone; MP4 is the one that
+  plays anywhere.
 
 ## Limitations
 

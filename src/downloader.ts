@@ -13,6 +13,7 @@ import {
 } from './hls';
 import { patchDuration, TransmuxStream } from './transmux';
 import { generateId } from './utils';
+import { ScreenWakeLock } from './wakelock';
 
 /** Bytes coalesced into one write. Appending is costly on mobile. */
 const TS_BATCH_BYTES = 8 * 1024 * 1024;
@@ -23,6 +24,29 @@ const TS_BATCH_BYTES = 8 * 1024 * 1024;
  * so peak memory) bounded.
  */
 const MAX_BATCH_BYTES = 64 * 1024 * 1024;
+/**
+ * Smallest batch ceiling, used on low-memory phones. A batch is held in memory
+ * while it is written, and MP4 holds the transmux window too, so the 64 MB
+ * ceiling that is comfortable on a 4 GB phone can push a 1 GB one into an OOM
+ * restart — the failure this ceiling exists to avoid.
+ */
+const MIN_BATCH_BYTES = 16 * 1024 * 1024;
+
+/**
+ * The batch ceiling for this device. `navigator.deviceMemory` reports an
+ * approximate RAM size in GB (0.25–8) on Chromium, which is what Obsidian
+ * mobile uses; it is absent on iOS, where the device has memory to spare, so an
+ * unknown value keeps the full ceiling. Scaling down only ever reduces peak
+ * memory at the cost of a few more write passes.
+ */
+export function batchCeiling(): number {
+        const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+        if (typeof memory !== 'number' || !Number.isFinite(memory)) return MAX_BATCH_BYTES;
+        if (memory >= 4) return MAX_BATCH_BYTES;
+        if (memory >= 2) return MAX_BATCH_BYTES / 2;
+        return MIN_BATCH_BYTES;
+}
+
 /** Video timescale mux.js writes into the MP4, and the unit of its timeline. */
 const MP4_TIMESCALE = 90000;
 /** Suffix of the staging file holding the raw stream of an unfinished job. */
@@ -173,6 +197,8 @@ export class DownloadManager {
         private updateTimer: number | null = null;
         /** Pending rate-limit retry timers, cleared on dispose. */
         private readonly retryTimers = new Set<number>();
+        /** Holds the screen awake while a job runs, so Android does not freeze it. */
+        private readonly wakeLock = new ScreenWakeLock();
 
         constructor(
                 private readonly app: { vault: { adapter: unknown } },
@@ -370,6 +396,10 @@ export class DownloadManager {
         private async run(job: DownloadJob): Promise<void> {
                 this.running++;
                 job.status = 'running';
+                // Android suspends the WebView when the screen sleeps, which stalls
+                // the requests and can let the OS reclaim the app. Hold the screen
+                // on for the duration of the job.
+                this.wakeLock.acquire();
                 job.startedAt = Date.now();
                 job.speed = null;
                 job.eta = null;
@@ -400,6 +430,9 @@ export class DownloadManager {
                                 await this.markPartial(job);
                         }
                 } finally {
+                        // A parked job is only waiting on a timer, so let the screen
+                        // sleep during the pause and re-acquire when it retries.
+                        this.wakeLock.release();
                         // A parked job has not finished; it is only waiting.
                         if (!parked) job.finishedAt = Date.now();
                         job.speed = null;
@@ -613,7 +646,7 @@ export class DownloadManager {
          */
         private batchBytesFor(playlist: MediaPlaylist): number {
                 const estimate = playlist.duration * 200 * 1024;
-                return Math.max(TS_BATCH_BYTES, Math.min(estimate / 16, MAX_BATCH_BYTES));
+                return Math.max(TS_BATCH_BYTES, Math.min(estimate / 16, batchCeiling()));
         }
 
         /**
@@ -810,6 +843,7 @@ export class DownloadManager {
                 }
                 for (const timer of this.retryTimers) window.clearTimeout(timer);
                 this.retryTimers.clear();
+                this.wakeLock.dispose();
                 this.cancelAll();
         }
 }
