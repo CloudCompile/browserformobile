@@ -397,7 +397,7 @@ settings object and the plugin instance.
 - `src/destination.ts` — `VaultDestination` and `ExternalDestination`, filename
   sanitising, and `externalStorageAvailable()`.
 - `src/downloader.ts` — `DownloadManager`: job queue, concurrency, cancel,
-  progress, filename template.
+  progress, filename template, and resume (staging `.part` file + sidecar).
 - `src/downloadModal.ts` — the three-stage modal (search, episodes, queue).
 - `src/mux.d.ts` — hand-written types for mux.js, which ships none.
 
@@ -445,6 +445,26 @@ settings object and the plugin instance.
 - **`src/doctor.ts` repairs files written before 1.1.1** by recovering the length
   from `mvhd`/`mehd` and re-running `patchDuration`. Surfaced as a command and a
   button; it only rewrites files that still hold the sentinel.
+- **A failed download is resumable; a cancelled one is not.** The stream is
+  staged to `<final>.part` with a `<final>.part.json` sidecar recording the last
+  contiguous segment and byte count, so a re-enqueue continues from there
+  instead of restarting. The sidecar is only trusted when the episode, format,
+  quality, playlist length, and total duration all match, and the `.part` size
+  equals the sidecar's `bytes`; otherwise both are discarded — splicing two
+  different streams is worse than re-downloading. `resumeFrom`/`resumeBytes` in
+  `DownloadOptions` skip the prefix, and `writtenThrough` in the streaming
+  callback is the true contiguous prefix to record (the in-memory out-of-order
+  tail is not on disk, so it must not be). A `cancel` calls `discardPartial`;
+  a failure calls `markPartial` and leaves the pair in place. The `.part` name is
+  derived from the job's relative staging path, which is kept in `stagingPaths`
+  (not `job.filePath`, which is a display path) because a failed job has no
+  final file yet.
+- **MP4 stages the whole stream to `.part` first, then converts.** mux.js only
+  emits on `flush`, so the episode is in memory either way, but staging makes the
+  MP4 path resumable too: a conversion failure leaves a complete `.part` and the
+  next run re-converts without re-downloading. TS finalises by renaming `.part`
+  into place (sidecar removed only after the rename succeeds); MP4 writes the
+  final file and only then discards the stage.
 
 ### Verification
 
@@ -454,7 +474,11 @@ streaming, and transmux against the live API; `manager.ts` runs the real
 `DownloadManager` against a filesystem-backed fake vault adapter and checks file
 contents, duplicate refusal, cancel cleanup, and the patched durations.
 `verify.ts` covers write ordering and batching with synthetic segments;
-`doctor.ts` covers detection and in-place repair.
+`doctor.ts` covers detection and in-place repair. `resume.ts` drives the real
+`DownloadManager` against an in-memory fake adapter and a fake CDN: it checks a
+full stream, a failure that leaves a contiguous prefix and sidecar, a resume that
+fetches only the missing tail, discarding a changed stream and a torn partial,
+cancel cleanup, an MP4 conversion failure that keeps the stage, and write order.
 Bundle them with the repo's local esbuild
 (`node_modules/.bin/esbuild ... --alias:obsidian=./obsidian-stub.ts`) and a
 `window` shim; `npx esbuild` hangs in this environment.

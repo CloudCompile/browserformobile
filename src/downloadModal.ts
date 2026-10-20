@@ -6,7 +6,7 @@ import {
         type EpisodeSummary,
         type SeriesSummary,
 } from './animeApi';
-import { describeProgress, type DownloadManager, type OutputFormat } from './downloader';
+import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat } from './downloader';
 import { externalStorageAvailable } from './destination';
 import { repairFolder } from './doctor';
 
@@ -407,9 +407,12 @@ export class DownloadModal extends Modal {
                 if (!series || this.chosen.size === 0) return;
                 const episodes = this.episodes.filter((episode) => this.chosen.has(episode.id));
                 const created = this.manager.enqueue({ seriesTitle: series.title, episodes });
-                new Notice(
-                        `Queued ${created.length} episode${created.length === 1 ? '' : 's'} from ${series.title}.`,
-                );
+                const resumed = created.filter((job) => job.status === 'queued' && job.partialFound).length;
+                const message =
+                        resumed > 0
+                                ? `Queued ${created.length} episode${created.length === 1 ? '' : 's'} from ${series.title} (${resumed} will resume).`
+                                : `Queued ${created.length} episode${created.length === 1 ? '' : 's'} from ${series.title}.`;
+                new Notice(message);
                 this.stage = 'queue';
                 this.render();
         }
@@ -450,9 +453,27 @@ export class DownloadModal extends Modal {
                                 const fill = bar.createDiv({ cls: 'bfm-dl-progress-fill' });
                                 fill.style.width = `${Math.round((job.completed / job.total) * 100)}%`;
                         }
+                        if (job.status === 'failed' && job.partialFound) {
+                                this.renderResumeRow(row, job);
+                        }
                 }
 
                 const actions = this.bodyEl.createDiv({ cls: 'bfm-dl-actions' });
+                const resumable = this.manager.resumableJobs;
+                if (resumable.length > 0) {
+                        const resumeAll = actions.createEl('button', {
+                                cls: 'mod-cta',
+                                text: `Resume all (${resumable.length})`,
+                        });
+                        resumeAll.addEventListener('click', () => {
+                                this.manager.enqueue({
+                                        seriesTitle: resumable[0]?.seriesTitle ?? '',
+                                        episodes: resumable.map((job) => job.episode),
+                                });
+                                new Notice(`Resuming ${resumable.length} download${resumable.length === 1 ? '' : 's'}.`);
+                                this.render();
+                        });
+                }
                 const cancelAll = actions.createEl('button', { text: 'Cancel all' });
                 cancelAll.addEventListener('click', () => {
                         this.manager.cancelAll();
@@ -466,6 +487,29 @@ export class DownloadModal extends Modal {
                 const doctor = actions.createEl('button', { text: 'Repair old videos' });
                 doctor.addEventListener('click', () => {
                         void this.repairVideos();
+                });
+        }
+
+        /**
+         * Show how much of a failed download is still on disk and offer to
+         * continue it from the next missing segment.
+         */
+        private renderResumeRow(row: HTMLElement, job: DownloadJob): void {
+                const info = row.createDiv({ cls: 'bfm-dl-resume' });
+                const saved =
+                        job.total !== null
+                                ? `${job.resumeSegments} of ${job.total} segments saved`
+                                : `${job.resumeSegments} segments saved`;
+                info.createSpan({ cls: 'bfm-dl-resume-text', text: `${saved} — resume continues from there.` });
+                const resume = info.createEl('button', { cls: 'mod-cta', text: 'Resume' });
+                resume.addEventListener('click', () => {
+                        this.manager.enqueue({ seriesTitle: job.seriesTitle, episodes: [job.episode] });
+                        new Notice(`Resuming ${job.seriesTitle} · Episode ${job.episode.number}.`);
+                        this.render();
+                });
+                const discard = info.createEl('button', { text: 'Discard' });
+                discard.addEventListener('click', () => {
+                        void this.manager.discard(job.id).then(() => this.render());
                 });
         }
 

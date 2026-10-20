@@ -14,12 +14,19 @@ import { FileSystemAdapter, Platform, normalizePath } from 'obsidian';
 export class DownloadWriteError extends Error {}
 
 export interface FileWriter {
-        /** Append a chunk. The first call creates or truncates the file. */
+        /** Append a chunk. The first call creates the file, unless opened to append. */
         write(chunk: Uint8Array): Promise<void>;
         /** Finish the file. */
         close(): Promise<void>;
+        /** Wait for queued writes without treating a failure as fatal. */
+        settle(): Promise<void>;
         /** Remove a partial file after a failure or cancellation. */
         abort(): Promise<void>;
+}
+
+export interface OpenOptions {
+        /** Continue an existing file instead of creating or truncating it. */
+        append?: boolean;
 }
 
 export interface Destination {
@@ -31,8 +38,18 @@ export interface Destination {
         validate(path: string): string | null;
         /** The full path a file will be written to, for display. */
         displayPath(path: string): string;
-        open(path: string): Promise<FileWriter>;
+        open(path: string, options?: OpenOptions): Promise<FileWriter>;
         exists(path: string): Promise<boolean>;
+        /** Size in bytes, or null when the file does not exist. */
+        size(path: string): Promise<number | null>;
+        /** Whole-file read, or null when the file does not exist. */
+        read(path: string): Promise<Uint8Array | null>;
+        /** Replace a file's contents in one write. */
+        write(path: string, data: Uint8Array): Promise<void>;
+        /** Delete a file, ignoring a missing one. */
+        remove(path: string): Promise<void>;
+        /** Move a file, replacing any file already at the target. */
+        rename(from: string, to: string): Promise<void>;
 }
 
 interface NodeRequire {
@@ -44,6 +61,9 @@ interface NodeFs {
                 mkdir(path: string, options: { recursive: boolean }): Promise<void>;
                 writeFile(path: string, data: Uint8Array): Promise<void>;
                 appendFile(path: string, data: Uint8Array): Promise<void>;
+                readFile(path: string): Promise<Uint8Array>;
+                stat(path: string): Promise<{ size: number }>;
+                rename(from: string, to: string): Promise<void>;
                 unlink(path: string): Promise<void>;
                 access(path: string): Promise<void>;
         };
@@ -74,7 +94,7 @@ export function sanitizeName(name: string): string {
 }
 
 class VaultWriter implements FileWriter {
-        private created = false;
+        private created: boolean;
         /** Serialises writes so an append can never land before the create. */
         private queue: Promise<void> = Promise.resolve();
         private failed = false;
@@ -86,7 +106,10 @@ class VaultWriter implements FileWriter {
                         remove(path: string): Promise<void>;
                 },
                 private readonly path: string,
-        ) {}
+                append = false,
+        ) {
+                this.created = append;
+        }
 
         private enqueue(task: () => Promise<void>): Promise<void> {
                 const next = this.queue.then(async () => {
@@ -121,6 +144,10 @@ class VaultWriter implements FileWriter {
                 if (this.failed) throw new DownloadWriteError('The file could not be written.');
         }
 
+        async settle(): Promise<void> {
+                await this.queue.catch(() => undefined);
+        }
+
         async abort(): Promise<void> {
                 await this.queue.catch(() => undefined);
                 if (!this.created) return;
@@ -133,14 +160,17 @@ class VaultWriter implements FileWriter {
 }
 
 class ExternalWriter implements FileWriter {
-        private created = false;
+        private created: boolean;
         private queue: Promise<void> = Promise.resolve();
         private failed = false;
 
         constructor(
                 private readonly fs: NodeFs,
                 private readonly path: string,
-        ) {}
+                append = false,
+        ) {
+                this.created = append;
+        }
 
         private enqueue(task: () => Promise<void>): Promise<void> {
                 const next = this.queue.then(async () => {
@@ -172,6 +202,10 @@ class ExternalWriter implements FileWriter {
                 if (this.failed) throw new DownloadWriteError('The file could not be written.');
         }
 
+        async settle(): Promise<void> {
+                await this.queue.catch(() => undefined);
+        }
+
         async abort(): Promise<void> {
                 await this.queue.catch(() => undefined);
                 if (!this.created) return;
@@ -191,9 +225,12 @@ export class VaultDestination implements Destination {
                 private readonly adapter: {
                         writeBinary(path: string, data: ArrayBuffer): Promise<void>;
                         appendBinary(path: string, data: ArrayBuffer): Promise<void>;
+                        readBinary(path: string): Promise<ArrayBuffer>;
                         remove(path: string): Promise<void>;
+                        rename(from: string, to: string): Promise<void>;
                         mkdir(path: string): Promise<void>;
                         exists(path: string): Promise<boolean>;
+                        stat(path: string): Promise<{ size: number } | null>;
                 },
                 private readonly folder: string,
         ) {
@@ -217,10 +254,10 @@ export class VaultDestination implements Destination {
                 return this.fullPath(path);
         }
 
-        async open(path: string): Promise<FileWriter> {
+        async open(path: string, options?: OpenOptions): Promise<FileWriter> {
                 const normalized = this.fullPath(path);
                 await this.ensureParents(normalized);
-                return new VaultWriter(this.adapter, normalized);
+                return new VaultWriter(this.adapter, normalized, options?.append ?? false);
         }
 
         async exists(path: string): Promise<boolean> {
@@ -229,6 +266,47 @@ export class VaultDestination implements Destination {
                 } catch {
                         return false;
                 }
+        }
+
+        async size(path: string): Promise<number | null> {
+                try {
+                        const stat = await this.adapter.stat(this.fullPath(path));
+                        return stat ? stat.size : null;
+                } catch {
+                        return null;
+                }
+        }
+
+        async read(path: string): Promise<Uint8Array | null> {
+                try {
+                        return new Uint8Array(await this.adapter.readBinary(this.fullPath(path)));
+                } catch {
+                        return null;
+                }
+        }
+
+        async write(path: string, data: Uint8Array): Promise<void> {
+                const normalized = this.fullPath(path);
+                await this.ensureParents(normalized);
+                await this.adapter.writeBinary(normalized, toArrayBuffer(data));
+        }
+
+        async remove(path: string): Promise<void> {
+                try {
+                        await this.adapter.remove(this.fullPath(path));
+                } catch {
+                        /* A missing file is not an error. */
+                }
+        }
+
+        async rename(from: string, to: string): Promise<void> {
+                const target = this.fullPath(to);
+                await this.ensureParents(target);
+                // Obsidian's rename will not replace an existing file, so clear
+                // the target first. The final name should not exist, but a stale
+                // one must not block finalising a resumed download.
+                await this.remove(to);
+                await this.adapter.rename(this.fullPath(from), target);
         }
 
         private async ensureParents(normalizedPath: string): Promise<void> {
@@ -268,11 +346,11 @@ export class ExternalDestination implements Destination {
                 return joinPath(this.folder, path);
         }
 
-        async open(path: string): Promise<FileWriter> {
+        async open(path: string, options?: OpenOptions): Promise<FileWriter> {
                 const full = joinPath(this.folder, path);
                 const parent = full.slice(0, full.lastIndexOf('/'));
                 if (parent) await this.fs.promises.mkdir(parent, { recursive: true });
-                return new ExternalWriter(this.fs, full);
+                return new ExternalWriter(this.fs, full, options?.append ?? false);
         }
 
         async exists(path: string): Promise<boolean> {
@@ -282,6 +360,45 @@ export class ExternalDestination implements Destination {
                 } catch {
                         return false;
                 }
+        }
+
+        async size(path: string): Promise<number | null> {
+                try {
+                        const stat = await this.fs.promises.stat(joinPath(this.folder, path));
+                        return stat.size;
+                } catch {
+                        return null;
+                }
+        }
+
+        async read(path: string): Promise<Uint8Array | null> {
+                try {
+                        return await this.fs.promises.readFile(joinPath(this.folder, path));
+                } catch {
+                        return null;
+                }
+        }
+
+        async write(path: string, data: Uint8Array): Promise<void> {
+                const full = joinPath(this.folder, path);
+                const parent = full.slice(0, full.lastIndexOf('/'));
+                if (parent) await this.fs.promises.mkdir(parent, { recursive: true });
+                await this.fs.promises.writeFile(full, data);
+        }
+
+        async remove(path: string): Promise<void> {
+                try {
+                        await this.fs.promises.unlink(joinPath(this.folder, path));
+                } catch {
+                        /* A missing file is not an error. */
+                }
+        }
+
+        async rename(from: string, to: string): Promise<void> {
+                const target = joinPath(this.folder, to);
+                const parent = target.slice(0, target.lastIndexOf('/'));
+                if (parent) await this.fs.promises.mkdir(parent, { recursive: true });
+                await this.fs.promises.rename(joinPath(this.folder, from), target);
         }
 }
 
@@ -316,9 +433,12 @@ export function createDestination(app: { vault: { adapter: unknown } }, request:
         const adapter = app.vault.adapter as FileSystemAdapter & {
                 writeBinary(path: string, data: ArrayBuffer): Promise<void>;
                 appendBinary(path: string, data: ArrayBuffer): Promise<void>;
+                readBinary(path: string): Promise<ArrayBuffer>;
                 remove(path: string): Promise<void>;
+                rename(from: string, to: string): Promise<void>;
                 mkdir(path: string): Promise<void>;
                 exists(path: string): Promise<boolean>;
+                stat(path: string): Promise<{ size: number } | null>;
         };
         const vaultRelative = request.external ? '' : folder;
         return new VaultDestination(adapter, vaultRelative);

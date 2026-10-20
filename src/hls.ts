@@ -39,6 +39,10 @@ export interface DownloadOptions {
          * rewrites the whole file, so writes are coalesced.
          */
         batchBytes?: number;
+        /** Segments already on disk, skipped by a resumed download. */
+        resumeFrom?: number;
+        /** Bytes already on disk, added to the progress total of a resumed download. */
+        resumeBytes?: number;
 }
 
 export class DownloadError extends Error {}
@@ -161,61 +165,37 @@ async function fetchSegment(url: string, signal?: AbortSignal): Promise<Uint8Arr
 }
 
 /**
- * Download every segment, running `concurrency` requests at a time. Segments
- * are returned in playlist order regardless of the order they finish.
- */
-export async function downloadSegments(
-        playlist: MediaPlaylist,
-        options: DownloadOptions,
-): Promise<Uint8Array[]> {
-        const total = playlist.segments.length;
-        const results = new Array<Uint8Array | null>(total);
-        let next = 0;
-        let completed = 0;
-        let bytes = 0;
-
-        const worker = async (): Promise<void> => {
-                while (true) {
-                        const index = next++;
-                        if (index >= total) return;
-                        const url = playlist.segments[index];
-                        if (!url) return;
-                        const data = await fetchSegment(url, options.signal);
-                        results[index] = data;
-                        completed++;
-                        bytes += data.byteLength;
-                        options.onProgress?.({ completed, total, bytes });
-                }
-        };
-
-        const workers = Math.max(1, Math.min(options.concurrency, total));
-        await Promise.all(Array.from({ length: workers }, worker));
-
-        return results.map((data) => {
-                if (!data) throw new DownloadError('A segment is missing from the download.');
-                return data;
-        });
-}
-
-/**
  * Download segments and hand each one to `onSegment` in playlist order as soon
  * as it is available. Only the out-of-order window (bounded by `concurrency`)
  * is held in memory, which is what makes `.ts` output viable on mobile.
+ *
+ * The callback's `index` is the first segment in the chunk and `writtenThrough`
+ * is the number of segments written to the file so far, so a caller can record
+ * a resume point that is always a true contiguous prefix.
+ *
+ * When `resumeFrom` is set, the first `resumeFrom` segments are assumed to be
+ * already on disk and are not fetched again.
  */
 export async function downloadSegmentsStreaming(
         playlist: MediaPlaylist,
         options: DownloadOptions,
-        onSegment: (index: number, data: Uint8Array) => Promise<void> | void,
+        onSegment: (index: number, data: Uint8Array, writtenThrough: number) => Promise<void> | void,
 ): Promise<void> {
         const total = playlist.segments.length;
+        const resumeFrom = Math.max(0, Math.min(options.resumeFrom ?? 0, total));
         const batchBytes = Math.max(1, options.batchBytes ?? 8 * 1024 * 1024);
         const pending = new Map<number, Uint8Array>();
-        let nextToWrite = 0;
-        let completed = 0;
-        let bytes = 0;
-        let nextToFetch = 0;
+        let nextToWrite = resumeFrom;
+        let completed = resumeFrom;
+        let bytes = options.resumeBytes ?? 0;
+        let nextToFetch = resumeFrom;
         let buffer: Uint8Array[] = [];
         let bufferLength = 0;
+        // Aborts every worker as soon as one fails, so a background worker cannot
+        // keep appending after the download has already reported a failure.
+        const internal = new AbortController();
+        const forwardAbort = (): void => internal.abort();
+        options.signal?.addEventListener('abort', forwardAbort, { once: true });
 
         /**
          * Writes are chained rather than awaited at the call site. Awaiting
@@ -228,9 +208,10 @@ export async function downloadSegmentsStreaming(
                 if (buffer.length === 0) return;
                 const chunk = concatSegments(buffer);
                 const first = nextToWrite - buffer.length;
+                const through = nextToWrite;
                 buffer = [];
                 bufferLength = 0;
-                writes = writes.then(() => onSegment(first, chunk));
+                writes = writes.then(() => onSegment(first, chunk, through));
         };
 
         const worker = async (): Promise<void> => {
@@ -239,7 +220,7 @@ export async function downloadSegmentsStreaming(
                         if (index >= total) return;
                         const url = playlist.segments[index];
                         if (!url) return;
-                        const data = await fetchSegment(url, options.signal);
+                        const data = await fetchSegment(url, internal.signal);
                         completed++;
                         bytes += data.byteLength;
                         options.onProgress?.({ completed, total, bytes });
@@ -258,10 +239,30 @@ export async function downloadSegmentsStreaming(
                 }
         };
 
-        const workers = Math.max(1, Math.min(options.concurrency, total));
-        await Promise.all(Array.from({ length: workers }, worker));
+        const workers = Math.max(1, Math.min(options.concurrency, total - resumeFrom));
+        let failure: Error | null = null;
+        try {
+                await Promise.all(
+                        Array.from({ length: workers }, () =>
+                                worker().catch((error: unknown) => {
+                                        internal.abort();
+                                        throw error;
+                                }),
+                        ),
+                );
+        } catch (error) {
+                failure = error instanceof Error ? error : new DownloadError(String(error));
+        } finally {
+                options.signal?.removeEventListener('abort', forwardAbort);
+        }
 
-        // Flush the tail, then wait for every queued write.
+        // Let every write already in the chain finish, even after a failure, so
+        // the file and its sidecar are frozen and consistent before the caller
+        // records the resume point. The in-memory tail is dropped: it was never
+        // written, so a resume re-fetches it.
+        await writes.catch(() => undefined);
+        if (failure) throw failure;
+
         flushBuffer();
         await writes;
 

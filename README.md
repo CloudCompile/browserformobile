@@ -112,6 +112,33 @@ That is worth remembering for a large library.
 - **Parallel episodes** — episodes downloaded at once. The default is 1, which
   is the kindest setting on a phone; raise it on desktop.
 
+### Resuming a download
+
+A download that fails partway — a dropped connection, a segment the CDN will not
+serve — does not lose the work already done. The stream is written to a staging
+file next to the final one, and its progress is recorded in a small sidecar
+file, so a resumed download continues from the next missing segment instead of
+starting over.
+
+A failed episode in the queue shows how much is saved and offers **Resume** and
+**Discard**. **Resume all** continues every failed episode at once. Re-enqueueing
+a failed episode from the episode picker resumes it too.
+
+The resume is only used when the stream is unchanged: the episode, format,
+quality, and the playlist's segment count and length all have to match what was
+recorded. If the source has changed, the partial file is discarded and the
+episode is downloaded again from the start, rather than splicing two different
+streams together. The same guard drops a staging file that does not match the
+size its sidecar claims, which is what a crash mid-write leaves behind.
+
+Cancelling a download is different from failing: it removes the staging file, so
+a cancel does not leave work behind for a resume you did not ask for.
+
+While a resume is in progress the queue shows **Resuming** before the segment
+count. TS output resumes by appending to the staging file and then renaming it
+into place. MP4 output stages the whole stream first, so it is resumable too, and
+only converts to MP4 once every segment is on disk.
+
 ### Repairing old downloads
 
 Files downloaded before 1.1.1 report the wrong length in players that read the
