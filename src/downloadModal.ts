@@ -8,6 +8,7 @@ import {
 } from './animeApi';
 import { describeProgress, type DownloadManager, type OutputFormat } from './downloader';
 import { externalStorageAvailable } from './destination';
+import { repairFolder } from './doctor';
 
 export interface DownloadModalOptions {
         apiBase: string;
@@ -462,6 +463,46 @@ export class DownloadModal extends Modal {
                         this.manager.clearFinished();
                         this.render();
                 });
+                const doctor = actions.createEl('button', { text: 'Repair old videos' });
+                doctor.addEventListener('click', () => {
+                        void this.repairVideos();
+                });
+        }
+
+        /**
+         * Fix files downloaded before 1.1.1. mux.js left the track durations at
+         * its "unknown" sentinel, so Samsung Gallery and similar players show
+         * every file as 1:35:15. The real length is still in the movie header,
+         * so the files are repaired in place rather than re-downloaded.
+         */
+        private async repairVideos(): Promise<void> {
+                const adapter = this.app.vault.adapter as unknown as {
+                        readBinary(path: string): Promise<ArrayBuffer>;
+                        writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+                        list(path: string): Promise<{ files: string[]; folders: string[] }>;
+                        exists(path: string): Promise<boolean>;
+                };
+                const folder = this.options.external ? '' : this.options.folder;
+                const notice = new Notice('Checking downloaded videos…', 0);
+                try {
+                        const result = await repairFolder(adapter, folder);
+                        notice.hide();
+                        if (result.scanned === 0) {
+                                new Notice('No downloaded videos were found in this folder.');
+                                return;
+                        }
+                        const seconds = result.fixed.reduce((sum, entry) => sum + entry.durationSeconds, 0);
+                        const parts = [
+                                `${result.scanned} checked`,
+                                result.repaired > 0 ? `${result.repaired} repaired` : 'none needed repair',
+                        ];
+                        if (result.repaired > 0) parts.push(`${Math.round(seconds / 60)} minutes fixed`);
+                        if (result.failed.length > 0) parts.push(`${result.failed.length} failed`);
+                        new Notice(parts.join(' · '));
+                } catch (error) {
+                        notice.hide();
+                        new Notice(error instanceof Error ? error.message : 'The repair could not be completed.');
+                }
         }
 
         private renderStatus(): void {

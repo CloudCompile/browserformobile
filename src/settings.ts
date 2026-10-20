@@ -60,7 +60,7 @@ export const DEFAULT_SETTINGS: BrowserSettings = {
 	downloadFilenameTemplate: '{series} - {ep:02} - {title}.{ext}',
 	// The CDN answers HTTP 429 above four parallel segment requests.
 	downloadSegmentConcurrency: 3,
-	downloadMaxConcurrentJobs: 2,
+	downloadMaxConcurrentJobs: 1,
 };
 
 export class BrowserSettingTab extends PluginSettingTab {

@@ -417,15 +417,34 @@ settings object and the plugin instance.
   `tfdt` restarts at 0, which breaks playback. Carrying `baseMediaDecodeTime`
   across segments also failed (non-monotonic across the two tracks). TS output
   streams instead and is the mobile default recommendation.
-- **mux.js writes the "unknown duration" sentinel into `mvhd`** and emits no
-  `mehd`, so some players will not seek. `patchDuration` writes the real duration
-  (timescale 90000) and inserts a version 1 `mehd`.
+- **mux.js leaves every duration at the "unknown" sentinel (`0xffffffff`)** — not
+  just `mvhd` but each `tkhd` and `mdhd` — and emits no `mehd`. Players that read
+  the movie header cope, but ones that read the track headers (Samsung Gallery)
+  show the sentinel: at 90 kHz it is 47721s, which clamps to 1:35:15, so *every*
+  file looks the same length. `patchDuration` writes the real duration into all
+  four, scaling per box (`mvhd`/`mehd` use the movie timescale, each `mdhd` its
+  own, `tkhd` 1000). It is idempotent: a file that already has a `mehd` is
+  updated rather than gaining a second. Verify with a box dump, not a player.
+- **Writes must be serialized, in order.** Segments finish out of order and
+  several workers run at once, so awaiting a write inside the worker let a later
+  segment land before an earlier one — reordering the file and, on the first
+  write, letting `appendBinary` run before the file existed. Both `hls.ts` (a
+  write chain) and the writers in `destination.ts` (a per-file queue) enforce
+  order. Batch decisions are made in the ordered drain loop, never inside a
+  promise callback: doing it in a callback silently dropped the first segment.
 - **Mobile cannot write outside the vault.** `getBasePath()` is desktop-only and
-  Android 11+ needs `MANAGE_EXTERNAL_STORAGE` to write to an SD card, which
-  Obsidian does not hold. Vault folder is the only cross-platform location;
-  external paths are desktop-only and the toggle is hidden when unavailable.
+  Android 11+ needs `MANAGE_EXTERNAL_STORAGE` to write to a path outside the
+  vault, which Obsidian does not hold. The vault itself may live on an SD card
+  and writes go through `adapter`, so that case needs no extra permission.
+  External paths are desktop-only and the toggle is hidden when unavailable.
 - **Vault writes use `adapter.appendBinary`** (available since app 1.12.3; this
-  plugin requires 1.13.0), so `.ts` never buffers the whole episode.
+  plugin requires 1.13.0), so `.ts` never buffers the whole episode. Appends are
+  coalesced to ~8 MB per write because each append re-reads and rewrites the
+  whole file — writing per segment made the phone unusable. The MP4 path streams
+  init then fragments instead of assembling a second copy, halving peak memory.
+- **`src/doctor.ts` repairs files written before 1.1.1** by recovering the length
+  from `mvhd`/`mehd` and re-running `patchDuration`. Surfaced as a command and a
+  button; it only rewrites files that still hold the sentinel.
 
 ### Verification
 
@@ -433,7 +452,9 @@ No committed test runner. Ad-hoc harnesses live in `/tmp/bfmdl/harness/`:
 `e2e.ts` exercises the API client, playlist parsing, template rendering, ordered
 streaming, and transmux against the live API; `manager.ts` runs the real
 `DownloadManager` against a filesystem-backed fake vault adapter and checks file
-contents, duplicate refusal, cancel cleanup, and the patched `mvhd` duration.
+contents, duplicate refusal, cancel cleanup, and the patched durations.
+`verify.ts` covers write ordering and batching with synthetic segments;
+`doctor.ts` covers detection and in-place repair.
 Bundle them with the repo's local esbuild
 (`node_modules/.bin/esbuild ... --alias:obsidian=./obsidian-stub.ts`) and a
 `window` shim; `npx esbuild` hangs in this environment.

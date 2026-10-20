@@ -81,18 +81,23 @@ On mobile, prefer **TS** for long series.
 
 ### Where files are saved
 
-On mobile, files are written to a folder **inside your vault**. This is not a
-preference: Obsidian's mobile app has no access to absolute paths, and Android
-11 and later blocks writes to an SD card unless the app holds
-`MANAGE_EXTERNAL_STORAGE`, which Obsidian does not request. A plugin therefore
-cannot write to an SD card on Android.
+A plugin can only write **inside the vault**. On mobile, Obsidian's app exposes
+no absolute path, so the download folder is always vault-relative.
+
+The vault itself can live on an SD card, and that is the supported way to keep a
+large library off internal storage: point Obsidian's vault at the card, and
+downloads are written there. No extra permission is needed, because the writes
+go through Obsidian's own storage layer rather than a direct filesystem path.
+
+What is not possible is writing to an arbitrary SD-card path **outside** the
+vault: Android 11 and later blocks that unless the app holds
+`MANAGE_EXTERNAL_STORAGE`, which Obsidian does not request.
 
 On desktop you can turn on **Save outside the vault** and give an absolute path,
 such as a mounted card. That option is hidden where it cannot work.
 
 Because downloads land in the vault, they sync with it if you sync your vault.
-An SD card is a better home for a large library, but only the desktop app can
-write there.
+That is worth remembering for a large library.
 
 ### Download settings
 
@@ -104,7 +109,19 @@ write there.
 - **Filename template** — `{series}`, `{ep}`, `{ep:02}`, `{title}`, `{ext}`.
 - **Parallel segments** — segments fetched at once per episode. The stream CDN
   starts refusing requests above four, so the default is 3.
-- **Parallel episodes** — episodes downloaded at once. The default is 2.
+- **Parallel episodes** — episodes downloaded at once. The default is 1, which
+  is the kindest setting on a phone; raise it on desktop.
+
+### Repairing old downloads
+
+Files downloaded before 1.1.1 report the wrong length in players that read the
+track headers — Samsung Gallery shows every file as **1:35:15**. mux.js left the
+duration at its "unknown" placeholder, which those players clamp to that value.
+
+The real length is still recorded elsewhere in the file, so the files can be
+repaired in place, without downloading them again. Use **Repair old videos** in
+the download window, or the **Repair downloaded videos** command. Both scan the
+download folder and rewrite only the files that need it.
 
 ### Legal
 
@@ -170,7 +187,8 @@ analytics on those pages run; turn off **Run page scripts** to block them.
 All actions are available from the command palette: open browser, new tab, close
 tab, next and previous tab, back, forward, reload, focus address bar, toggle
 proxy rendering, bookmark page, open bookmarks, open history, manage cookies, go
-home, clear browsing data, and open the anime downloader.
+home, clear browsing data, open the anime downloader, and repair downloaded
+videos.
 
 ## Development
 

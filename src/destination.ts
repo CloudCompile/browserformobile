@@ -11,6 +11,8 @@ import { FileSystemAdapter, Platform, normalizePath } from 'obsidian';
  * mounted SD card) is also supported through Node's `fs`.
  */
 
+export class DownloadWriteError extends Error {}
+
 export interface FileWriter {
         /** Append a chunk. The first call creates or truncates the file. */
         write(chunk: Uint8Array): Promise<void>;
@@ -72,8 +74,10 @@ export function sanitizeName(name: string): string {
 }
 
 class VaultWriter implements FileWriter {
-        private started = false;
-        private path: string;
+        private created = false;
+        /** Serialises writes so an append can never land before the create. */
+        private queue: Promise<void> = Promise.resolve();
+        private failed = false;
 
         constructor(
                 private readonly adapter: {
@@ -81,27 +85,45 @@ class VaultWriter implements FileWriter {
                         appendBinary(path: string, data: ArrayBuffer): Promise<void>;
                         remove(path: string): Promise<void>;
                 },
-                path: string,
-        ) {
-                this.path = path;
+                private readonly path: string,
+        ) {}
+
+        private enqueue(task: () => Promise<void>): Promise<void> {
+                const next = this.queue.then(async () => {
+                        if (this.failed) return;
+                        try {
+                                await task();
+                        } catch (error) {
+                                this.failed = true;
+                                throw error;
+                        }
+                });
+                // Keep the chain alive after a rejection so later writes do not
+                // surface the same error again.
+                this.queue = next.catch(() => undefined);
+                return next;
         }
 
-        async write(chunk: Uint8Array): Promise<void> {
+        write(chunk: Uint8Array): Promise<void> {
                 const buffer = toArrayBuffer(chunk);
-                if (!this.started) {
-                        this.started = true;
-                        await this.adapter.writeBinary(this.path, buffer);
-                        return;
-                }
-                await this.adapter.appendBinary(this.path, buffer);
+                return this.enqueue(async () => {
+                        if (!this.created) {
+                                this.created = true;
+                                await this.adapter.writeBinary(this.path, buffer);
+                                return;
+                        }
+                        await this.adapter.appendBinary(this.path, buffer);
+                });
         }
 
         async close(): Promise<void> {
-                /* Writes are already durable. */
+                await this.queue;
+                if (this.failed) throw new DownloadWriteError('The file could not be written.');
         }
 
         async abort(): Promise<void> {
-                if (!this.started) return;
+                await this.queue.catch(() => undefined);
+                if (!this.created) return;
                 try {
                         await this.adapter.remove(this.path);
                 } catch {
@@ -111,28 +133,48 @@ class VaultWriter implements FileWriter {
 }
 
 class ExternalWriter implements FileWriter {
-        private started = false;
+        private created = false;
+        private queue: Promise<void> = Promise.resolve();
+        private failed = false;
 
         constructor(
                 private readonly fs: NodeFs,
                 private readonly path: string,
         ) {}
 
-        async write(chunk: Uint8Array): Promise<void> {
-                if (!this.started) {
-                        this.started = true;
-                        await this.fs.promises.writeFile(this.path, chunk);
-                        return;
-                }
-                await this.fs.promises.appendFile(this.path, chunk);
+        private enqueue(task: () => Promise<void>): Promise<void> {
+                const next = this.queue.then(async () => {
+                        if (this.failed) return;
+                        try {
+                                await task();
+                        } catch (error) {
+                                this.failed = true;
+                                throw error;
+                        }
+                });
+                this.queue = next.catch(() => undefined);
+                return next;
+        }
+
+        write(chunk: Uint8Array): Promise<void> {
+                return this.enqueue(async () => {
+                        if (!this.created) {
+                                this.created = true;
+                                await this.fs.promises.writeFile(this.path, chunk);
+                                return;
+                        }
+                        await this.fs.promises.appendFile(this.path, chunk);
+                });
         }
 
         async close(): Promise<void> {
-                /* Writes are already durable. */
+                await this.queue;
+                if (this.failed) throw new DownloadWriteError('The file could not be written.');
         }
 
         async abort(): Promise<void> {
-                if (!this.started) return;
+                await this.queue.catch(() => undefined);
+                if (!this.created) return;
                 try {
                         await this.fs.promises.unlink(this.path);
                 } catch {

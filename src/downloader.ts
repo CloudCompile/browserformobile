@@ -9,8 +9,11 @@ import {
         loadMediaPlaylist,
         type MediaPlaylist,
 } from './hls';
-import { assembleMp4, transmux } from './transmux';
+import { patchDuration, transmux } from './transmux';
 import { generateId } from './utils';
+
+/** Bytes coalesced into one write. Appending is costly on mobile. */
+const TS_BATCH_BYTES = 8 * 1024 * 1024;
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
@@ -212,14 +215,13 @@ export class DownloadManager {
                         this.scheduleUpdate();
                 };
 
-                if (this.options.format === 'ts') {
-                        await this.writeTs(destination, path, playlist, signal, onProgress);
-                } else {
-                        await this.writeMp4(destination, path, playlist, signal, onProgress);
-                }
+                const written =
+                        this.options.format === 'ts'
+                                ? await this.writeTs(destination, path, playlist, signal, onProgress)
+                                : await this.writeMp4(destination, path, playlist, signal, onProgress);
 
                 job.filePath = destination.displayPath(path);
-                job.fileSize = job.bytes;
+                job.fileSize = written;
         }
 
         private async writeTs(
@@ -228,8 +230,9 @@ export class DownloadManager {
                 playlist: MediaPlaylist,
                 signal: AbortSignal,
                 onProgress: (progress: { completed: number; bytes: number }) => void,
-        ): Promise<void> {
+        ): Promise<number> {
                 const writer = await destination.open(path);
+                let written = 0;
                 try {
                         await downloadSegmentsStreaming(
                                 playlist,
@@ -237,9 +240,11 @@ export class DownloadManager {
                                         concurrency: this.options.segmentConcurrency,
                                         signal,
                                         onProgress,
+                                        batchBytes: TS_BATCH_BYTES,
                                 },
                                 async (_index, data) => {
                                         await writer.write(data);
+                                        written += data.byteLength;
                                 },
                         );
                         await writer.close();
@@ -247,6 +252,7 @@ export class DownloadManager {
                         await writer.abort();
                         throw error;
                 }
+                return written;
         }
 
         private async writeMp4(
@@ -255,24 +261,37 @@ export class DownloadManager {
                 playlist: MediaPlaylist,
                 signal: AbortSignal,
                 onProgress: (progress: { completed: number; bytes: number }) => void,
-        ): Promise<void> {
+        ): Promise<number> {
                 // mux.js only emits on flush, so the whole episode has to be held
-                // in memory before it can be converted.
+                // in memory before it can be converted. The finished file is not
+                // built in a second buffer: the init segment is patched in place
+                // and the fragments are written one at a time, which halves the
+                // peak footprint on mobile.
                 const segments = await downloadSegments(playlist, {
                         concurrency: this.options.segmentConcurrency,
                         signal,
                         onProgress,
                 });
                 if (signal.aborted) throw new DownloadError('Download cancelled.');
-                const mp4 = assembleMp4(transmux(segments), playlist.duration);
+                const result = transmux(segments);
+                const init = result.init ? patchDuration(result.init, playlist.duration) : null;
                 const writer = await destination.open(path);
+                let written = 0;
                 try {
-                        await writer.write(mp4);
+                        if (init) {
+                                await writer.write(init);
+                                written += init.byteLength;
+                        }
+                        for (const fragment of result.fragments) {
+                                await writer.write(fragment);
+                                written += fragment.byteLength;
+                        }
                         await writer.close();
                 } catch (error) {
                         await writer.abort();
                         throw error;
                 }
+                return written;
         }
 
         private destinationFor(): Destination {

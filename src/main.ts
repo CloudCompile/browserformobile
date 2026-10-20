@@ -1,6 +1,7 @@
 import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
 import { DownloadManager, type DownloaderOptions } from './downloader';
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
+import { repairFolder } from './doctor';
 import { DEFAULT_SETTINGS, BrowserSettingTab, type BrowserSettings } from './settings';
 import { BrowserStore } from './store';
 import type { BrowserData } from './types';
@@ -254,6 +255,50 @@ export default class BrowserPlugin extends Plugin {
 				this.openDownloader();
 			},
 		});
+
+		this.addCommand({
+			id: 'repair-anime-downloads',
+			name: 'Repair downloaded videos',
+			callback: () => {
+				void this.repairDownloads();
+			},
+		});
+	}
+
+	/**
+	 * Rewrite the duration of previously downloaded MP4s. Files made before
+	 * 1.1.1 report the same length in players that read the track headers
+	 * (Samsung Gallery), because mux.js left the duration at its sentinel.
+	 * The real length is still in the file, so it can be repaired in place.
+	 */
+	private async repairDownloads(): Promise<void> {
+		const folder = this.settings.downloadExternal ? '' : this.settings.downloadFolder;
+		const adapter = this.app.vault.adapter as unknown as {
+			readBinary(path: string): Promise<ArrayBuffer>;
+			writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+			list(path: string): Promise<{ files: string[]; folders: string[] }>;
+			exists(path: string): Promise<boolean>;
+		};
+		const notice = new Notice('Checking downloaded videos…', 0);
+		try {
+			const result = await repairFolder(adapter, folder);
+			notice.hide();
+			if (result.scanned === 0) {
+				new Notice('No downloaded videos were found.');
+				return;
+			}
+			const seconds = result.fixed.reduce((sum, entry) => sum + entry.durationSeconds, 0);
+			const parts = [
+				`${result.scanned} checked`,
+				result.repaired > 0 ? `${result.repaired} repaired` : 'none needed repair',
+			];
+			if (result.repaired > 0) parts.push(`${Math.round(seconds / 60)} minutes of video fixed`);
+			if (result.failed.length > 0) parts.push(`${result.failed.length} failed`);
+			new Notice(parts.join(' · '));
+		} catch (error) {
+			notice.hide();
+			new Notice(error instanceof Error ? error.message : 'The repair could not be completed.');
+		}
 	}
 
 	async activateView(): Promise<void> {

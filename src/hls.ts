@@ -33,6 +33,12 @@ export interface DownloadOptions {
         concurrency: number;
         signal?: AbortSignal;
         onProgress?(progress: DownloadProgress): void;
+        /**
+         * Bytes buffered before a write is issued. Writing each segment on its
+         * own is very expensive on mobile, where every append re-reads and
+         * rewrites the whole file, so writes are coalesced.
+         */
+        batchBytes?: number;
 }
 
 export class DownloadError extends Error {}
@@ -202,19 +208,29 @@ export async function downloadSegmentsStreaming(
         onSegment: (index: number, data: Uint8Array) => Promise<void> | void,
 ): Promise<void> {
         const total = playlist.segments.length;
+        const batchBytes = Math.max(1, options.batchBytes ?? 8 * 1024 * 1024);
         const pending = new Map<number, Uint8Array>();
         let nextToWrite = 0;
         let completed = 0;
         let bytes = 0;
         let nextToFetch = 0;
+        let buffer: Uint8Array[] = [];
+        let bufferLength = 0;
 
-        const flush = async (): Promise<void> => {
-                while (pending.has(nextToWrite)) {
-                        const data = pending.get(nextToWrite) as Uint8Array;
-                        pending.delete(nextToWrite);
-                        nextToWrite++;
-                        await onSegment(nextToWrite - 1, data);
-                }
+        /**
+         * Writes are chained rather than awaited at the call site. Awaiting
+         * inside the worker let a later segment's write begin before an earlier
+         * one had finished, which reordered the file and — on the very first
+         * write — let an append land before the file existed.
+         */
+        let writes: Promise<void> = Promise.resolve();
+        const flushBuffer = (): void => {
+                if (buffer.length === 0) return;
+                const chunk = concatSegments(buffer);
+                const first = nextToWrite - buffer.length;
+                buffer = [];
+                bufferLength = 0;
+                writes = writes.then(() => onSegment(first, chunk));
         };
 
         const worker = async (): Promise<void> => {
@@ -228,12 +244,32 @@ export async function downloadSegmentsStreaming(
                         bytes += data.byteLength;
                         options.onProgress?.({ completed, total, bytes });
                         pending.set(index, data);
-                        await flush();
+                        // Append every segment that is now contiguous. Deciding
+                        // the batches here, in order, keeps the file ordered and
+                        // coalesces writes so each one is a decent size.
+                        while (pending.has(nextToWrite)) {
+                                const nextData = pending.get(nextToWrite) as Uint8Array;
+                                pending.delete(nextToWrite);
+                                buffer.push(nextData);
+                                bufferLength += nextData.byteLength;
+                                nextToWrite++;
+                                if (bufferLength >= batchBytes) flushBuffer();
+                        }
                 }
         };
 
         const workers = Math.max(1, Math.min(options.concurrency, total));
         await Promise.all(Array.from({ length: workers }, worker));
+
+        // Flush the tail, then wait for every queued write.
+        flushBuffer();
+        await writes;
+
+        // Every segment must have reached the writer, or the file is short and
+        // would play as a truncated episode with no indication why.
+        if (nextToWrite !== total) {
+                throw new DownloadError(`Only ${nextToWrite} of ${total} segments were written.`);
+        }
 }
 
 /** Resolve a media playlist URL for a chosen variant. */
