@@ -649,6 +649,27 @@ path.
   `current` read a silent zero. Removing the thinning also cut mean ETA error by
   ~13 points (52.8% -> 39.5%). Every progress callback is now kept.
 
+### Releases
+
+A release is two commits: the feature work, then a separate `Release X.Y.Z`
+commit that bumps `package.json`, `manifest.json`, and `versions.json` together.
+Tag the release commit `X.Y.Z` with no leading `v`, and attach `main.js`,
+`manifest.json`, and `styles.css` as individual assets.
+
+The maintainer's convention for a user-facing improvement is a **minor bump with
+a `.5` patch** (1.7.0 -> 1.8.5), not the plain `.0`. Ask if unsure.
+
+Two gotchas, both hit when cutting 1.8.5:
+
+- The `origin` remote carries an embedded token that expires. A `git push` then
+  hangs on a `Password for 'https://...'` prompt rather than failing. Push with
+  the current `GITHUB_TOKEN` instead
+  (`git remote set-url origin https://x-access-token:$GITHUB_TOKEN@github.com/...`),
+  and reset the URL to the plain form afterwards so the token is not left on disk.
+- `versions.json` is indented with **8 spaces**, not tabs. Writing it back through
+  `json.dumps(..., indent='\t')` reformats the whole file; edit the one entry in
+  place instead.
+
 ### Verification
 
 No committed test runner. Ad-hoc harnesses live in `/tmp/bfmdl/harness/`:
