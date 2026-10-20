@@ -7,6 +7,7 @@ import {
         type SeriesSummary,
 } from './animeApi';
 import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat } from './downloader';
+import { formatSpeed } from './hls';
 import { externalStorageAvailable } from './destination';
 import { repairFolder } from './doctor';
 import { ConfirmModal } from './modals';
@@ -729,6 +730,13 @@ export class DownloadModal extends Modal {
                 const failed = this.manager.jobs.filter((job) => job.status === 'failed').length;
                 const parts: string[] = [];
                 if (active > 0) parts.push(`${active} active`);
+                const speed = this.manager.networkSpeed;
+                if (speed > 0) parts.push(formatSpeed(speed));
+                // The session average is only interesting once something has
+                // finished; while a run is live the instantaneous rate above is
+                // the useful figure.
+                const session = this.manager.averageNetworkSpeed;
+                if (session > 0 && speed <= 0) parts.push(`avg ${formatSpeed(session)}`);
                 if (waiting > 0) parts.push(`${waiting} waiting to retry`);
                 if (paused > 0) parts.push(`${paused} paused`);
                 if (done > 0) parts.push(`${done} done`);

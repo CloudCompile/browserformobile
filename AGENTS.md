@@ -631,6 +631,23 @@ path.
   back to a full `render` only when a row appears, disappears, or changes status
   class. Anything that changes the shape of the queue (enqueue, cancel, finish)
   must call `render`, not `tickQueue`.
+- **Speed and ETA come from `src/perf.ts`, and the estimator was chosen by
+  measurement, not intuition.** `SpeedTracker` keeps an EMA of the rate between
+  progress callbacks and blends it 60/40 with the *median* of the recent
+  per-callback rates, and takes the remaining size from
+  `remainingBytesFromBitrate` (playlist durations, not average bytes per
+  segment). Both choices were picked by scoring candidates against wall-clock
+  truth on captured runs: the blend cut mean error from ~49% to ~39% (fast) and
+  ~57% to ~47% (slow) and drove the bias from +18%/+39% to ~0. The median is what
+  removes the optimism — the raw interval rate against this CDN swings between
+  ~2 and ~70 MB/s, and a mean (or an EMA of the spikes) is dragged up by the
+  bursts. Do not "improve" this by swapping in a plain windowed mean: that
+  scored *worse* (75% mean error, +40% bias) in the same harness.
+- **Do not thin the samples.** An earlier version committed a sample at most
+  every 250 ms by updating the previous sample in place. The live API ticks every
+  ~65 ms, so that never committed a second sample: the window stayed empty and
+  `current` read a silent zero. Removing the thinning also cut mean ETA error by
+  ~13 points (52.8% -> 39.5%). Every progress callback is now kept.
 
 ### Verification
 
@@ -677,3 +694,13 @@ reset when the saved position is the end, and the `.ts` refusal.
 Bundle them with the repo's local esbuild
 (`node_modules/.bin/esbuild ... --alias:obsidian=./obsidian-stub.ts`) and a
 `window` shim; `npx esbuild` hangs in this environment.
+
+The speed/ETA work added harnesses in `/tmp/bfmh/`: `perf.test.ts` unit-tests
+`SpeedTracker` and `remainingBytesFromBitrate` on synthetic timelines;
+`capture.test.ts` records a live run's `(time, bytes, completed)` timeline to
+JSON; `replay.test.ts` replays those captures through the *real* tracker and
+scores the ETA against wall-clock truth, side by side with the estimator it
+replaced (this is the harness that caught both the thinning bug and the
+windowed-mean regression); `progress.test.ts` covers `describeProgress`.
+Re-capturing needs the live CDN, which rate-limits after a handful of runs — a
+`429` there is the CDN, not the code.

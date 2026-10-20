@@ -11,6 +11,7 @@ import {
         RateLimitError,
         type MediaPlaylist,
 } from './hls';
+import { remainingBytesFromBitrate, SpeedTracker } from './perf';
 import { patchDuration, TransmuxStream } from './transmux';
 import { generateId } from './utils';
 import { ScreenWakeLock } from './wakelock';
@@ -129,8 +130,12 @@ export interface DownloadJob {
         writtenSegments: number;
         /** Bytes written so far by the running job, kept for the sidecar. */
         writtenBytes: number;
-        /** Bytes per second, averaged over the last few seconds of a run. */
+        /** Bytes per second over the last few seconds of a run — the live rate. */
         speed: number | null;
+        /** Bytes per second across the whole run, including a slow start. */
+        averageSpeed: number | null;
+        /** Fastest windowed rate seen during the run. */
+        peakSpeed: number | null;
         /** Estimated seconds remaining, or null while it cannot be estimated. */
         eta: number | null;
         /** When a rate-limited job parked at the bottom of the queue will retry. */
@@ -139,9 +144,6 @@ export interface DownloadJob {
         rateLimitRetries: number;
         /** How many times the job has been retried automatically after a plain failure. */
         autoRetries: number;
-        /** Timestamp and byte count of the last speed sample. */
-        speedSampleAt?: number;
-        speedSampleBytes?: number;
 }
 
 export interface DownloaderOptions {
@@ -230,6 +232,10 @@ export class DownloadManager {
         private updateTimer: number | null = null;
         /** Pending rate-limit retry timers, cleared on dispose. */
         private readonly retryTimers = new Set<number>();
+        /** Live speed tracker per running job. */
+        private readonly trackers = new Map<string, SpeedTracker>();
+        /** The playlist of the run, kept so the ETA can use its durations. */
+        private readonly playlists = new Map<string, MediaPlaylist>();
         /** Holds the screen awake while a job runs, so Android does not freeze it. */
         private readonly wakeLock = new ScreenWakeLock();
 
@@ -304,6 +310,8 @@ export class DownloadManager {
                                 writtenSegments: 0,
                                 writtenBytes: 0,
                                 speed: null,
+                                averageSpeed: null,
+                                peakSpeed: null,
                                 eta: null,
                                 retryAt: null,
                                 rateLimitRetries: 0,
@@ -425,6 +433,32 @@ export class DownloadManager {
                         }
                 }
                 this.scheduleUpdate();
+        }
+
+        /**
+         * Total bytes per second across every running job — the live network
+         * reading. Summed from the per-job windowed rates, so it reflects the
+         * link's current behaviour rather than an average since the run began.
+         */
+        get networkSpeed(): number {
+                let total = 0;
+                for (const job of this.jobs) {
+                        if (job.status === 'running' && job.speed) total += job.speed;
+                }
+                return total;
+        }
+
+        /** Bytes per second across every job that has finished this session. */
+        get averageNetworkSpeed(): number {
+                let bytes = 0;
+                let seconds = 0;
+                for (const job of this.jobs) {
+                        if (job.status === 'done' && job.averageSpeed && job.fileSize) {
+                                bytes += job.fileSize;
+                                seconds += job.fileSize / job.averageSpeed;
+                        }
+                }
+                return seconds > 0 ? bytes / seconds : 0;
         }
 
         get activeCount(): number {
@@ -561,6 +595,10 @@ export class DownloadManager {
                         job.speed = null;
                         job.eta = null;
                         this.controllers.delete(job.id);
+                        // The tracker and playlist are only needed while the run is
+                        // live; a deferred job builds fresh ones when it retries.
+                        this.trackers.delete(job.id);
+                        this.playlists.delete(job.id);
                         this.running--;
                         this.scheduleUpdate();
                         this.pump();
@@ -610,25 +648,46 @@ export class DownloadManager {
         }
 
         /**
-         * Smooth the byte rate over a short window so the figure is readable
-         * rather than jumping with every segment. The ETA is derived from the
-         * average bytes per segment seen so far, which is accurate enough to be
-         * useful and needs no knowledge of the file size up front.
+         * Feed the run's speed tracker and refresh the job's live figures. The
+         * tracker measures the rate over a sliding window, so the reading follows
+         * the link rather than averaging away a change in it.
          */
         private trackSpeed(job: DownloadJob): void {
-                const now = Date.now();
-                const elapsed = (now - (job.speedSampleAt ?? now)) / 1000;
-                if (elapsed < 1) return;
-                const delta = job.bytes - (job.speedSampleBytes ?? job.bytes);
-                const instant = delta / elapsed;
-                job.speed = job.speed === null ? instant : job.speed * 0.6 + instant * 0.4;
-                job.speedSampleAt = now;
-                job.speedSampleBytes = job.bytes;
-                if (job.speed > 0 && job.completed !== null && job.total !== null && job.completed > 0) {
-                        const perSegment = job.bytes / job.completed;
-                        const remainingBytes = perSegment * (job.total - job.completed);
-                        job.eta = remainingBytes / job.speed;
+                const tracker = this.trackers.get(job.id);
+                if (!tracker) return;
+                tracker.record(job.bytes);
+                const reading = tracker.read(this.remainingBytes(job));
+                job.speed = reading.current > 0 ? reading.current : null;
+                job.averageSpeed = reading.average > 0 ? reading.average : null;
+                job.peakSpeed = reading.peak > 0 ? reading.peak : null;
+                job.eta = reading.eta;
+        }
+
+        /**
+         * Bytes still to fetch for this job. Prefers the stream bitrate and the
+         * playlist's own durations — the variant's bitrate is near constant, so
+         * `bitrate x seconds left` is a steadier predictor than the average size
+         * of the segments that happened to have landed. Falls back to that
+         * average when the playlist carries no durations.
+         */
+        private remainingBytes(job: DownloadJob): number {
+                const playlist = this.playlists.get(job.id);
+                const completed = job.completed ?? 0;
+                const total = job.total ?? 0;
+                if (playlist && completed > 0) {
+                        const fromBitrate = remainingBytesFromBitrate(
+                                playlist.durations,
+                                playlist.duration,
+                                completed,
+                                job.bytes,
+                        );
+                        if (fromBitrate !== null) return fromBitrate;
                 }
+                if (total > 0 && completed > 0) {
+                        const perSegment = job.bytes / completed;
+                        return perSegment * (total - completed);
+                }
+                return 0;
         }
 
         /** Remove a job's staging file and sidecar, ignoring any error. */
@@ -664,6 +723,9 @@ export class DownloadManager {
 
                 const playlist = await loadMediaPlaylist(variant.url);
                 if (signal.aborted) throw new DownloadError('Download cancelled.');
+                // Kept for the duration of the run so the speed tracker can turn a
+                // rate into an ETA from the playlist's own segment durations.
+                this.playlists.set(job.id, playlist);
 
                 const destination = this.destinationFor();
                 const path = this.buildPath(job);
@@ -721,8 +783,9 @@ export class DownloadManager {
                 job.resumed = resumeFrom > 0;
                 job.writtenSegments = resumeFrom;
                 job.writtenBytes = resumeBytes;
-                job.speedSampleAt = Date.now();
-                job.speedSampleBytes = job.bytes;
+                const tracker = new SpeedTracker();
+                tracker.reset(job.bytes);
+                this.trackers.set(job.id, tracker);
                 this.scheduleUpdate();
 
                 const onProgress = (progress: { completed: number; bytes: number }): void => {
@@ -1071,6 +1134,8 @@ export class DownloadManager {
                                 writtenSegments: partial.segments,
                                 writtenBytes: partial.bytes,
                                 speed: null,
+                                averageSpeed: null,
+                                peakSpeed: null,
                                 eta: null,
                                 retryAt: null,
                                 rateLimitRetries: 0,
@@ -1147,13 +1212,23 @@ export function describeProgress(job: DownloadJob): string {
                 const reason = job.rateLimitRetries > 0 ? 'Rate limited' : 'Retrying';
                 return `${reason} · retrying in ${formatDuration(wait)}`;
         }
-        if (job.status === 'done') return `Saved${job.fileSize ? ` · ${formatBytes(job.fileSize)}` : ''}`;
+        if (job.status === 'done') {
+                const size = job.fileSize ? ` · ${formatBytes(job.fileSize)}` : '';
+                const avg = job.averageSpeed ? ` · avg ${formatSpeed(job.averageSpeed)}` : '';
+                return `Saved${size}${avg}`;
+        }
         if (job.total && job.completed !== null) {
                 const progress = `${job.completed} / ${job.total} segments · ${formatBytes(job.bytes)}`;
                 const rate = job.speed ? ` · ${formatSpeed(job.speed)}` : '';
+                // Only worth quoting when the link has actually peaked above the
+                // current rate; otherwise it just repeats the rate next to it.
+                const peak =
+                        job.peakSpeed && job.speed && job.peakSpeed > job.speed * 1.15
+                                ? ` · peak ${formatSpeed(job.peakSpeed)}`
+                                : '';
                 const eta = job.eta ? ` · ${formatDuration(job.eta)} left` : '';
                 const prefix = job.resumed ? 'Resuming · ' : '';
-                return `${prefix}${progress}${rate}${eta}`;
+                return `${prefix}${progress}${rate}${peak}${eta}`;
         }
         return 'Starting…';
 }
