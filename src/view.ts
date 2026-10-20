@@ -10,8 +10,10 @@ import {
 } from './modals';
 import { DirectRenderer, ProxyRenderer, type NavigateOptions, type Renderer } from './renderer';
 import { probeFramePolicy } from './proxy';
+import { Sheet } from './sheet';
 import type { RenderMode, TabState } from './types';
 import { displayUrl, hostOf, normalizeInput } from './utils';
+import { keyboardInset } from './viewport';
 
 export const VIEW_TYPE_BROWSER = 'browser-for-mobile-view';
 
@@ -26,10 +28,14 @@ export class BrowserView extends ItemView {
 	private tabsEl!: HTMLElement;
 	private pageEl!: HTMLElement;
 	private statusEl!: HTMLElement;
+	private rootEl!: HTMLElement;
 	private backButton!: HTMLButtonElement;
 	private forwardButton!: HTMLButtonElement;
+	private tabCountButton!: HTMLButtonElement;
+	private tabCountBadge!: HTMLElement;
 	private bookmarkButton!: HTMLButtonElement;
-	private proxyButton!: HTMLButtonElement;
+	/** The proxy toggle now lives in the menu sheet, so it only exists while that is open. */
+	private proxyButton: HTMLElement | null = null;
 	private renderer: Renderer | null = null;
 	private loading = false;
 	/** Tab ids whose current page raised a script error. Non-fatal, but shown in the status bar. */
@@ -38,6 +44,10 @@ export class BrowserView extends ItemView {
 	private readonly autoProxied = new Set<string>();
 	/** Bumped on every render so a slow framing preflight cannot clobber a newer load. */
 	private renderToken = 0;
+	/** Open bottom sheet, so a second one cannot stack on the first. */
+	private sheet: Sheet | null = null;
+	/** Removes the keyboard listeners added in `watchKeyboard`. */
+	private visualViewportHandler: (() => void) | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -69,6 +79,14 @@ export class BrowserView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		this.sheet?.close();
+		this.sheet = null;
+		if (this.visualViewportHandler) {
+			window.visualViewport?.removeEventListener('resize', this.visualViewportHandler);
+			window.visualViewport?.removeEventListener('scroll', this.visualViewportHandler);
+			window.removeEventListener('resize', this.visualViewportHandler);
+			this.visualViewportHandler = null;
+		}
 		this.unmountRenderer();
 	}
 
@@ -78,7 +96,11 @@ export class BrowserView extends ItemView {
 		const root = this.contentEl;
 		root.empty();
 		root.addClass('bfm-root');
+		this.rootEl = root;
 
+		// The address row sits at the top: back/forward, the address field, and the
+		// overflow button. Primary navigation lives in the bottom bar instead, so a
+		// phone gets the row back for the page.
 		const toolbar = root.createDiv({ cls: 'bfm-toolbar' });
 		const navGroup = toolbar.createDiv({ cls: 'bfm-toolbar-group' });
 
@@ -86,7 +108,6 @@ export class BrowserView extends ItemView {
 		this.forwardButton = this.iconButton(navGroup, 'arrow-right', 'Forward', () =>
 			this.goForward(),
 		);
-		this.iconButton(navGroup, 'rotate-cw', 'Reload', () => this.reload());
 
 		const addressWrap = toolbar.createDiv({ cls: 'bfm-address-wrap' });
 		this.addressEl = addressWrap.createEl('input', {
@@ -109,20 +130,53 @@ export class BrowserView extends ItemView {
 		});
 
 		const actionGroup = toolbar.createDiv({ cls: 'bfm-toolbar-group' });
-		this.bookmarkButton = this.iconButton(actionGroup, 'star', 'Bookmark this page', () =>
+		this.iconButton(actionGroup, 'more-vertical', 'More options', () => this.openMenuSheet());
+
+		this.tabsEl = root.createDiv({ cls: 'bfm-tabs' });
+		this.pageEl = root.createDiv({ cls: 'bfm-content' });
+
+		// Bottom bar: thumb-reachable actions that do not duplicate the top row,
+		// plus the status line and the tab count.
+		const bottom = root.createDiv({ cls: 'bfm-bottom' });
+		const bottomRow = bottom.createDiv({ cls: 'bfm-bottom-row' });
+		this.iconButton(bottomRow, 'rotate-cw', 'Reload', () => this.reload());
+		this.bookmarkButton = this.iconButton(bottomRow, 'star', 'Bookmark this page', () =>
 			this.toggleBookmark(),
 		);
-		this.proxyButton = this.iconButton(actionGroup, 'shield', 'Toggle proxy rendering', () =>
-			this.toggleProxy(),
+		this.tabCountButton = this.iconButton(bottomRow, 'layers', 'Tabs', () =>
+			this.openTabSheet(),
 		);
-		this.iconButton(actionGroup, 'globe', 'Open in system browser', () => {
+		this.tabCountButton.addClass('bfm-tab-count-button');
+		this.tabCountBadge = this.tabCountButton.createSpan({ cls: 'bfm-tab-count' });
+		this.iconButton(bottomRow, 'home', 'Home page', () => this.goHome());
+		this.iconButton(bottomRow, 'external-link', 'Open in system browser', () => {
 			const tab = this.plugin.store.tabs.active;
 			if (tab) this.openExternal(tab.displayUrl);
 		});
 
-		this.tabsEl = root.createDiv({ cls: 'bfm-tabs' });
-		this.pageEl = root.createDiv({ cls: 'bfm-content' });
-		this.statusEl = root.createDiv({ cls: 'bfm-status' });
+		this.statusEl = bottom.createDiv({ cls: 'bfm-status' });
+
+		this.watchKeyboard();
+	}
+
+	/**
+	 * Keep the bottom bar above the soft keyboard. The keyboard shrinks the visual
+	 * viewport without resizing the layout, so without this the bar is drawn under
+	 * the keyboard; the covered height is published as `--bfm-keyboard-inset` for
+	 * the CSS to consume. Listens on both `visualViewport` and `window` because
+	 * older WebViews only fire the latter.
+	 */
+	private watchKeyboard(): void {
+		const update = () => {
+			const layout = window.innerHeight || document.documentElement.clientHeight;
+			const inset = keyboardInset(window.visualViewport, layout);
+			this.rootEl.setCssProps({ '--bfm-keyboard-inset': `${inset}px` });
+		};
+		this.visualViewportHandler = update;
+		window.visualViewport?.addEventListener('resize', update);
+		window.visualViewport?.addEventListener('scroll', update);
+		window.addEventListener('resize', update);
+		update();
 	}
 
 	private iconButton(
@@ -186,11 +240,18 @@ export class BrowserView extends ItemView {
 	private updateToolbar(): void {
 		const tab = this.plugin.store.tabs.active;
 		const store = this.plugin.store.tabs;
-		this.backButton.disabled = !tab || !store.canGoBack(tab.id);
-		this.forwardButton.disabled = !tab || !store.canGoForward(tab.id);
+		const canBack = !!tab && store.canGoBack(tab.id);
+		const canForward = !!tab && store.canGoForward(tab.id);
+		this.backButton.disabled = !canBack;
+		this.forwardButton.disabled = !canForward;
 		const bookmarked = tab ? this.plugin.store.isBookmarked(tab.displayUrl) : false;
 		this.bookmarkButton.toggleClass('is-active', bookmarked);
-		this.proxyButton.toggleClass('is-active', tab?.renderMode === 'proxy');
+		// The proxy toggle only exists while the menu sheet is open; keep it in sync
+		// if it is.
+		this.proxyButton?.toggleClass('is-active', tab?.renderMode === 'proxy');
+		const count = store.count;
+		this.tabCountBadge.setText(String(count));
+		this.tabCountButton.setAttribute('aria-label', `${count} tab${count === 1 ? '' : 's'}`);
 	}
 
 	private updateStatus(): void {
@@ -586,6 +647,92 @@ export class BrowserView extends ItemView {
 
 	openHistory(): void {
 		new HistoryModal(this.app, this.plugin.store, (entry) => this.navigate(entry.url)).open();
+	}
+
+	// --- Bottom sheets -------------------------------------------------------
+
+	/** Replace any open sheet, so two cannot stack. */
+	private openSheet(title?: string): Sheet {
+		this.sheet?.close();
+		const sheet = new Sheet(this.rootEl, title);
+		this.sheet = sheet;
+		sheet.onDismiss(() => {
+			if (this.sheet === sheet) this.sheet = null;
+			this.proxyButton = null;
+		});
+		return sheet;
+	}
+
+	/**
+	 * The overflow menu. Holds the actions that no longer fit in the bottom bar:
+	 * history, bookmarks, cookies, home, the proxy toggle, and clear data.
+	 */
+	openMenuSheet(): void {
+		const sheet = this.openSheet('Menu');
+		sheet.addRow('history', 'History', () => this.openHistory());
+		sheet.addRow('bookmark', 'Bookmarks', () => this.openBookmarks());
+		sheet.addRow('cookie', 'Cookies', () => this.openCookieManager());
+		sheet.addRow('home', 'Home page', () => this.goHome());
+
+		const tab = this.plugin.store.tabs.active;
+		const proxyRow = sheet.addRow(
+			'shield',
+			tab?.renderMode === 'proxy' ? 'Proxy rendering: on' : 'Proxy rendering: off',
+			() => this.toggleProxy(),
+		);
+		proxyRow.addClass('bfm-sheet-row-toggle');
+		if (tab?.renderMode === 'proxy') proxyRow.addClass('is-active');
+		this.proxyButton = proxyRow;
+
+		sheet.addRow('globe', 'Open in system browser', () => {
+			const active = this.plugin.store.tabs.active;
+			if (active) this.openExternal(active.displayUrl);
+		});
+		sheet.addRow('trash', 'Clear browsing data', () => this.clearBrowsingData(), {
+			danger: true,
+		});
+	}
+
+	/**
+	 * The tab switcher. A list of every tab with its title, a close control, and a
+	 * new-tab row — the phone-native alternative to the scrolling tab strip, which
+	 * is hidden on narrow screens.
+	 */
+	openTabSheet(): void {
+		const sheet = this.openSheet('Tabs');
+		const store = this.plugin.store.tabs;
+		for (const tab of store.tabs) {
+			const row = sheet.body.createDiv({ cls: 'bfm-sheet-tab' });
+			if (tab.id === store.activeTabId) row.addClass('is-active');
+			const icon = row.createSpan({ cls: 'bfm-sheet-tab-icon' });
+			setIcon(icon, 'globe');
+			const label = row.createSpan({
+				cls: 'bfm-sheet-tab-label',
+				text: tab.title || displayUrl(tab.displayUrl, 60) || 'New tab',
+			});
+			label.setAttribute('title', tab.displayUrl);
+			row.addEventListener('click', () => {
+				sheet.close();
+				store.activate(tab.id);
+				this.renderActiveTab();
+			});
+			const close = row.createSpan({ cls: 'bfm-sheet-tab-close' });
+			setIcon(close, 'x');
+			close.setAttribute('title', 'Close tab');
+			close.addEventListener('click', (event) => {
+				event.stopPropagation();
+				this.closeTab(tab.id);
+				sheet.close();
+			});
+		}
+		const add = sheet.body.createDiv({ cls: 'bfm-sheet-tab is-new' });
+		const addIcon = add.createSpan({ cls: 'bfm-sheet-tab-icon' });
+		setIcon(addIcon, 'plus');
+		add.createSpan({ cls: 'bfm-sheet-tab-label', text: 'New tab' });
+		add.addEventListener('click', () => {
+			sheet.close();
+			this.newTab(this.plugin.settings.homePage);
+		});
 	}
 
 	openBookmarks(): void {

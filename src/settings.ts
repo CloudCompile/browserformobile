@@ -147,7 +147,7 @@ export class BrowserSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Download format',
-				desc: 'MP4 gives a single playable file but holds the whole episode in memory while it converts. TS writes the raw stream straight to disk, which is lighter on mobile.',
+				desc: 'MP4 gives a single playable file and is converted as it downloads. TS writes the raw stream to disk with slightly less work but plays in fewer apps.',
 				control: {
 					type: 'dropdown',
 					key: 'downloadFormat',

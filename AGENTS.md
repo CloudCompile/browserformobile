@@ -277,8 +277,15 @@ this codebase.
 
 - `src/main.ts` — plugin lifecycle only: settings load/save, view registration,
   ribbon icon, command registration. Keep it minimal.
-- `src/view.ts` — the `ItemView` that renders toolbar, address bar, tab strip,
-  and content pane. Owns navigation, history, and renderer lifecycle.
+- `src/view.ts` — the `ItemView`. Builds the chrome (top address row, content
+  pane, bottom action bar), owns navigation, history, and renderer lifecycle,
+  and hosts the bottom sheets.
+- `src/sheet.ts` — `Sheet`, a bottom sheet: dimmed backdrop, grabber, drag-to-
+  dismiss, and `addRow` for icon+label actions. Used by the overflow menu and
+  the tab switcher. Positioned inside the view (absolute), not fixed to the
+  window, because a view is one workspace pane.
+- `src/viewport.ts` — `keyboardInset()`, the height the soft keyboard covers,
+  derived from `visualViewport`. Pure, so it is unit-testable.
 - `src/renderer.ts` — two renderers: `DirectRenderer` (iframe, works when the
   site allows embedding) and `ProxyRenderer` (fetched HTML in a sandboxed frame).
 - `src/proxy.ts` — page fetching. `loadPage()` tries Obsidian's native
@@ -303,6 +310,28 @@ this codebase.
 - **`minAppVersion` is 1.13.0.** The declarative settings API and
   `setDestructive()` require it. Lowering it will fail lint
   (`obsidianmd/no-unsupported-api`).
+- **The chrome is a top address row plus a bottom action bar.** A phone cannot
+  reach a top row one-handed, so the frequent actions (reload, bookmark, tabs,
+  home, open-external) live in a bottom bar and the top row keeps back/forward,
+  the address field, and the overflow button. Do not move primary actions back
+  to the top, and do not duplicate back/forward in both rows — a test asserts
+  the two rows are disjoint.
+- **The tab strip is desktop-only; narrow screens use the tab switcher.** Below
+  700px `.bfm-tabs` is `display: none` and the `layers` button in the bottom bar
+  opens the tab sheet instead. The strip stays above 700px, where there is room
+  for both.
+- **`--bfm-keyboard-inset` lifts the bottom bar over the soft keyboard.** The
+  on-screen keyboard shrinks the visual viewport without resizing the layout, so
+  a bar pinned to the layout bottom is drawn under the keyboard. `watchKeyboard`
+  publishes the covered height from `visualViewport` and the bar consumes it as
+  bottom padding. Use `panel.setCssProps(...)`, not `element.style.*`; lint
+  (`obsidianmd/no-static-styles-assignment`) rejects direct style writes.
+- **The sheets are absolutely positioned inside the view.** A `position: fixed`
+  panel would escape the view and cover the rest of Obsidian. The overlay is the
+  positioning context, so `.bfm-root` must stay `position: relative`.
+- **Drag handles opt out of touch scrolling, the sheet body does not.**
+  `touch-action: none` belongs on the grabber and title only; putting it on
+  `.bfm-sheet` (as it once was) stops the list from scrolling with a finger.
 - **Direct mode is desktop-only in practice.** Electron ignores
   `X-Frame-Options` and CSP `frame-ancestors`, so on desktop most sites frame
   fine and direct stays the default. Android WebView enforces both, so a
@@ -373,7 +402,14 @@ There is no committed test runner. Ad-hoc harnesses were built under
 `/tmp/bfmtest` using a stubbed `obsidian` module (via esbuild `--alias`) plus
 `jsdom`, covering: utils, cookie parsing/merge/prune, TabStore navigation,
 HTML rewriting, the injected bridge, the proxy fetch/fallback logic, and the
-full view with a DOM.
+full view with a DOM. The mobile-UI pass added `/tmp/bfmh/view.test.ts` (real
+`BrowserView` in jsdom: chrome structure, menu-sheet contents, tab-switcher
+switch/close/new, tab badge, and the keyboard inset) and
+`/tmp/bfmh/viewport.test.ts` (the `keyboardInset` edge cases). Bundle the view
+with `--alias:obsidian=./obsidian-view-stub.ts`, which adds `ItemView`,
+`SuggestModal`, `Plugin`, and the `setCssProps` DOM augmentation; run the
+harness as CJS with `--external:jsdom` (the ESM variant fails on jsdom's
+`require('node:fs')`).
 
 ## Anime downloader — project notes
 

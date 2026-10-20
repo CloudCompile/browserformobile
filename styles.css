@@ -17,6 +17,8 @@
 	--bfm-inset-bottom: env(safe-area-inset-bottom, 0px);
 	--bfm-inset-left: env(safe-area-inset-left, 0px);
 	--bfm-inset-right: env(safe-area-inset-right, 0px);
+	/* Height of the soft keyboard over the bottom of the view, set from JS. */
+	--bfm-keyboard-inset: 0px;
 	display: flex;
 	flex-direction: column;
 	height: 100%;
@@ -24,6 +26,8 @@
 	background: var(--background-primary);
 	color: var(--text-normal);
 	overflow: hidden;
+	/* The bottom sheets are positioned against this, not the window. */
+	position: relative;
 }
 
 /* Toolbar ------------------------------------------------------------------ */
@@ -200,19 +204,248 @@
 	background: #fff;
 }
 
+.bfm-bottom {
+	flex: 0 0 auto;
+	background: var(--background-secondary);
+	border-top: 1px solid var(--background-modifier-border);
+	/* Lift the bar above the soft keyboard so it stays reachable. */
+	padding-bottom: var(--bfm-keyboard-inset, 0px);
+	transition: padding-bottom 120ms ease-out;
+}
+
+.bfm-bottom-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-around;
+	gap: 2px;
+	padding: 4px 8px;
+	padding-left: calc(8px + var(--bfm-inset-left, 0px));
+	padding-right: calc(8px + var(--bfm-inset-right, 0px));
+}
+
+.bfm-tab-count-button {
+	position: relative;
+}
+
+/* A tab count on the switcher button, the way a phone browser shows it. */
+.bfm-tab-count {
+	position: absolute;
+	top: 2px;
+	right: 2px;
+	min-width: 16px;
+	height: 16px;
+	padding: 0 4px;
+	border-radius: 8px;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-size: 10px;
+	line-height: 16px;
+	text-align: center;
+	font-weight: 600;
+}
+
 .bfm-status {
 	flex: 0 0 auto;
-	padding: 4px 12px;
+	padding: 2px 12px 4px;
 	padding-bottom: calc(4px + var(--bfm-inset-bottom, 0px));
 	padding-left: calc(12px + var(--bfm-inset-left, 0px));
 	padding-right: calc(12px + var(--bfm-inset-right, 0px));
 	font-size: 12px;
 	color: var(--text-faint);
-	border-top: 1px solid var(--background-modifier-border);
-	background: var(--background-secondary);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+/* Bottom sheets ------------------------------------------------------------ */
+
+.bfm-sheet-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 20;
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	background: rgba(0, 0, 0, 0.4);
+	animation: bfm-fade-in 120ms ease-out;
+}
+
+.bfm-sheet {
+	background: var(--background-primary);
+	border-top-left-radius: var(--radius-l, 12px);
+	border-top-right-radius: var(--radius-l, 12px);
+	box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.25);
+	max-height: 70%;
+	display: flex;
+	flex-direction: column;
+	padding-bottom: calc(8px + var(--bfm-inset-bottom, 0px));
+	animation: bfm-slide-up 160ms ease-out;
+}
+
+.bfm-sheet.is-dragging {
+	animation: none;
+	transition: none;
+}
+
+.bfm-sheet-grabber {
+	width: 36px;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--background-modifier-border);
+	margin: 8px auto 4px;
+	flex: 0 0 auto;
+	/* The drag handles opt out of touch scrolling; the body must not, or the
+	   list cannot be scrolled with a finger. */
+	touch-action: none;
+	cursor: grab;
+}
+
+.bfm-sheet-title {
+	flex: 0 0 auto;
+	padding: 4px 16px 8px;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	touch-action: none;
+}
+
+.bfm-sheet-body {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
+	touch-action: pan-y;
+}
+
+.bfm-sheet-row {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	min-height: 48px;
+	padding: 0 20px;
+	color: var(--text-normal);
+	cursor: pointer;
+}
+
+.bfm-sheet-row:active {
+	background: var(--background-modifier-hover);
+}
+
+.bfm-sheet-row-icon {
+	display: inline-flex;
+	align-items: center;
+	color: var(--text-muted);
+	flex: 0 0 auto;
+}
+
+.bfm-sheet-row-label {
+	font-size: 15px;
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.bfm-sheet-row-toggle.is-active {
+	color: var(--interactive-accent);
+}
+
+.bfm-sheet-row-toggle.is-active .bfm-sheet-row-icon {
+	color: var(--interactive-accent);
+}
+
+.bfm-sheet-row.is-danger {
+	color: var(--text-error, var(--color-red));
+}
+
+.bfm-sheet-row.is-danger .bfm-sheet-row-icon {
+	color: var(--text-error, var(--color-red));
+}
+
+.bfm-sheet-tab {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-height: 48px;
+	padding: 0 20px;
+	cursor: pointer;
+}
+
+.bfm-sheet-tab:active {
+	background: var(--background-modifier-hover);
+}
+
+.bfm-sheet-tab.is-active {
+	background: var(--background-modifier-hover);
+	box-shadow: inset 3px 0 0 var(--interactive-accent);
+}
+
+.bfm-sheet-tab-icon {
+	display: inline-flex;
+	align-items: center;
+	color: var(--text-muted);
+	flex: 0 0 auto;
+}
+
+.bfm-sheet-tab-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 15px;
+}
+
+.bfm-sheet-tab-close {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	border-radius: 50%;
+	color: var(--text-faint);
+	flex: 0 0 auto;
+}
+
+.bfm-sheet-tab-close:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.bfm-sheet-tab.is-new {
+	color: var(--text-muted);
+}
+
+@keyframes bfm-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes bfm-slide-up {
+	from {
+		transform: translateY(100%);
+	}
+	to {
+		transform: translateY(0);
+	}
+}
+
+/* Respect a user who has asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+	.bfm-sheet-overlay,
+	.bfm-sheet {
+		animation: none;
+	}
+	.bfm-bottom {
+		transition: none;
+	}
 }
 
 /* Error state -------------------------------------------------------------- */
@@ -296,6 +529,17 @@
 		width: 36px;
 		height: 36px;
 		min-width: 36px;
+	}
+}
+
+/*
+ * On a narrow screen the scrolling tab strip costs a whole row of height and is
+ * awkward to hit; the tab switcher in the bottom bar replaces it. Above 700px
+ * there is room for both, so the strip comes back.
+ */
+@media (max-width: 699px) {
+	.bfm-tabs {
+		display: none;
 	}
 }
 
@@ -750,5 +994,17 @@
 	.bfm-dl-episode {
 		padding-top: 12px;
 		padding-bottom: 12px;
+	}
+
+	/* The bottom bar is all thumb, so meet Apple's 44px guidance. */
+	.bfm-bottom-row .bfm-icon-button {
+		width: 44px;
+		height: 44px;
+		min-width: 44px;
+	}
+
+	.bfm-sheet-tab-close {
+		width: 44px;
+		height: 44px;
 	}
 }
