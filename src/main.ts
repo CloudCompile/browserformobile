@@ -93,6 +93,9 @@ export default class BrowserPlugin extends Plugin {
 				onOptionsChanged: (patch) => {
 					void this.applyDownloadOptions(patch);
 				},
+				onClosed: () => {
+					this.downloadModal = null;
+				},
 			},
 		);
 		this.downloadModal = modal;

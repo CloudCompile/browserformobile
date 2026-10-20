@@ -14,6 +14,8 @@ import { STREAM_REFERER, resolveUrl } from './animeApi';
 export interface MediaPlaylist {
         /** Absolute segment URLs in playback order. */
         segments: string[];
+        /** Duration of each segment in seconds, in the same order. */
+        durations: number[];
         /** Total duration in seconds, from the `#EXTINF` values. */
         duration: number;
         /** Target duration, used to bound the request timeout. */
@@ -47,10 +49,30 @@ export interface DownloadOptions {
 
 export class DownloadError extends Error {}
 
+/**
+ * The CDN is rate limiting us (HTTP 429), including after the retries were
+ * spent. Distinct from a generic failure so the queue can park the job at the
+ * bottom and retry it later instead of treating it as a permanent error.
+ */
+export class RateLimitError extends DownloadError {}
+
 const REQUEST_TIMEOUT_MS = 45000;
 const MAX_ATTEMPTS = 5;
 /** HTTP codes the CDN returns when it is rate limiting rather than failing. */
 const TRANSIENT_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+/** First retry delay; doubles per attempt, capped below. */
+const BACKOFF_BASE_MS = 750;
+const BACKOFF_MAX_MS = 15000;
+
+/**
+ * Exponential backoff with jitter. The jitter matters because several segment
+ * workers retry at the same moment: without it they stay in lockstep and hammer
+ * a rate-limited server in bursts.
+ */
+function backoffMs(attempt: number): number {
+        const base = Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_MAX_MS);
+        return Math.round(base * (0.5 + Math.random() * 0.5));
+}
 
 /**
  * `requestUrl` has no timeout option, so race it against a timer. The request
@@ -71,6 +93,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 export function parseMediaPlaylist(text: string, baseUrl: string): MediaPlaylist {
         const lines = text.split(/\r?\n/);
         const segments: string[] = [];
+        const durations: number[] = [];
         let duration = 0;
         let targetDuration = 0;
         let pendingDuration = 0;
@@ -86,10 +109,11 @@ export function parseMediaPlaylist(text: string, baseUrl: string): MediaPlaylist
                 }
                 if (line.startsWith('#')) continue;
                 segments.push(resolveUrl(line, baseUrl));
+                durations.push(pendingDuration);
                 duration += pendingDuration;
                 pendingDuration = 0;
         }
-        return { segments, duration, targetDuration };
+        return { segments, durations, duration, targetDuration };
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -128,6 +152,7 @@ async function fetchText(url: string): Promise<string> {
 
 async function fetchSegment(url: string, signal?: AbortSignal): Promise<Uint8Array> {
         let lastError: unknown = null;
+        let rateLimited = false;
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
                 if (signal?.aborted) throw new DownloadError('Download cancelled.');
                 try {
@@ -141,8 +166,9 @@ async function fetchSegment(url: string, signal?: AbortSignal): Promise<Uint8Arr
                                 REQUEST_TIMEOUT_MS,
                         );
                         if (response.status >= 400) {
+                                if (response.status === 429) rateLimited = true;
                                 if (TRANSIENT_STATUS.has(response.status) && attempt < MAX_ATTEMPTS - 1) {
-                                        await delay(400 * 2 ** attempt, signal);
+                                        await delay(backoffMs(attempt), signal);
                                         continue;
                                 }
                                 throw new DownloadError(`HTTP ${response.status}`);
@@ -154,14 +180,17 @@ async function fetchSegment(url: string, signal?: AbortSignal): Promise<Uint8Arr
                         }
                         lastError = error;
                         if (attempt < MAX_ATTEMPTS - 1) {
-                                await delay(400 * 2 ** attempt, signal);
+                                await delay(backoffMs(attempt), signal);
                                 continue;
                         }
                 }
         }
-        throw new DownloadError(
-                `A segment failed after ${MAX_ATTEMPTS} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
-        );
+        const detail = lastError instanceof Error ? lastError.message : String(lastError);
+        if (rateLimited) {
+                // The whole run is throttled; the queue can wait and try again.
+                throw new RateLimitError(`The server is rate limiting downloads (HTTP 429).`);
+        }
+        throw new DownloadError(`A segment failed after ${MAX_ATTEMPTS} attempts: ${detail}`);
 }
 
 /**
@@ -305,4 +334,23 @@ export function formatBytes(bytes: number): string {
                 unit++;
         }
         return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
+/** A byte rate as a human string, e.g. `2.4 MB/s`. */
+export function formatSpeed(bytesPerSecond: number): string {
+        return `${formatBytes(Math.round(bytesPerSecond))}/s`;
+}
+
+/**
+ * A duration as a short clock, e.g. `4:05` or `1:02:30`. Used for time
+ * estimates, where a rounded figure is more useful than an exact one.
+ */
+export function formatDuration(seconds: number): string {
+        if (!Number.isFinite(seconds) || seconds < 0) return '--:--';
+        const total = Math.round(seconds);
+        const hours = Math.floor(total / 3600);
+        const minutes = Math.floor((total % 3600) / 60);
+        const secs = total % 60;
+        const pad = (value: number): string => String(value).padStart(2, '0');
+        return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
 }

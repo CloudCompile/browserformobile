@@ -5,22 +5,44 @@ import {
         DownloadError,
         downloadSegmentsStreaming,
         formatBytes,
+        formatDuration,
+        formatSpeed,
         loadMediaPlaylist,
+        RateLimitError,
         type MediaPlaylist,
 } from './hls';
-import { patchDuration, transmux } from './transmux';
+import { patchDuration, TransmuxStream } from './transmux';
 import { generateId } from './utils';
 
 /** Bytes coalesced into one write. Appending is costly on mobile. */
 const TS_BATCH_BYTES = 8 * 1024 * 1024;
+/** Upper bound on a coalesced write; also the transmux flush window. */
+const MAX_BATCH_BYTES = 32 * 1024 * 1024;
+/** Video timescale mux.js writes into the MP4, and the unit of its timeline. */
+const MP4_TIMESCALE = 90000;
 /** Suffix of the staging file holding the raw stream of an unfinished job. */
 const PART_SUFFIX = '.part';
 /** Suffix of the JSON sidecar describing that staging file. */
 const PART_META_SUFFIX = '.part.json';
 /** How far a resumed stream may differ in total length before it is discarded. */
 const DURATION_TOLERANCE_SECONDS = 1;
+/**
+ * How long a rate-limited job waits before it is tried again. The queue parks
+ * it at the bottom rather than failing it, so a throttled server costs time
+ * instead of the download.
+ */
+const RATE_LIMIT_RETRY_MS = 60_000;
+/** Bounds the retry wait shown to the user, so a clock skew cannot hide it. */
+const MAX_RATE_LIMIT_RETRIES = 10;
+/**
+ * Sidecar layout version. Bumped when the staging file's contents change shape:
+ * v1 held the raw MPEG-TS stream for every format, v2 holds the converted MP4
+ * for the MP4 format. An older sidecar is discarded rather than appended to,
+ * which would corrupt the file.
+ */
+const PARTIAL_VERSION = 2;
 
-export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+export type JobStatus = 'queued' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled';
 
 export type OutputFormat = 'mp4' | 'ts';
 
@@ -51,6 +73,17 @@ export interface DownloadJob {
         writtenSegments: number;
         /** Bytes written so far by the running job, kept for the sidecar. */
         writtenBytes: number;
+        /** Bytes per second, averaged over the last few seconds of a run. */
+        speed: number | null;
+        /** Estimated seconds remaining, or null while it cannot be estimated. */
+        eta: number | null;
+        /** When a rate-limited job parked at the bottom of the queue will retry. */
+        retryAt: number | null;
+        /** How many times the job has been parked for rate limiting. */
+        rateLimitRetries: number;
+        /** Timestamp and byte count of the last speed sample. */
+        speedSampleAt?: number;
+        speedSampleBytes?: number;
 }
 
 export interface DownloaderOptions {
@@ -101,7 +134,7 @@ async function readPartial(
         if (!raw) return null;
         try {
                 const parsed = JSON.parse(new TextDecoder().decode(raw)) as PartialState;
-                if (parsed.version !== 1) return null;
+                if (parsed.version !== PARTIAL_VERSION) return null;
                 return parsed;
         } catch {
                 return null;
@@ -133,6 +166,8 @@ export class DownloadManager {
         private readonly controllers = new Map<string, AbortController>();
         private running = 0;
         private updateTimer: number | null = null;
+        /** Pending rate-limit retry timers, cleared on dispose. */
+        private readonly retryTimers = new Set<number>();
 
         constructor(
                 private readonly app: { vault: { adapter: unknown } },
@@ -162,7 +197,12 @@ export class DownloadManager {
                 const created: DownloadJob[] = [];
                 for (const episode of request.episodes) {
                         const existing = this.jobs.find((job) => job.episode.id === episode.id);
-                        if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+                        if (
+                                existing &&
+                                (existing.status === 'queued' ||
+                                        existing.status === 'running' ||
+                                        existing.status === 'paused')
+                        ) {
                                 continue;
                         }
                         if (existing && existing.status === 'failed') {
@@ -173,6 +213,8 @@ export class DownloadManager {
                                 existing.resumeSegments = 0;
                                 existing.resumeBytes = 0;
                                 existing.resumed = false;
+                                existing.retryAt = null;
+                                existing.rateLimitRetries = 0;
                                 created.push(existing);
                                 continue;
                         }
@@ -195,6 +237,10 @@ export class DownloadManager {
                                 partialFound: false,
                                 writtenSegments: 0,
                                 writtenBytes: 0,
+                                speed: null,
+                                eta: null,
+                                retryAt: null,
+                                rateLimitRetries: 0,
                         };
                         this.jobs.push(job);
                         created.push(job);
@@ -229,8 +275,9 @@ export class DownloadManager {
         cancel(jobId: string): void {
                 const job = this.jobs.find((entry) => entry.id === jobId);
                 if (!job) return;
-                if (job.status === 'queued') {
+                if (job.status === 'queued' || job.status === 'paused') {
                         job.status = 'cancelled';
+                        job.retryAt = null;
                         job.finishedAt = Date.now();
                         this.scheduleUpdate();
                         return;
@@ -240,7 +287,9 @@ export class DownloadManager {
 
         cancelAll(): void {
                 for (const job of this.jobs) {
-                        if (job.status === 'running' || job.status === 'queued') this.cancel(job.id);
+                        if (job.status === 'running' || job.status === 'queued' || job.status === 'paused') {
+                                this.cancel(job.id);
+                        }
                 }
         }
 
@@ -259,7 +308,9 @@ export class DownloadManager {
         }
 
         get activeCount(): number {
-                return this.jobs.filter((job) => job.status === 'running' || job.status === 'queued').length;
+                return this.jobs.filter(
+                        (job) => job.status === 'running' || job.status === 'queued' || job.status === 'paused',
+                ).length;
         }
 
         private pump(): void {
@@ -270,16 +321,60 @@ export class DownloadManager {
                 }
         }
 
+        /**
+         * Move a rate-limited job to the bottom of the queue and schedule it to
+         * run again. Failing the job instead would throw away a nearly complete
+         * download over a transient throttle, so it waits rather than dies.
+         */
+        private parkForRateLimit(job: DownloadJob): boolean {
+                job.rateLimitRetries++;
+                if (job.rateLimitRetries > MAX_RATE_LIMIT_RETRIES) {
+                        job.status = 'failed';
+                        job.error = 'The server kept rate limiting the download. Try again later.';
+                        job.retryAt = null;
+                        return false;
+                }
+                job.status = 'paused';
+                job.error = null;
+                job.speed = null;
+                job.eta = null;
+                job.retryAt = Date.now() + RATE_LIMIT_RETRY_MS;
+                // Re-queue behind everything else, so other episodes get their turn
+                // while this one waits out the throttle.
+                const index = this.jobs.indexOf(job);
+                if (index !== -1) this.jobs.splice(index, 1);
+                this.jobs.push(job);
+                this.scheduleUpdate();
+                const timer = window.setTimeout(() => {
+                        this.retryTimers.delete(timer);
+                        if (job.status !== 'paused') return;
+                        job.retryAt = null;
+                        job.status = 'queued';
+                        this.scheduleUpdate();
+                        this.pump();
+                }, RATE_LIMIT_RETRY_MS);
+                this.retryTimers.add(timer);
+                return true;
+        }
+
+        /** Jobs waiting out a rate limit, oldest retry first. */
+        get pausedJobs(): DownloadJob[] {
+                return this.jobs.filter((job) => job.status === 'paused');
+        }
+
         private async run(job: DownloadJob): Promise<void> {
                 this.running++;
                 job.status = 'running';
                 job.startedAt = Date.now();
+                job.speed = null;
+                job.eta = null;
+                let parked = false;
                 const controller = new AbortController();
                 this.controllers.set(job.id, controller);
                 this.scheduleUpdate();
 
                 try {
-                        await this.execute(job, controller.signal);
+                        await this.execute(job, controller.signal, () => this.trackSpeed(job));
                         job.status = 'done';
                 } catch (error) {
                         if (controller.signal.aborted) {
@@ -288,6 +383,10 @@ export class DownloadManager {
                                 // staging file and sidecar are removed rather than
                                 // left behind for a resume the user did not ask for.
                                 await this.forgetPartial(job);
+                        } else if (error instanceof RateLimitError) {
+                                // Keep whatever landed on disk: the retry resumes it.
+                                await this.markPartial(job);
+                                parked = this.parkForRateLimit(job);
                         } else {
                                 job.status = 'failed';
                                 job.error = error instanceof Error ? error.message : String(error);
@@ -296,11 +395,36 @@ export class DownloadManager {
                                 await this.markPartial(job);
                         }
                 } finally {
-                        job.finishedAt = Date.now();
+                        // A parked job has not finished; it is only waiting.
+                        if (!parked) job.finishedAt = Date.now();
+                        job.speed = null;
+                        job.eta = null;
                         this.controllers.delete(job.id);
                         this.running--;
                         this.scheduleUpdate();
                         this.pump();
+                }
+        }
+
+        /**
+         * Smooth the byte rate over a short window so the figure is readable
+         * rather than jumping with every segment. The ETA is derived from the
+         * average bytes per segment seen so far, which is accurate enough to be
+         * useful and needs no knowledge of the file size up front.
+         */
+        private trackSpeed(job: DownloadJob): void {
+                const now = Date.now();
+                const elapsed = (now - (job.speedSampleAt ?? now)) / 1000;
+                if (elapsed < 1) return;
+                const delta = job.bytes - (job.speedSampleBytes ?? job.bytes);
+                const instant = delta / elapsed;
+                job.speed = job.speed === null ? instant : job.speed * 0.6 + instant * 0.4;
+                job.speedSampleAt = now;
+                job.speedSampleBytes = job.bytes;
+                if (job.speed > 0 && job.completed !== null && job.total !== null && job.completed > 0) {
+                        const perSegment = job.bytes / job.completed;
+                        const remainingBytes = perSegment * (job.total - job.completed);
+                        job.eta = remainingBytes / job.speed;
                 }
         }
 
@@ -318,7 +442,11 @@ export class DownloadManager {
                 job.resumeBytes = 0;
         }
 
-        private async execute(job: DownloadJob, signal: AbortSignal): Promise<void> {
+        private async execute(
+                job: DownloadJob,
+                signal: AbortSignal,
+                onTick: () => void,
+        ): Promise<void> {
                 const source = await loadStream(this.options.apiBase, job.episode.id);
                 if (signal.aborted) throw new DownloadError('Download cancelled.');
                 if (!source.url || source.variants.length === 0) {
@@ -380,11 +508,14 @@ export class DownloadManager {
                 job.resumed = resumeFrom > 0;
                 job.writtenSegments = resumeFrom;
                 job.writtenBytes = resumeBytes;
+                job.speedSampleAt = Date.now();
+                job.speedSampleBytes = job.bytes;
                 this.scheduleUpdate();
 
                 const onProgress = (progress: { completed: number; bytes: number }): void => {
                         job.completed = progress.completed;
                         job.bytes = progress.bytes;
+                        onTick();
                         this.scheduleUpdate();
                 };
 
@@ -416,18 +547,10 @@ export class DownloadManager {
                 resumeBytes: number,
         ): Promise<number> {
                 const part = partialStatePath(path);
+                // Resuming appends to the existing staging file; a fresh run
+                // creates it.
                 const writer = await destination.open(part, { append: resumeFrom > 0 });
-                const state: PartialState = {
-                        version: 1,
-                        episodeId: job.episode.id,
-                        seriesTitle: job.seriesTitle,
-                        format: this.options.format,
-                        quality: this.options.quality,
-                        totalSegments: playlist.segments.length,
-                        durationSeconds: playlist.duration,
-                        segments: resumeFrom,
-                        bytes: resumeBytes,
-                };
+                const state = this.partialState(job, playlist, resumeFrom, resumeBytes);
                 try {
                         await downloadSegmentsStreaming(
                                 playlist,
@@ -435,7 +558,7 @@ export class DownloadManager {
                                         concurrency: this.options.segmentConcurrency,
                                         signal,
                                         onProgress,
-                                        batchBytes: TS_BATCH_BYTES,
+                                        batchBytes: this.batchBytesFor(playlist),
                                         resumeFrom,
                                         resumeBytes,
                                 },
@@ -456,6 +579,36 @@ export class DownloadManager {
                 }
                 await writer.close();
                 return state.bytes;
+        }
+
+        /** The sidecar record for a run, before any progress is recorded. */
+        private partialState(
+                job: DownloadJob,
+                playlist: MediaPlaylist,
+                segments: number,
+                bytes: number,
+        ): PartialState {
+                return {
+                        version: PARTIAL_VERSION,
+                        episodeId: job.episode.id,
+                        seriesTitle: job.seriesTitle,
+                        format: this.options.format,
+                        quality: this.options.quality,
+                        totalSegments: playlist.segments.length,
+                        durationSeconds: playlist.duration,
+                        segments,
+                        bytes,
+                };
+        }
+
+        /**
+         * Bytes coalesced into one append. Every append re-reads and rewrites the
+         * whole file on mobile, so a longer download uses bigger batches: fewer
+         * passes over a large file means far less I/O and less peak memory.
+         */
+        private batchBytesFor(playlist: MediaPlaylist): number {
+                const estimate = playlist.duration * 200 * 1024;
+                return Math.max(TS_BATCH_BYTES, Math.min(estimate / 16, MAX_BATCH_BYTES));
         }
 
         /**
@@ -489,12 +642,16 @@ export class DownloadManager {
         }
 
         /**
-         * MP4 has to be transmuxed from the whole stream at once, so the raw
-         * stream is staged to disk first (which is what makes it resumable) and
-         * then converted. mux.js only emits on flush, so the episode is held in
-         * memory for the conversion either way; the final file is not built in
-         * a second buffer, because the init segment is patched in place and the
-         * fragments are written one at a time.
+         * MP4 is transmuxed as the stream arrives, not from a whole-file
+         * read-back.
+         *
+         * mux.js emits nothing from `push()`; output only appears at `flush()`,
+         * and flushing once at the end materialises the entire episode — measured
+         * at ~4 GB for a 726 MB stream, which restarts a phone. Each downloaded
+         * batch is pushed and flushed in turn instead, so the transmuxer holds one
+         * batch rather than the whole movie, and every fragment is written and
+         * dropped. The staging file is the partial MP4 itself, so a failure leaves
+         * a resumable file and a resume appends to it.
          */
         private async writeMp4(
                 job: DownloadJob,
@@ -506,40 +663,69 @@ export class DownloadManager {
                 resumeFrom: number,
                 resumeBytes: number,
         ): Promise<number> {
-                await this.stageSegments(
-                        job,
-                        destination,
-                        path,
-                        playlist,
-                        signal,
-                        onProgress,
-                        resumeFrom,
-                        resumeBytes,
-                );
-                const staged = await destination.read(partialStatePath(path));
-                if (!staged) throw new DownloadError('The staged stream could not be read back.');
-                const result = transmux([staged]);
-                const init = result.init ? patchDuration(result.init, playlist.duration) : null;
-                const writer = await destination.open(path);
-                let written = 0;
-                try {
-                        if (init) {
-                                await writer.write(init);
-                                written += init.byteLength;
-                        }
-                        for (const fragment of result.fragments) {
+                const part = partialStatePath(path);
+                const resuming = resumeFrom > 0;
+                const writer = await destination.open(part, { append: resuming });
+                const state = this.partialState(job, playlist, resumeFrom, resumeBytes);
+                let bytes = resumeBytes;
+                let init: Uint8Array | null = null;
+                const stream = new TransmuxStream(
+                        (segment) => {
+                                init = patchDuration(segment, playlist.duration);
+                        },
+                        async (fragment) => {
+                                if (init) {
+                                        await writer.write(init);
+                                        bytes += init.byteLength;
+                                        init = null;
+                                }
                                 await writer.write(fragment);
-                                written += fragment.byteLength;
-                        }
-                        await writer.close();
+                                bytes += fragment.byteLength;
+                        },
+                        // A resumed file already begins with an init segment;
+                        // writing a second one mid-file would corrupt it.
+                        { skipInit: resuming },
+                );
+                if (resuming) {
+                        // Continue the timeline where the last run stopped. mux.js
+                        // otherwise restarts at zero and the new fragments overlap
+                        // what is already written.
+                        const base = Math.round(
+                                playlist.durations.slice(0, resumeFrom).reduce((sum, value) => sum + value, 0) *
+                                        MP4_TIMESCALE,
+                        );
+                        if (base > 0) stream.setBaseMediaDecodeTime(base);
+                }
+                try {
+                        await downloadSegmentsStreaming(
+                                playlist,
+                                {
+                                        concurrency: this.options.segmentConcurrency,
+                                        signal,
+                                        onProgress,
+                                        batchBytes: this.batchBytesFor(playlist),
+                                        resumeFrom,
+                                        resumeBytes,
+                                },
+                                async (_index, chunk, writtenThrough) => {
+                                        stream.push(chunk);
+                                        await stream.flush();
+                                        state.segments = writtenThrough;
+                                        state.bytes = bytes;
+                                        await writePartial(destination, path, state);
+                                },
+                        );
+                        await stream.finish();
                 } catch (error) {
-                        // The final file is unusable if it is half written, but
-                        // the staging file is untouched and stays resumable.
-                        await writer.abort();
+                        // Let the writes already queued finish so the file and its
+                        // sidecar agree before the failure is reported.
+                        await writer.settle();
                         throw error;
                 }
-                await discardPartial(destination, path);
-                return written;
+                await writer.close();
+                await destination.rename(part, path);
+                await destination.remove(partialMetaPath(path));
+                return bytes;
         }
 
         /** True when a partial file with recorded progress exists for this job. */
@@ -569,13 +755,39 @@ export class DownloadManager {
 
         private buildPath(job: DownloadJob): string {
                 const extension = this.options.format === 'mp4' ? 'mp4' : 'ts';
-                const name = renderTemplate(this.options.filenameTemplate, {
-                        series: job.seriesTitle,
-                        episode: job.episode.number,
-                        title: job.episode.title,
-                        ext: extension,
-                });
-                return sanitizeName(name);
+                return buildFileName(this.options.filenameTemplate, job, extension);
+        }
+
+        /** The file path an episode would be saved to, without a job object. */
+        savedPath(episode: EpisodeSummary, seriesTitle: string): string {
+                const extension = this.options.format === 'mp4' ? 'mp4' : 'ts';
+                return buildFileName(this.options.filenameTemplate, { episode, seriesTitle }, extension);
+        }
+
+        /**
+         * Which of these episodes are not already saved, so a series download can
+         * fill in the gaps rather than fetching the whole series again. An episode
+         * that failed and left a `.part` counts as missing: enqueueing it resumes
+         * from where it stopped rather than starting over.
+         */
+        async missingEpisodes(
+                seriesTitle: string,
+                episodes: EpisodeSummary[],
+        ): Promise<EpisodeSummary[]> {
+                const destination = this.destinationFor();
+                const missing: EpisodeSummary[] = [];
+                for (const episode of episodes) {
+                        const path = this.savedPath(episode, seriesTitle);
+                        const active = this.jobs.some(
+                                (job) =>
+                                        job.episode.id === episode.id &&
+                                        (job.status === 'queued' ||
+                                                job.status === 'running' ||
+                                                job.status === 'paused'),
+                        );
+                        if (!active && !(await destination.exists(path))) missing.push(episode);
+                }
+                return missing;
         }
 
         private scheduleUpdate(): void {
@@ -591,6 +803,8 @@ export class DownloadManager {
                         window.clearTimeout(this.updateTimer);
                         this.updateTimer = null;
                 }
+                for (const timer of this.retryTimers) window.clearTimeout(timer);
+                this.retryTimers.clear();
                 this.cancelAll();
         }
 }
@@ -612,14 +826,37 @@ export function renderTemplate(
         return /\.[a-z0-9]{2,4}$/i.test(trimmed) ? trimmed : `${trimmed}.${values.ext}`;
 }
 
+/** The sanitized file name for an episode, given the current template. */
+function buildFileName(
+        template: string,
+        job: { episode: EpisodeSummary; seriesTitle: string },
+        extension: string,
+): string {
+        return sanitizeName(
+                renderTemplate(template, {
+                        series: job.seriesTitle,
+                        episode: job.episode.number,
+                        title: job.episode.title,
+                        ext: extension,
+                }),
+        );
+}
+
 export function describeProgress(job: DownloadJob): string {
         if (job.status === 'queued') return 'Queued';
         if (job.status === 'cancelled') return 'Cancelled';
         if (job.status === 'failed') return job.error ?? 'Failed';
+        if (job.status === 'paused') {
+                const wait = job.retryAt ? Math.max(0, Math.round((job.retryAt - Date.now()) / 1000)) : 0;
+                return `Rate limited · retrying in ${formatDuration(wait)}`;
+        }
         if (job.status === 'done') return `Saved${job.fileSize ? ` · ${formatBytes(job.fileSize)}` : ''}`;
         if (job.total && job.completed !== null) {
                 const progress = `${job.completed} / ${job.total} segments · ${formatBytes(job.bytes)}`;
-                return job.resumed ? `Resuming · ${progress}` : progress;
+                const rate = job.speed ? ` · ${formatSpeed(job.speed)}` : '';
+                const eta = job.eta ? ` · ${formatDuration(job.eta)} left` : '';
+                const prefix = job.resumed ? 'Resuming · ' : '';
+                return `${prefix}${progress}${rate}${eta}`;
         }
         return 'Starting…';
 }

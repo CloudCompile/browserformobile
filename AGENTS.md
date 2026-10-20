@@ -412,11 +412,14 @@ settings object and the plugin instance.
   Default `downloadSegmentConcurrency` is 3; do not raise the default.
 - **`requestUrl` has no timeout option.** `withTimeout` in `hls.ts` races the
   promise against a timer; the request itself is not cancelled.
-- **mux.js only emits on `flush()`**, so MP4 requires the whole episode in
-  memory (~100 MB). Per-segment transmux was tested and rejected: each segment's
-  `tfdt` restarts at 0, which breaks playback. Carrying `baseMediaDecodeTime`
-  across segments also failed (non-monotonic across the two tracks). TS output
-  streams instead and is the mobile default recommendation.
+- **mux.js only emits on `flush()`.** Flushing once at the end materialises the
+  whole episode at once — measured at ~4.3 GB peak for a 726 MB stream, enough to
+  OOM-restart a phone. Flushing a window at a time (`TransmuxStream`) keeps the
+  internal buffer bounded (~200 MB peak measured) while producing byte-identical
+  output: same transmuxer instance, so the media timeline stays continuous. The
+  earlier "per-segment `tfdt` restarts at 0" note applied to flushing a fresh
+  transmuxer per segment; reusing one instance across flushes is what makes the
+  windowed path correct. Verify equivalence with a frame/PTS diff, not a player.
 - **mux.js leaves every duration at the "unknown" sentinel (`0xffffffff`)** — not
   just `mvhd` but each `tkhd` and `mdhd` — and emits no `mehd`. Players that read
   the movie header cope, but ones that read the track headers (Samsung Gallery)
@@ -459,12 +462,25 @@ settings object and the plugin instance.
   derived from the job's relative staging path, which is kept in `stagingPaths`
   (not `job.filePath`, which is a display path) because a failed job has no
   final file yet.
-- **MP4 stages the whole stream to `.part` first, then converts.** mux.js only
-  emits on `flush`, so the episode is in memory either way, but staging makes the
-  MP4 path resumable too: a conversion failure leaves a complete `.part` and the
-  next run re-converts without re-downloading. TS finalises by renaming `.part`
-  into place (sidecar removed only after the rename succeeds); MP4 writes the
-  final file and only then discards the stage.
+- **MP4 streams to `.part` as it converts.** mux.js is driven a window at a time,
+  so the episode never sits in memory whole. Staging also makes the MP4 path
+  resumable: a conversion failure leaves a valid partial and the next run appends
+  to it from the last converted segment rather than re-downloading. TS finalises
+  by renaming `.part` into place (sidecar removed only after the rename
+  succeeds); MP4 writes the final file and only then discards the stage.
+- **A throttled run is parked, not failed.** A 429 that outlasts the per-segment
+  retries (`RateLimitError` from `hls.ts`) moves the job to `paused`, to the
+  bottom of `jobs`, and a timer re-queues it after `RATE_LIMIT_RETRY_MS`. It keeps
+  its `.part`, so the retry resumes instead of restarting, and other episodes run
+  while it waits. `rateLimitRetries` caps this at ten consecutive parks so a dead
+  stream cannot retry forever. The parked timer is tracked in `retryTimers` and
+  cleared in `dispose`, otherwise an unload leaves it to fire into a dead view.
+- **The queue updates in place, it does not re-render.** Progress ticks arrive
+  every 150 ms; rebuilding the job list each time stalls the window on a phone.
+  `tickQueue` patches the status text and progress bar of existing rows and falls
+  back to a full `render` only when a row appears, disappears, or changes status
+  class. Anything that changes the shape of the queue (enqueue, cancel, finish)
+  must call `render`, not `tickQueue`.
 
 ### Verification
 
@@ -479,6 +495,11 @@ contents, duplicate refusal, cancel cleanup, and the patched durations.
 full stream, a failure that leaves a contiguous prefix and sidecar, a resume that
 fetches only the missing tail, discarding a changed stream and a torn partial,
 cancel cleanup, an MP4 conversion failure that keeps the stage, and write order.
+`/tmp/bfmh/mp4.test.ts` additionally drives the windowed MP4 path end to end: a
+clean download (peak memory bounded, output decodes), a hard failure that leaves
+a resumable prefix, a resume whose prefix is byte-identical to the first attempt,
+a transient 429 that is retried, and a sustained 429 that parks the job at the
+bottom of the queue with a retry countdown while a healthy job runs.
 Bundle them with the repo's local esbuild
 (`node_modules/.bin/esbuild ... --alias:obsidian=./obsidian-stub.ts`) and a
 `window` shim; `npx esbuild` hangs in this environment.

@@ -23,6 +23,8 @@ export interface DownloadModalOptions {
 
 export interface DownloadModalCallbacks {
         onOptionsChanged(options: Partial<DownloadModalOptions>): void;
+        /** Fired when the window closes, so the plugin can drop its reference. */
+        onClosed?(): void;
 }
 
 const QUALITY_CHOICES: { value: string; label: string }[] = [
@@ -46,6 +48,7 @@ export class DownloadModal extends Modal {
         private chosen = new Set<string>();
         private searchValue = '';
         private busy = false;
+        private fullscreen = true;
         private stage: Stage = 'search';
         private bodyEl!: HTMLElement;
         private statusEl!: HTMLElement;
@@ -62,15 +65,31 @@ export class DownloadModal extends Modal {
         }
 
         onOpen(): void {
-                this.titleEl.setText('Download anime');
+                this.titleEl.setText('Anime downloads');
+                const toggle = this.titleEl.createEl('button', { cls: 'bfm-dl-window-close' });
+                setIcon(toggle, 'minimize-2');
+                toggle.setAttribute('aria-label', 'Exit full screen');
+                toggle.addEventListener('click', () => this.setFullscreen(!this.fullscreen));
                 this.contentEl.empty();
+                // Fill the window by default: the queue and episode lists are long
+                // and a phone's small popup wastes most of the screen.
+                this.fullscreen = true;
+                this.modalEl.addClass('is-fullscreen');
                 this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-dl-body' });
                 this.statusEl = this.contentEl.createDiv({ cls: 'bfm-dl-status' });
                 this.render();
         }
 
+        private setFullscreen(full: boolean): void {
+                this.fullscreen = full;
+                this.modalEl.toggleClass('is-fullscreen', full);
+                const button = this.titleEl.querySelector('.bfm-dl-window-close');
+                if (button) setIcon(button as HTMLElement, full ? 'minimize-2' : 'maximize-2');
+        }
+
         onClose(): void {
                 this.contentEl.empty();
+                this.callbacks.onClosed?.();
         }
 
         private render(): void {
@@ -260,6 +279,9 @@ export class DownloadModal extends Modal {
                         );
                         this.render();
                 });
+                addChip('Download missing', () => {
+                        void this.selectMissing();
+                });
 
                 const rangeRow = controls.createDiv({ cls: 'bfm-dl-range' });
                 rangeRow.createSpan({ cls: 'bfm-dl-range-label', text: 'Range' });
@@ -358,6 +380,32 @@ export class DownloadModal extends Modal {
                 }
         }
 
+        /**
+         * The "series finisher": select only the episodes that are not already
+         * saved and not already queued, so a long-running series can be topped up
+         * without re-downloading what is on disk.
+         */
+        private async selectMissing(): Promise<void> {
+                const series = this.selected;
+                if (!series) return;
+                this.busy = true;
+                this.render();
+                try {
+                        const missing = await this.manager.missingEpisodes(series.title, this.episodes);
+                        this.chosen = new Set(missing.map((episode) => episode.id));
+                        const have = this.episodes.length - missing.length;
+                        new Notice(
+                                missing.length === 0
+                                        ? `All ${this.episodes.length} episodes are already saved.`
+                                        : `${missing.length} missing episode${missing.length === 1 ? '' : 's'} selected` +
+                                                  (have > 0 ? ` (${have} already saved).` : '.'),
+                        );
+                } finally {
+                        this.busy = false;
+                        this.render();
+                }
+        }
+
         private renderEpisodeList(): void {
                 const list = this.bodyEl.createDiv({ cls: 'bfm-dl-episodes' });
                 for (const episode of this.episodes) {
@@ -429,34 +477,7 @@ export class DownloadModal extends Modal {
                         return;
                 }
                 const list = this.bodyEl.createDiv({ cls: 'bfm-dl-jobs' });
-                for (const job of jobs) {
-                        const row = list.createDiv({ cls: 'bfm-dl-job' });
-                        row.addClass(`is-${job.status}`);
-                        const head = row.createDiv({ cls: 'bfm-dl-job-head' });
-                        head.createSpan({
-                                cls: 'bfm-dl-job-title',
-                                text: `${job.seriesTitle} · Episode ${job.episode.number}`,
-                        });
-                        const status = head.createSpan({ cls: 'bfm-dl-job-status', text: describeProgress(job) });
-                        if (job.status === 'failed') status.addClass('is-error');
-                        if (job.status === 'running' || job.status === 'queued') {
-                                const cancel = head.createEl('button', { cls: 'bfm-dl-job-cancel' });
-                                setIcon(cancel, 'x');
-                                cancel.setAttribute('title', 'Cancel');
-                                cancel.addEventListener('click', () => {
-                                        this.manager.cancel(job.id);
-                                        this.render();
-                                });
-                        }
-                        if (job.total && job.total > 0 && job.completed !== null && job.status !== 'done') {
-                                const bar = row.createDiv({ cls: 'bfm-dl-progress' });
-                                const fill = bar.createDiv({ cls: 'bfm-dl-progress-fill' });
-                                fill.style.width = `${Math.round((job.completed / job.total) * 100)}%`;
-                        }
-                        if (job.status === 'failed' && job.partialFound) {
-                                this.renderResumeRow(row, job);
-                        }
-                }
+                for (const job of jobs) this.renderJobRow(list, job);
 
                 const actions = this.bodyEl.createDiv({ cls: 'bfm-dl-actions' });
                 const resumable = this.manager.resumableJobs;
@@ -488,6 +509,70 @@ export class DownloadModal extends Modal {
                 doctor.addEventListener('click', () => {
                         void this.repairVideos();
                 });
+        }
+
+        /** One queue row. Kept separate so progress ticks can update it in place. */
+        private renderJobRow(list: HTMLElement, job: DownloadJob): void {
+                const row = list.createDiv({ cls: 'bfm-dl-job' });
+                row.dataset.jobId = job.id;
+                row.addClass(`is-${job.status}`);
+                const head = row.createDiv({ cls: 'bfm-dl-job-head' });
+                head.createSpan({
+                        cls: 'bfm-dl-job-title',
+                        text: `${job.seriesTitle} · Episode ${job.episode.number}`,
+                });
+                const status = head.createSpan({ cls: 'bfm-dl-job-status', text: describeProgress(job) });
+                if (job.status === 'failed') status.addClass('is-error');
+                if (job.status === 'paused') status.addClass('is-paused');
+                if (job.status === 'running' || job.status === 'queued' || job.status === 'paused') {
+                        const cancel = head.createEl('button', { cls: 'bfm-dl-job-cancel' });
+                        setIcon(cancel, 'x');
+                        cancel.setAttribute('title', 'Cancel');
+                        cancel.addEventListener('click', () => {
+                                this.manager.cancel(job.id);
+                                this.render();
+                        });
+                }
+                if (job.total && job.total > 0 && job.completed !== null && job.status !== 'done') {
+                        const bar = row.createDiv({ cls: 'bfm-dl-progress' });
+                        const fill = bar.createDiv({ cls: 'bfm-dl-progress-fill' });
+                        fill.style.width = `${Math.round((job.completed / job.total) * 100)}%`;
+                }
+                if (job.status === 'failed' && job.partialFound) {
+                        this.renderResumeRow(row, job);
+                }
+        }
+
+        /**
+         * Update just the status text and progress bar of each visible row, so a
+         * fast-downloading queue does not rebuild the whole DOM every 150ms and
+         * stall the window. Rows that changed shape (a job that finished, failed,
+         * or was parked) fall back to a full render.
+         */
+        private tickQueue(): void {
+                const list = this.bodyEl.querySelector<HTMLElement>('.bfm-dl-jobs');
+                if (!list) {
+                        this.render();
+                        return;
+                }
+                for (const job of this.manager.jobs) {
+                        const row = list.querySelector<HTMLElement>(`[data-job-id="${job.id}"]`);
+                        if (!row) {
+                                this.render();
+                                return;
+                        }
+                        if (!row.classList.contains(`is-${job.status}`)) {
+                                this.render();
+                                return;
+                        }
+                        const status = row.querySelector<HTMLElement>('.bfm-dl-job-status');
+                        if (status) status.setText(describeProgress(job));
+                        const fill = row.querySelector<HTMLElement>('.bfm-dl-progress-fill');
+                        if (fill && job.total && job.completed !== null) {
+                                fill.style.width = `${Math.round((job.completed / job.total) * 100)}%`;
+                        }
+                }
+                this.renderStatus();
         }
 
         /**
@@ -552,10 +637,12 @@ export class DownloadModal extends Modal {
         private renderStatus(): void {
                 this.statusEl.empty();
                 const active = this.manager.activeCount;
+                const paused = this.manager.pausedJobs.length;
                 const done = this.manager.jobs.filter((job) => job.status === 'done').length;
                 const failed = this.manager.jobs.filter((job) => job.status === 'failed').length;
                 const parts: string[] = [];
                 if (active > 0) parts.push(`${active} active`);
+                if (paused > 0) parts.push(`${paused} waiting on rate limit`);
                 if (done > 0) parts.push(`${done} done`);
                 if (failed > 0) parts.push(`${failed} failed`);
                 if (this.options.external && externalStorageAvailable()) {
@@ -584,7 +671,7 @@ export class DownloadModal extends Modal {
 
         /** Called by the plugin when the manager reports progress. */
         refresh(): void {
-                if (this.stage === 'queue') this.render();
+                if (this.stage === 'queue') this.tickQueue();
                 else this.renderStatus();
         }
 }

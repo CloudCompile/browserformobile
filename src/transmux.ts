@@ -3,35 +3,103 @@ import muxjs from 'mux.js';
 /**
  * MPEG-TS to fragmented MP4 transmuxing via mux.js.
  *
- * mux.js only emits output when `flush()` is called, so a full episode has to
- * be buffered before it can be muxed. That is fine on desktop; on mobile the
- * caller should prefer the raw `.ts` output, which can be appended segment by
- * segment without holding the whole episode in memory.
+ * mux.js emits nothing from `push()`; output only appears when `flush()` is
+ * called. Flushing once at the end therefore materialises the whole episode at
+ * once — several times its size in memory, enough to restart a phone. Flushing
+ * a window at a time keeps the buffer bounded without changing the output, so
+ * `TransmuxStream` is what the downloader uses.
  */
-
-export interface TransmuxResult {
-        /** The `moov`/`ftyp` init segment, or null when no track was found. */
-        init: Uint8Array | null;
-        /** Media fragments (`moof`+`mdat`) in playback order. */
-        fragments: Uint8Array[];
-}
 
 export class TransmuxError extends Error {}
 
-export function transmux(segments: Uint8Array[]): TransmuxResult {
-        const transmuxer = new muxjs.mp4.Transmuxer();
-        const fragments: Uint8Array[] = [];
-        let init: Uint8Array | null = null;
-        transmuxer.on('data', (segment: { initSegment?: Uint8Array; data: Uint8Array }) => {
-                if (segment.initSegment && !init) init = segment.initSegment;
-                fragments.push(segment.data);
-        });
-        for (const segment of segments) transmuxer.push(segment);
-        transmuxer.flush();
-        if (!init || fragments.length === 0) {
-                throw new TransmuxError('The stream could not be converted to MP4.');
+/**
+ * A transmuxer that emits as it goes, so a caller can write each fragment and
+ * drop it instead of holding the whole movie.
+ *
+ * mux.js emits nothing from `push()`; output only appears when `flush()` is
+ * called, and a single flush of the whole stream materialises the entire
+ * episode at once (measured at ~4 GB for a 726 MB stream — enough to restart a
+ * phone). Pushing and flushing a window at a time keeps the transmuxer's
+ * internal buffer bounded while producing byte-identical output: the same
+ * transmuxer instance is reused, so the media timeline stays continuous and the
+ * fragments are still written in order.
+ */
+export interface TransmuxStreamOptions {
+        /**
+         * Do not hand the init segment to `onInit`. Set when appending to a file
+         * that already carries one (a resumed download).
+         */
+        skipInit?: boolean;
+}
+
+export class TransmuxStream {
+        private readonly transmuxer = new muxjs.mp4.Transmuxer();
+        private pending: Promise<void> = Promise.resolve();
+        private failure: Error | null = null;
+        private init: Uint8Array | null = null;
+        private emitted = 0;
+
+        constructor(
+                private readonly onInit: (init: Uint8Array) => Promise<void> | void,
+                private readonly onFragment: (fragment: Uint8Array) => Promise<void> | void,
+                private readonly options: TransmuxStreamOptions = {},
+        ) {
+                this.transmuxer.on('data', (segment: { initSegment?: Uint8Array; data: Uint8Array }) => {
+                        // Hand off the init segment once, then every fragment, in
+                        // emission order. Writes chain so a slow sink cannot let a
+                        // later fragment overtake an earlier one.
+                        const init = segment.initSegment && !this.init ? segment.initSegment : null;
+                        if (init) this.init = init;
+                        const deliver = init && !this.options.skipInit ? init : null;
+                        this.pending = this.pending.then(async () => {
+                                if (this.failure) return;
+                                if (deliver) await this.onInit(deliver);
+                                await this.onFragment(segment.data);
+                                this.emitted++;
+                        });
+                        // Keep the chain alive after a failure, but remember the
+                        // error so flush/finish can surface it.
+                        this.pending.catch((error: unknown) => {
+                                this.failure ??= error instanceof Error ? error : new TransmuxError(String(error));
+                        });
+                });
         }
-        return { init, fragments };
+
+        /**
+         * Continue a timeline that a previous run already wrote. Must be set
+         * before the first `push`, or the fragments restart at time zero and
+         * overlap the existing file.
+         */
+        setBaseMediaDecodeTime(baseMediaDecodeTime: number): void {
+                this.transmuxer.setBaseMediaDecodeTime(baseMediaDecodeTime);
+        }
+
+        /** Feed one window. Output is emitted during the following flush. */
+        push(chunk: Uint8Array): void {
+                this.transmuxer.push(chunk);
+        }
+
+        /** Emit everything buffered since the last flush. */
+        async flush(): Promise<void> {
+                this.transmuxer.flush();
+                await this.pending;
+                if (this.failure) throw this.failure;
+        }
+
+        /**
+         * Finish the stream. Unlike `flush`, this requires that at least one
+         * fragment (and the init segment) was produced, so a stream that muxed to
+         * nothing is reported rather than written out empty.
+         */
+        async finish(): Promise<{ init: Uint8Array; fragments: number }> {
+                this.transmuxer.flush();
+                await this.pending;
+                if (this.failure) throw this.failure;
+                if (!this.init || this.emitted === 0) {
+                        throw new TransmuxError('The stream could not be converted to MP4.');
+                }
+                return { init: this.init, fragments: this.emitted };
+        }
 }
 
 interface Box {

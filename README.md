@@ -57,11 +57,16 @@ The downloader is a separate tool from the browser. Open it from the download
 ribbon icon or the **Open anime downloader** command.
 
 Search for a series, pick it, then choose episodes. You can select all, select
-none, invert the selection, skip filler, or add a numeric range such as 12–24.
+none, invert the selection, skip filler, add a numeric range such as 12–24, or
+**Download missing** to fill in only the episodes not already saved.
 Downloads run in the background and keep going if you close the window.
+
+The window opens full screen, so a long queue and a long episode list both have
+room. Use the button in the title bar to shrink it back to a popup.
 
 Each episode is fetched from the stream catalogue, its quality variants are read
 from the playlist, and the closest one to your preferred quality is downloaded.
+While a download runs the queue shows its speed and an estimate of the time left.
 
 ### Quality
 
@@ -72,12 +77,13 @@ still downloads the 720p stream.
 
 ### Output format
 
-- **MP4** produces one playable file. Converting the stream needs the whole
-  episode in memory at once, which is about 100 MB per episode.
-- **TS** writes the raw stream straight to disk, a segment at a time, so memory
-  stays low. The result plays in most players but is not an MP4.
+- **MP4** produces one playable file. The stream is converted as it arrives, a
+  batch at a time, so memory stays bounded even for a feature-length file.
+- **TS** writes the raw stream straight to disk, a segment at a time. The result
+  plays in most players but is not an MP4.
 
-On mobile, prefer **TS** for long series.
+Both formats keep memory low; **MP4** is the one to pick for a single playable
+file.
 
 ### Where files are saved
 
@@ -136,8 +142,24 @@ a cancel does not leave work behind for a resume you did not ask for.
 
 While a resume is in progress the queue shows **Resuming** before the segment
 count. TS output resumes by appending to the staging file and then renaming it
-into place. MP4 output stages the whole stream first, so it is resumable too, and
-only converts to MP4 once every segment is on disk.
+into place. MP4 output appends the converted stream to the staging file, so it
+resumes the same way without re-reading what is already written.
+
+### Rate limiting
+
+The stream CDN throttles bursts of requests. When a whole run is throttled rather
+than one segment, the episode is not failed: it is parked at the bottom of the
+queue and retried a minute later, keeping everything already on disk. Other
+episodes get their turn while it waits, and the row shows **Rate limited** with a
+countdown. After ten tries in a row it gives up and fails normally, so it cannot
+retry forever.
+
+### Series finishers
+
+**Download missing** selects only the episodes that are not already saved and not
+already queued. When a run was interrupted and a few episodes are missing, open
+the series, press **Download missing**, and it fills exactly those gaps without
+re-fetching the rest.
 
 ### Repairing old downloads
 

@@ -623,3 +623,55 @@
 	min-height: 32px;
 	padding: 0 12px;
 }
+
+/* Fullscreen downloader window -------------------------------------------- */
+
+.bfm-download-modal.is-fullscreen {
+	width: 100vw;
+	height: 100vh;
+	max-width: 100vw;
+	max-height: 100vh;
+	border-radius: 0;
+}
+
+.bfm-download-modal.is-fullscreen .modal-content {
+	height: 100%;
+	padding: 0;
+}
+
+.bfm-dl-window-close {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	padding: 0;
+	border: none;
+	border-radius: 50%;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.bfm-dl-window-close:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.bfm-download-modal.is-fullscreen .bfm-dl-body {
+	padding: 14px;
+}
+
+.bfm-download-modal.is-fullscreen .bfm-dl-jobs,
+.bfm-download-modal.is-fullscreen .bfm-dl-episodes {
+	max-height: none;
+}
+
+.bfm-dl-job.is-paused {
+	border-color: var(--text-warning, var(--color-orange));
+}
+
+.bfm-dl-job-status.is-paused {
+	color: var(--text-warning, var(--color-orange));
+}
+
