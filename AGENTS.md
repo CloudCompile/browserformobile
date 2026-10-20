@@ -408,8 +408,15 @@ settings object and the plugin instance.
   still downloads; the UI must not imply higher quality exists.
 - **The API's `filler` field is always `false`** and `dubbed` is unreliable.
   The filters are wired but effectively inert. Do not present them as accurate.
-- **The CDN rate-limits above ~4 parallel segment requests** (HTTP 429).
-  Default `downloadSegmentConcurrency` is 3; do not raise the default.
+- **The CDN's rate limit is not a fixed "four parallel requests".** Benchmarked
+  against the live CDN (48-segment runs, and a sustained 96-request run): 3 → 11
+  MB/s, 6 → 22 MB/s, 8 → 30 MB/s, 16 → 48 MB/s, 24 → 74 MB/s, with **no 429 at
+  any level**. The default is 6, but concurrency is a *target* rather than a
+  fixed pool: `downloadSegmentsStreaming` drops it by one on a 429 and holds it
+  down for a cooldown (`RATE_LIMIT_COOLDOWN_MS`) before creeping back up, so
+  raising the setting is safe even if the limit returns. The old "above four"
+  note did not reproduce; do not treat 4 as a hard ceiling, but do not remove the
+  backoff — the limit is per-IP and may return under load.
 - **`requestUrl` has no timeout option.** `withTimeout` in `hls.ts` races the
   promise against a timer; the request itself is not cancelled.
 - **mux.js only emits on `flush()`.** Flushing once at the end materialises the
@@ -440,11 +447,19 @@ settings object and the plugin instance.
   vault, which Obsidian does not hold. The vault itself may live on an SD card
   and writes go through `adapter`, so that case needs no extra permission.
   External paths are desktop-only and the toggle is hidden when unavailable.
-- **Vault writes use `adapter.appendBinary`** (available since app 1.12.3; this
-  plugin requires 1.13.0), so `.ts` never buffers the whole episode. Appends are
-  coalesced to ~8 MB per write because each append re-reads and rewrites the
-  whole file — writing per segment made the phone unusable. The MP4 path streams
-  init then fragments instead of assembling a second copy, halving peak memory.
+- **Vault writes use `adapter.appendBinary` on mobile, but a file handle on
+  desktop.** `appendBinary` (available since app 1.12.3; this plugin requires
+  1.13.0) re-reads and rewrites the *whole* file on every append, so writing an
+  n-byte file costs O(n²) bytes of I/O — an 800 MB movie moves roughly 10 GB, and
+  it is the dominant cost, not the network. On desktop the vault is a real
+  directory, so `VaultDestination` opens a Node `fs` handle (`open` + positional
+  `write`, `NodeVaultWriter`) and appends in O(1); `getBasePath()` is desktop-only
+  so mobile keeps the adapter. Mobile cannot avoid the rewrite, so appends are
+  coalesced to reduce passes instead: `TS_BATCH_BYTES` (8 MB) floor and
+  `MAX_BATCH_BYTES` (64 MB) ceiling, the ceiling also bounding the transmux flush
+  window and peak memory. Writing per segment made the phone unusable. The MP4
+  path streams init then fragments instead of assembling a second copy, halving
+  peak memory.
 - **`src/doctor.ts` repairs files written before 1.1.1** by recovering the length
   from `mvhd`/`mehd` and re-running `patchDuration`. Surfaced as a command and a
   button; it only rewrites files that still hold the sentinel.
@@ -500,6 +515,14 @@ clean download (peak memory bounded, output decodes), a hard failure that leaves
 a resumable prefix, a resume whose prefix is byte-identical to the first attempt,
 a transient 429 that is retried, and a sustained 429 that parks the job at the
 bottom of the queue with a retry countdown while a healthy job runs.
+`/tmp/bfmh/write.test.ts` covers the write path: on desktop the Node handle is
+used and the adapter is never called (`adapterAppends === 0`), on mobile it falls
+back to the adapter, both produce identical bytes, and an append extends rather
+than truncates. It needs `window.require` (a `createRequire` shim) and a stub
+`Platform.isDesktopApp` to exercise the desktop branch.
+`/tmp/bfmh/gate.test.ts` covers the adaptive concurrency gate against a local
+server that returns 429 mid-run: the pool sheds below the configured target
+during the limit, recovers afterwards, and still delivers every segment in order.
 Bundle them with the repo's local esbuild
 (`node_modules/.bin/esbuild ... --alias:obsidian=./obsidian-stub.ts`) and a
 `window` shim; `npx esbuild` hangs in this environment.

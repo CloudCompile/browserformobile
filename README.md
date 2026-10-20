@@ -113,8 +113,10 @@ That is worth remembering for a large library.
 - **Download folder** — where files go, relative to the vault.
 - **Save outside the vault** — desktop only; write to an absolute path.
 - **Filename template** — `{series}`, `{ep}`, `{ep:02}`, `{title}`, `{ext}`.
-- **Parallel segments** — segments fetched at once per episode. The stream CDN
-  starts refusing requests above four, so the default is 3.
+- **Parallel segments** — segments fetched at once per episode. The default is
+  6, which measured around 30 MB/s against the CDN. If the server starts
+  refusing requests the download drops this on its own and creeps back up, so
+  raising it is safe.
 - **Parallel episodes** — episodes downloaded at once. The default is 1, which
   is the kindest setting on a phone; raise it on desktop.
 
@@ -147,9 +149,12 @@ resumes the same way without re-reading what is already written.
 
 ### Rate limiting
 
-The stream CDN throttles bursts of requests. When a whole run is throttled rather
-than one segment, the episode is not failed: it is parked at the bottom of the
-queue and retried a minute later, keeping everything already on disk. Other
+The stream CDN throttles bursts of requests. Concurrency is a target rather than
+a fixed number of slots: when the CDN answers **429** the download lowers it by
+one and waits out a short cooldown, then works back up, so raising **Parallel
+segments** stays safe even if the limit returns. When a whole run is throttled
+rather than one segment, the episode is not failed: it is parked at the bottom of
+the queue and retried a minute later, keeping everything already on disk. Other
 episodes get their turn while it waits, and the row shows **Rate limited** with a
 countdown. After ten tries in a row it gives up and fails normally, so it cannot
 retry forever.

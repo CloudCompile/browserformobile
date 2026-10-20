@@ -16,8 +16,13 @@ import { generateId } from './utils';
 
 /** Bytes coalesced into one write. Appending is costly on mobile. */
 const TS_BATCH_BYTES = 8 * 1024 * 1024;
-/** Upper bound on a coalesced write; also the transmux flush window. */
-const MAX_BATCH_BYTES = 32 * 1024 * 1024;
+/**
+ * Upper bound on a coalesced write; also the transmux flush window. Larger
+ * batches mean fewer passes over the file, which matters because the vault
+ * adapter rewrites the whole file on every append; the cap keeps the batch (and
+ * so peak memory) bounded.
+ */
+const MAX_BATCH_BYTES = 64 * 1024 * 1024;
 /** Video timescale mux.js writes into the MP4, and the unit of its timeline. */
 const MP4_TIMESCALE = 90000;
 /** Suffix of the staging file holding the raw stream of an unfinished job. */

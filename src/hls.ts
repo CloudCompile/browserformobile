@@ -31,7 +31,10 @@ export interface DownloadProgress {
 }
 
 export interface DownloadOptions {
-        /** Segments fetched in parallel. 3–4 is safe; 5+ triggers HTTP 429. */
+        /**
+         * Segments fetched in parallel. This is a target, not a hard limit: the
+         * download lowers it on an HTTP 429 and raises it again after a cooldown.
+         */
         concurrency: number;
         signal?: AbortSignal;
         onProgress?(progress: DownloadProgress): void;
@@ -63,6 +66,13 @@ const TRANSIENT_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 /** First retry delay; doubles per attempt, capped below. */
 const BACKOFF_BASE_MS = 750;
 const BACKOFF_MAX_MS = 15000;
+/**
+ * How long to wait after a 429 before letting concurrency creep back up. The
+ * limit is a sustained-rate one, so recovering instantly just earns another 429.
+ */
+const RATE_LIMIT_COOLDOWN_MS = 5000;
+/** How often a worker parked by the concurrency gate re-checks the target. */
+const GATE_POLL_MS = 50;
 
 /**
  * Exponential backoff with jitter. The jitter matters because several segment
@@ -150,7 +160,16 @@ async function fetchText(url: string): Promise<string> {
         return response.text;
 }
 
-async function fetchSegment(url: string, signal?: AbortSignal): Promise<Uint8Array> {
+/**
+ * Fetch one segment, retrying transient failures with backoff. `onRateLimit` is
+ * called the moment a 429 is seen so the pool can shed concurrency immediately,
+ * before the retry loop even backs off.
+ */
+async function fetchSegment(
+        url: string,
+        signal?: AbortSignal,
+        onRateLimit?: () => void,
+): Promise<Uint8Array> {
         let lastError: unknown = null;
         let rateLimited = false;
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -166,7 +185,10 @@ async function fetchSegment(url: string, signal?: AbortSignal): Promise<Uint8Arr
                                 REQUEST_TIMEOUT_MS,
                         );
                         if (response.status >= 400) {
-                                if (response.status === 429) rateLimited = true;
+                                if (response.status === 429) {
+                                        rateLimited = true;
+                                        onRateLimit?.();
+                                }
                                 if (TRANSIENT_STATUS.has(response.status) && attempt < MAX_ATTEMPTS - 1) {
                                         await delay(backoffMs(attempt), signal);
                                         continue;
@@ -243,13 +265,42 @@ export async function downloadSegmentsStreaming(
                 writes = writes.then(() => onSegment(first, chunk, through));
         };
 
+        const workers = Math.max(1, Math.min(options.concurrency, total - resumeFrom));
+
+        /**
+         * Concurrency is a target rather than a fixed pool. A 429 drops it by one
+         * (the CDN is telling us we are asking too fast) and starts a cooldown
+         * during which parked workers wait, so the pool stays low long enough for
+         * the limit to clear before it recovers. Every worker re-checks the target
+         * before starting a segment, which is what makes the reduction take effect
+         * without cancelling in-flight requests.
+         */
+        const minWorkers = 1;
+        let targetWorkers = workers;
+        let recoverAt = 0;
+        const onRateLimit = (): void => {
+                if (targetWorkers > minWorkers) targetWorkers--;
+                recoverAt = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+        };
+        const gate = async (): Promise<void> => {
+                while (targetWorkers < workers) {
+                        if (internal.signal.aborted) throw new DownloadError('Download cancelled.');
+                        if (Date.now() >= recoverAt) {
+                                targetWorkers++;
+                                return;
+                        }
+                        await delay(GATE_POLL_MS, internal.signal);
+                }
+        };
+
         const worker = async (): Promise<void> => {
                 while (true) {
+                        await gate();
                         const index = nextToFetch++;
                         if (index >= total) return;
                         const url = playlist.segments[index];
                         if (!url) return;
-                        const data = await fetchSegment(url, internal.signal);
+                        const data = await fetchSegment(url, internal.signal, onRateLimit);
                         completed++;
                         bytes += data.byteLength;
                         options.onProgress?.({ completed, total, bytes });
@@ -268,7 +319,6 @@ export async function downloadSegmentsStreaming(
                 }
         };
 
-        const workers = Math.max(1, Math.min(options.concurrency, total - resumeFrom));
         let failure: Error | null = null;
         try {
                 await Promise.all(

@@ -56,6 +56,17 @@ interface NodeRequire {
         (id: string): unknown;
 }
 
+interface NodeFileHandle {
+        /** Write at `position`, or at the current offset when it is null. */
+        write(
+                buffer: Uint8Array,
+                offset: number,
+                length: number,
+                position: number | null,
+        ): Promise<{ bytesWritten: number }>;
+        close(): Promise<void>;
+}
+
 interface NodeFs {
         promises: {
                 mkdir(path: string, options: { recursive: boolean }): Promise<void>;
@@ -66,6 +77,7 @@ interface NodeFs {
                 rename(from: string, to: string): Promise<void>;
                 unlink(path: string): Promise<void>;
                 access(path: string): Promise<void>;
+                open(path: string, flags: string): Promise<NodeFileHandle>;
         };
 }
 
@@ -159,6 +171,104 @@ class VaultWriter implements FileWriter {
         }
 }
 
+/**
+ * Vault writer that goes through Node's `fs` with a real file handle instead of
+ * the vault adapter.
+ *
+ * `adapter.appendBinary` re-reads and rewrites the whole file on every append,
+ * so writing an n-byte file costs O(n^2) bytes of I/O — an 800 MB movie moves
+ * roughly 10 GB. A file handle writes only the new bytes at the current offset,
+ * which is O(n) overall. Only usable on desktop, where the vault has a real
+ * path on disk.
+ */
+class NodeVaultWriter implements FileWriter {
+        private handle: NodeFileHandle | null = null;
+        private opened: Promise<NodeFileHandle> | null = null;
+        private queue: Promise<void> = Promise.resolve();
+        private failed = false;
+
+        constructor(
+                private readonly fs: NodeFs,
+                private readonly path: string,
+                private readonly append: boolean,
+        ) {}
+
+        private enqueue(task: () => Promise<void>): Promise<void> {
+                const next = this.queue.then(async () => {
+                        if (this.failed) return;
+                        try {
+                                await task();
+                        } catch (error) {
+                                this.failed = true;
+                                throw error;
+                        }
+                });
+                this.queue = next.catch(() => undefined);
+                return next;
+        }
+
+        private open(): Promise<NodeFileHandle> {
+                // `a` appends at the end; `w` truncates or creates. Both keep the
+                // handle's own offset, so writes stay sequential.
+                this.opened ??= this.fs.promises.open(this.path, this.append ? 'a' : 'w').then((handle) => {
+                        this.handle = handle;
+                        return handle;
+                });
+                return this.opened;
+        }
+
+        write(chunk: Uint8Array): Promise<void> {
+                return this.enqueue(async () => {
+                        const handle = await this.open();
+                        let written = 0;
+                        // A single write may be short, so keep going until every
+                        // byte of the chunk has landed.
+                        while (written < chunk.byteLength) {
+                                const result = await handle.write(
+                                        chunk,
+                                        written,
+                                        chunk.byteLength - written,
+                                        null,
+                                );
+                                if (result.bytesWritten <= 0) {
+                                        throw new DownloadWriteError('The file could not be written.');
+                                }
+                                written += result.bytesWritten;
+                        }
+                });
+        }
+
+        async close(): Promise<void> {
+                await this.queue;
+                if (this.handle) {
+                        await this.handle.close();
+                        this.handle = null;
+                }
+                if (this.failed) throw new DownloadWriteError('The file could not be written.');
+        }
+
+        async settle(): Promise<void> {
+                await this.queue.catch(() => undefined);
+                if (this.handle) {
+                        await this.handle.close().catch(() => undefined);
+                        this.handle = null;
+                }
+        }
+
+        async abort(): Promise<void> {
+                await this.queue.catch(() => undefined);
+                if (this.handle) {
+                        await this.handle.close().catch(() => undefined);
+                        this.handle = null;
+                }
+                try {
+                        await this.fs.promises.unlink(this.path);
+                } catch {
+                        /* The file may never have been created. */
+                }
+        }
+}
+
 class ExternalWriter implements FileWriter {
         private created: boolean;
         private queue: Promise<void> = Promise.resolve();
@@ -233,6 +343,12 @@ export class VaultDestination implements Destination {
                         stat(path: string): Promise<{ size: number } | null>;
                 },
                 private readonly folder: string,
+                /**
+                 * Node's `fs` plus the vault's absolute path, when the vault is a
+                 * real directory on disk. Enables O(1) appends on desktop; absent
+                 * on mobile, where the adapter is the only way to write.
+                 */
+                private readonly disk: { fs: NodeFs; basePath: string } | null = null,
         ) {
                 this.label = folder || 'Vault root';
         }
@@ -257,6 +373,13 @@ export class VaultDestination implements Destination {
         async open(path: string, options?: OpenOptions): Promise<FileWriter> {
                 const normalized = this.fullPath(path);
                 await this.ensureParents(normalized);
+                if (this.disk) {
+                        return new NodeVaultWriter(
+                                this.disk.fs,
+                                joinPath(this.disk.basePath, normalized),
+                                options?.append ?? false,
+                        );
+                }
                 return new VaultWriter(this.adapter, normalized, options?.append ?? false);
         }
 
@@ -426,8 +549,8 @@ export interface DestinationRequest {
  */
 export function createDestination(app: { vault: { adapter: unknown } }, request: DestinationRequest): Destination {
         const folder = request.folder.trim();
+        const fs = loadNodeFs();
         if (request.external && Platform.isDesktopApp) {
-                const fs = loadNodeFs();
                 if (fs) return new ExternalDestination(fs, folder);
         }
         const adapter = app.vault.adapter as FileSystemAdapter & {
@@ -441,7 +564,16 @@ export function createDestination(app: { vault: { adapter: unknown } }, request:
                 stat(path: string): Promise<{ size: number } | null>;
         };
         const vaultRelative = request.external ? '' : folder;
-        return new VaultDestination(adapter, vaultRelative);
+        // On desktop the vault is a real directory, so its files can be written
+        // through a file handle and appended in O(1) instead of the adapter's
+        // whole-file rewrite. `getBasePath` is desktop-only.
+        const basePath =
+                fs && typeof adapter.getBasePath === 'function' ? adapter.getBasePath() : null;
+        return new VaultDestination(
+                adapter,
+                vaultRelative,
+                fs && basePath ? { fs, basePath } : null,
+        );
 }
 
 /** Whether an absolute, out-of-vault destination is possible on this platform. */
