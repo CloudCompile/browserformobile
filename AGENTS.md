@@ -725,3 +725,17 @@ replaced (this is the harness that caught both the thinning bug and the
 windowed-mean regression); `progress.test.ts` covers `describeProgress`.
 Re-capturing needs the live CDN, which rate-limits after a handful of runs — a
 `429` there is the CDN, not the code.
+
+The statistics work added `/tmp/bfmh/stats.test.ts` (unit: `summarize`, `pruneRuns`,
+`parseRun`, and the resumed-run rate that divides fetched bytes by run time),
+`/tmp/bfmh/statsui.test.ts` (jsdom render of the page: empty state, the four
+cards, totals, best speed, failed-run exclusion, the chart, and clear-with-
+confirmation), and `/tmp/bfmh/statsdl.test.ts` (the real `DownloadManager`
+against an in-memory fake adapter and a synthetic CDN, checking success, failure,
+and resume accounting). Three things are easy to get wrong in `statsdl.test.ts`:
+the speed window needs more than 500 ms of real time, so segment fetches must be
+delayed; a "failed" fixture must be a *non-retryable* error (an embed-only
+stream) or the manager retries instead of failing; and `run.segments` is the
+whole file's segment count, not the number this run fetched. Note also that
+`sanitizeName` turns `/` into `_`, so a `{series}/Episode {ep}` template writes
+`Downloads/Naruto_Episode 1.ts`.
