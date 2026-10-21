@@ -7,6 +7,8 @@ import { VideoLibrary, type LibraryItem, type WatchRecord } from './library';
 import { LibraryModal } from './libraryModal';
 import { PlayerModal } from './playerModal';
 import { DEFAULT_SETTINGS, BrowserSettingTab, type BrowserSettings } from './settings';
+import { StatsStore, type DownloadRun } from './stats';
+import { StatsModal } from './statsModal';
 import { BrowserStore } from './store';
 import type { BrowserData } from './types';
 import { DEFAULT_SEARCH_TEMPLATE, LEGACY_SEARCH_TEMPLATE } from './utils';
@@ -16,6 +18,8 @@ interface PersistedShape extends Partial<BrowserData> {
 	settings?: Partial<BrowserSettings>;
 	/** Watch progress per vault path, so the library survives a reload. */
 	watch?: Record<string, WatchRecord>;
+	/** The download statistics log. */
+	stats?: DownloadRun[];
 }
 
 export default class BrowserPlugin extends Plugin {
@@ -23,12 +27,16 @@ export default class BrowserPlugin extends Plugin {
 	store!: BrowserStore;
 	downloader!: DownloadManager;
 	library!: VideoLibrary;
+	stats!: StatsStore;
 
 	private browserData: Partial<BrowserData> = {};
 	private downloadModal: DownloadModal | null = null;
 	private libraryModal: LibraryModal | null = null;
 	private playerModal: PlayerModal | null = null;
+	private statsModal: StatsModal | null = null;
 	private watchRecords: Record<string, WatchRecord> = {};
+	/** The run log as loaded, handed to the stats store in onload. */
+	private statsRuns: DownloadRun[] = [];
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -41,9 +49,19 @@ export default class BrowserPlugin extends Plugin {
 		this.library = new VideoLibrary();
 		this.library.load(this.watchRecords);
 
-		this.downloader = new DownloadManager(this.app, this.downloaderOptions(), () => {
-			this.downloadModal?.refresh();
-		});
+		this.stats = new StatsStore();
+		this.stats.load(this.statsRuns);
+
+		this.downloader = new DownloadManager(
+			this.app,
+			this.downloaderOptions(),
+			() => {
+				this.downloadModal?.refresh();
+			},
+			(run) => {
+				void this.recordRun(run);
+			},
+		);
 
 		this.registerView(VIEW_TYPE_BROWSER, (leaf: WorkspaceLeaf) => new BrowserView(leaf, this));
 
@@ -59,6 +77,10 @@ export default class BrowserPlugin extends Plugin {
 			this.openLibrary();
 		});
 
+		this.addRibbonIcon('bar-chart-2', 'Download statistics', () => {
+			this.openStats();
+		});
+
 		this.registerCommands();
 		this.addSettingTab(new BrowserSettingTab(this.app, this));
 
@@ -71,6 +93,7 @@ export default class BrowserPlugin extends Plugin {
 		this.store.dispose();
 		this.downloader.dispose();
 		this.playerModal?.close();
+		this.statsModal?.close();
 	}
 
 	/**
@@ -108,6 +131,31 @@ export default class BrowserPlugin extends Plugin {
 		this.libraryModal = modal;
 		modal.open();
 		void modal.refresh();
+	}
+
+	/** Open the download statistics page. */
+	openStats(): void {
+		if (this.statsModal) {
+			this.statsModal.close();
+			this.statsModal = null;
+		}
+		const modal = new StatsModal(this.app, this.stats, {
+			onClear: async () => {
+				this.stats.clear();
+				await this.saveSettings();
+			},
+			onClosed: () => {
+				this.statsModal = null;
+			},
+		});
+		this.statsModal = modal;
+		modal.open();
+	}
+
+	/** Append a finished run to the log and persist it. */
+	private async recordRun(run: DownloadRun): Promise<void> {
+		this.stats.record(run);
+		await this.saveSettings();
 	}
 
 	/** Re-scan the download folder and drop progress for files that are gone. */
@@ -388,6 +436,14 @@ export default class BrowserPlugin extends Plugin {
 				this.openLibrary();
 			},
 		});
+
+		this.addCommand({
+			id: 'open-download-stats',
+			name: 'Open download statistics',
+			callback: () => {
+				this.openStats();
+			},
+		});
 	}
 
 	/**
@@ -454,6 +510,7 @@ export default class BrowserPlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const raw = (await this.loadData()) as PersistedShape | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, raw?.settings ?? {});
+		this.statsRuns = Array.isArray(raw?.stats) ? raw.stats : [];
 		// Move the old JS-app search URL to the server-rendered endpoint; a
 		// user-chosen engine is left untouched.
 		if (this.settings.searchTemplate === LEGACY_SEARCH_TEMPLATE) {
@@ -464,11 +521,21 @@ export default class BrowserPlugin extends Plugin {
 	}
 
 	async saveSettings(): Promise<void> {
-		await this.saveData({ ...this.browserData, settings: this.settings, watch: this.watchRecords });
+		await this.saveData({
+			...this.browserData,
+			settings: this.settings,
+			watch: this.watchRecords,
+			stats: this.stats.toJSON(),
+		});
 	}
 
 	private async persist(data: BrowserData): Promise<void> {
 		this.browserData = data;
-		await this.saveData({ ...data, settings: this.settings, watch: this.watchRecords });
+		await this.saveData({
+			...data,
+			settings: this.settings,
+			watch: this.watchRecords,
+			stats: this.stats.toJSON(),
+		});
 	}
 }

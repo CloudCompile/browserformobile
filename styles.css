@@ -1236,6 +1236,177 @@
 	max-width: 42ch;
 }
 
+/* Statistics --------------------------------------------------------------- */
+
+.bfm-stats-modal {
+	width: min(680px, 92vw);
+}
+
+.bfm-stats-modal .modal-content {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.bfm-stats-body {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	min-height: 0;
+	overflow-y: auto;
+}
+
+.bfm-stats-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+}
+
+.bfm-stats-card {
+	padding: 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m, 8px);
+	background: var(--background-secondary);
+}
+
+.bfm-stats-card-label {
+	font-size: 0.8em;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.bfm-stats-card-value {
+	margin-top: 4px;
+	font-size: 1.4em;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.bfm-stats-card-hint {
+	margin-top: 2px;
+	font-size: 0.8em;
+	color: var(--text-muted);
+}
+
+.bfm-stats-note {
+	font-size: 0.85em;
+	color: var(--text-muted);
+}
+
+.bfm-stats-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.bfm-stats-section-title {
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+/*
+ * The speed chart is a row of equal-width bars, one per recent run, scaled
+ * against the fastest of them. A flex row rather than a fixed-height plot so it
+ * shrinks with the modal on a phone.
+ */
+.bfm-stats-chart {
+	display: flex;
+	align-items: flex-end;
+	gap: 3px;
+	height: 96px;
+	padding: 0 2px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.bfm-stats-bar {
+	flex: 1 1 0;
+	display: flex;
+	align-items: flex-end;
+	height: 100%;
+	min-width: 4px;
+}
+
+.bfm-stats-bar-fill {
+	width: 100%;
+	border-radius: 2px 2px 0 0;
+	background: var(--interactive-accent);
+}
+
+.bfm-stats-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.bfm-stats-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m, 8px);
+	background: var(--background-primary);
+}
+
+.bfm-stats-row.is-failed,
+.bfm-stats-row.is-cancelled {
+	opacity: 0.7;
+}
+
+.bfm-stats-row.is-failed .bfm-stats-row-title {
+	color: var(--text-error);
+}
+
+.bfm-stats-row-main {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.bfm-stats-row-title {
+	font-weight: 600;
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.bfm-stats-row-meta {
+	font-size: 0.85em;
+	color: var(--text-muted);
+}
+
+.bfm-stats-row-time {
+	flex: 0 0 auto;
+	font-size: 0.8em;
+	color: var(--text-muted);
+}
+
+.bfm-stats-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	padding: 32px 16px;
+	text-align: center;
+	color: var(--text-muted);
+}
+
+.bfm-stats-empty-icon {
+	color: var(--text-faint);
+}
+
+.bfm-stats-actions {
+	display: flex;
+	justify-content: flex-end;
+}
+
+@media (pointer: coarse) {
+	.bfm-stats-actions button {
+		min-height: 44px;
+	}
+}
+
 @media (pointer: coarse) {
 	.bfm-library-item-play,
 	.bfm-library-item-delete {

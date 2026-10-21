@@ -12,6 +12,7 @@ import {
         type MediaPlaylist,
 } from './hls';
 import { remainingBytesFromBitrate, SpeedTracker } from './perf';
+import type { DownloadRun } from './stats';
 import { patchDuration, TransmuxStream } from './transmux';
 import { generateId } from './utils';
 import { ScreenWakeLock } from './wakelock';
@@ -243,6 +244,12 @@ export class DownloadManager {
                 private readonly app: { vault: { adapter: unknown } },
                 options: DownloaderOptions,
                 private readonly onUpdate: () => void,
+                /**
+                 * Called once per finished run, including failures, so the caller
+                 * can keep a statistics log. Optional so the downloader still works
+                 * without a stats sink.
+                 */
+                private readonly onRunFinished?: (run: DownloadRun) => void,
         ) {
                 this.options = options;
         }
@@ -592,6 +599,10 @@ export class DownloadManager {
                         this.wakeLock.release();
                         // A deferred job has not finished; it is only waiting.
                         if (!deferred) job.finishedAt = Date.now();
+                        // Read the tracker before dropping it: its run-long average and
+                        // peak are what the stats log wants, and `job.speed` only holds
+                        // the instantaneous reading.
+                        const tracker = this.trackers.get(job.id);
                         job.speed = null;
                         job.eta = null;
                         this.controllers.delete(job.id);
@@ -599,6 +610,7 @@ export class DownloadManager {
                         // live; a deferred job builds fresh ones when it retries.
                         this.trackers.delete(job.id);
                         this.playlists.delete(job.id);
+                        if (!deferred) this.recordRun(job, tracker);
                         this.running--;
                         this.scheduleUpdate();
                         this.pump();
@@ -661,6 +673,41 @@ export class DownloadManager {
                 job.averageSpeed = reading.average > 0 ? reading.average : null;
                 job.peakSpeed = reading.peak > 0 ? reading.peak : null;
                 job.eta = reading.eta;
+        }
+
+        /**
+         * Log a finished run for the stats page. Only terminal states are logged:
+         * a deferred job retries and would otherwise be counted twice, and a pause
+         * is resumed the same way.
+         */
+        private recordRun(job: DownloadJob, tracker: SpeedTracker | undefined): void {
+                if (!this.onRunFinished) return;
+                if (job.status !== 'done' && job.status !== 'failed' && job.status !== 'cancelled') return;
+                // `job.bytes` is everything on disk, which for a resume includes the
+                // prefix an earlier run fetched. Charge this run only for what it
+                // transferred, so its rate is not inflated by work it skipped.
+                const transferred = Math.max(0, job.bytes - job.resumeBytes);
+                const seconds =
+                        job.startedAt !== null && job.finishedAt !== null
+                                ? Math.max(0, (job.finishedAt - job.startedAt) / 1000)
+                                : 0;
+                const outcome = job.status;
+                this.onRunFinished({
+                        id: generateId(),
+                        series: job.seriesTitle,
+                        episode: job.episode.number > 0 ? `Episode ${job.episode.number}` : job.episode.title,
+                        bytes: transferred,
+                        fileSize: job.fileSize ?? (outcome === 'done' ? job.bytes : 0),
+                        seconds,
+                        averageSpeed: tracker?.average ?? 0,
+                        peakSpeed: tracker?.peakSpeed ?? 0,
+                        format: this.options.format,
+                        quality: this.options.quality,
+                        segments: job.completed ?? 0,
+                        resumed: job.resumed,
+                        finishedAt: job.finishedAt ?? Date.now(),
+                        outcome,
+                });
         }
 
         /**

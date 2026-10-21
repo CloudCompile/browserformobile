@@ -53,6 +53,8 @@ mobile. If a site needs a real engine, use **Open in system browser**.
 - An anime downloader: search a catalogue, pick episodes, and save them to disk.
 - A video library that lists your downloaded episodes and plays them, resuming
   where you left off.
+- Live download and network speed while a run is in progress, plus a statistics
+  page summarising past downloads.
 
 ## Anime downloader
 
@@ -180,6 +182,29 @@ repaired in place, without downloading them again. Use **Repair old videos** in
 the download window, or the **Repair downloaded videos** command. Both scan the
 download folder and rewrite only the files that need it.
 
+### Download statistics
+
+The download window shows the live network speed for the whole queue, and the
+per-episode rows show each run's speed and time remaining. Once a few episodes
+have finished, open the statistics page from the **Open download statistics**
+command or the chart ribbon icon for the record of past runs:
+
+- **Downloaded** — total size of everything that finished, and how many episodes.
+- **Time downloading** — the wall-clock time spent across those runs.
+- **Average speed** — bytes transferred divided by time, across every run. A
+  resumed run only counts the bytes it actually fetched, so resuming a download
+  does not inflate the figure.
+- **Best speed** — the fastest run's average rate, with the fastest instantaneous
+  reading shown underneath when it is higher.
+
+Below the totals are a bar per recent run, a per-series breakdown, and the
+individual runs newest first, each flagged as done, failed, or cancelled. Failed
+and cancelled runs are counted but excluded from the size and speed totals, so a
+broken run cannot drag the average down.
+
+The log keeps the 500 most recent runs and is stored alongside your settings.
+**Clear statistics** deletes the log; your downloaded files are untouched.
+
 ### Legal
 
 The downloader is pointed at a third-party catalogue of copyrighted material.
@@ -249,7 +274,9 @@ system browser.
 ## Privacy
 
 Everything is stored locally in the plugin's `data.json` inside your vault.
-Nothing is collected or sent anywhere by the plugin itself.
+Nothing is collected or sent anywhere by the plugin itself. The download
+statistics log — series names, episode labels, sizes, and speeds — is kept in the
+same file and never leaves your device; **Clear statistics** deletes it.
 
 When proxy mode is used, the address you are visiting is sent to the configured
 proxy service so it can fetch the page for you. The default is `allorigins.win`,
@@ -278,7 +305,7 @@ All actions are available from the command palette: open browser, new tab, close
 tab, next and previous tab, back, forward, reload, focus address bar, toggle
 proxy rendering, bookmark page, open bookmarks, open history, manage cookies, go
 home, clear browsing data, open the anime downloader, repair downloaded
-videos, and open the video library.
+videos, open the video library, and open download statistics.
 
 ## Development
 
