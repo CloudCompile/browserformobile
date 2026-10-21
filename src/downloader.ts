@@ -761,7 +761,7 @@ export class DownloadManager {
                 if (!source.url || source.variants.length === 0) {
                         throw new DownloadError(
                                 source.iframe
-                                        ? `The ${source.server || 'default'} server only offers an embedded player, which cannot be downloaded.`
+                                        ? 'No server offered a downloadable file for this episode; only embedded players are available.'
                                         : 'No downloadable stream was found for this episode.',
                         );
                 }

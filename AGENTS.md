@@ -424,6 +424,20 @@ settings object and the plugin instance.
   `/api/stream?id=<urlencoded episode id>` where ids look like
   `naruto-76396?ep=76396_1`. Also `parseMasterPlaylist`, `selectVariant`, and
   `STREAM_REFERER`.
+- **`/api/stream` does not always return a downloadable file, and its default
+  server is not always the downloadable one.** Some series answer with an
+  embed-only server — One Piece returns `DatSaV`, whose `link` is `{}` and whose
+  only `iframe` is `play.echovideo.ru/embed-*` — while the *same response's*
+  `servers` array also names servers that do return a file (`Vidplay`,
+  `MyCloud`). A server is selected by **name** via `?server=<serverName>`
+  (case-insensitive); numeric `server_id`/`data_id` params are ignored, and an
+  unknown name silently falls back to the default rather than erroring, so a
+  name with stray whitespace is not a match. `loadStream` therefore tries the
+  default first and, only when it yields no `file`, walks the other names
+  (subbed tracks first, so a fallback keeps the same audio track) until one
+  returns a file; each alternate is isolated so one 5xx does not abort the
+  search. Without this, every One Piece episode failed with "the DatSaV server
+  only offers an embedded player".
 - `src/hls.ts` — playlist parsing and the segment fetcher. `requestUrl`-based
   (the CDN's CORS allowlist is `https://play.echovideo.ru` only, so page `fetch`
   fails). `downloadSegments` buffers; `downloadSegmentsStreaming` hands segments

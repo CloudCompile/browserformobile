@@ -54,6 +54,27 @@ export interface StreamSource {
         variants: StreamVariant[];
 }
 
+/**
+ * Unique server names from the API's `servers` list, subbed tracks first so a
+ * fallback keeps the same audio track the default response used. The list
+ * repeats a server once per track type, so duplicates are dropped.
+ */
+function serverNames(servers: unknown): string[] {
+        if (!Array.isArray(servers)) return [];
+        const subbed: string[] = [];
+        const rest: string[] = [];
+        const seen = new Set<string>();
+        for (const entry of servers) {
+                const record = (entry ?? {}) as Record<string, unknown>;
+                const name = asString(record.serverName);
+                if (!name || seen.has(name)) continue;
+                seen.add(name);
+                if (asString(record.type) === 'sub') subbed.push(name);
+                else rest.push(name);
+        }
+        return [...subbed, ...rest];
+}
+
 /** An error the caller can show verbatim; the message is already user-facing. */
 export class AnimeApiError extends Error {}
 
@@ -181,15 +202,49 @@ export async function loadStream(base: string, episodeId: string): Promise<Strea
         const payload = (await getJson(
                 base,
                 `/api/stream?id=${encodeURIComponent(episodeId)}`,
-        )) as { results?: { streamingLink?: Record<string, unknown> } };
+        )) as { results?: { streamingLink?: Record<string, unknown>; servers?: unknown } };
         const link = payload?.results?.streamingLink;
         if (!link) {
                 throw new AnimeApiError('The anime API returned no stream for this episode.');
         }
-        const file = (link.link ?? {}) as Record<string, unknown>;
-        const url = asString(file.file) || null;
-        const iframe = asString(link.iframe) || null;
-        const server = asString(link.server);
+
+        // The API's default server does not always serve a file: for some series it
+        // answers with an embed-only one (DatSaV) while the same response's `servers`
+        // list also names download-capable servers (Vidplay, MyCloud). The default is
+        // accepted as-is only when it yields a file; otherwise the alternates are
+        // tried by name — the API matches on `serverName` and ignores numeric ids —
+        // and the first that returns a file wins.
+        let chosen = link;
+        let url = asString(((chosen.link ?? {}) as Record<string, unknown>).file) || null;
+        if (!url) {
+                const tried = new Set([asString(chosen.server)]);
+                for (const name of serverNames(payload?.results?.servers)) {
+                        if (tried.has(name)) continue;
+                        tried.add(name);
+                        // A single alternate can fail on its own (500, timeout); that
+                        // must not abort the search, so each attempt is isolated and
+                        // the next name is tried.
+                        try {
+                                const attempt = (await getJson(
+                                        base,
+                                        `/api/stream?id=${encodeURIComponent(episodeId)}&server=${encodeURIComponent(name)}`,
+                                )) as { results?: { streamingLink?: Record<string, unknown> } };
+                                const candidate = attempt?.results?.streamingLink;
+                                const candidateUrl =
+                                        asString(((candidate?.link ?? {}) as Record<string, unknown>).file) || null;
+                                if (candidate && candidateUrl) {
+                                        chosen = candidate;
+                                        url = candidateUrl;
+                                        break;
+                                }
+                        } catch {
+                                // Try the next server.
+                        }
+                }
+        }
+
+        const iframe = asString(chosen.iframe) || null;
+        const server = asString(chosen.server);
         // Some servers only expose an embed iframe; there is no file to download.
         if (!url) {
                 return { url: null, iframe, server, variants: [] };
