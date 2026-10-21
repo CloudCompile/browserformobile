@@ -130,12 +130,26 @@ export interface FolderListing {
  * `folder/folder/child`. This normalises either shape to a vault-relative path:
  * a child that already starts with the folder is kept, and a bare name is joined
  * to it. An empty folder yields the child unchanged.
+ *
+ * A leading slash is stripped from both the folder and the child first. Obsidian
+ * returns vault-relative paths, but some adapters — the mobile one notably —
+ * hand back paths rooted at `/` or even device-absolute paths, and without this
+ * the child no longer matches the folder and the join doubles it to
+ * `Anime//Anime/Ep 1.mp4`, a path nothing can read. That is what made a repair
+ * scan report every file as failed.
  */
 export function childPath(folder: string, child: string): string {
 	const base = folder.replace(/^\/+|\/+$/g, '');
-	if (!base) return child;
-	if (child === base || child.startsWith(`${base}/`)) return child;
-	return `${base}/${child}`;
+	const relative = child.replace(/^\/+/, '');
+	if (!base) return relative;
+	if (relative === base || relative.startsWith(`${base}/`)) return relative;
+	// A device-absolute path (e.g. `/storage/emulated/0/Vault/Anime/Ep 1.mp4`)
+	// carries the folder somewhere inside it; keep everything from that segment
+	// on, so the result is vault-relative again.
+	const marker = `/${base}/`;
+	const index = relative.indexOf(marker);
+	if (index !== -1) return relative.slice(index + 1);
+	return `${base}/${relative}`;
 }
 
 /**

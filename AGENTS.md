@@ -739,3 +739,14 @@ stream) or the manager retries instead of failing; and `run.segments` is the
 whole file's segment count, not the number this run fetched. Note also that
 `sanitizeName` turns `/` into `_`, so a `{series}/Episode {ep}` template writes
 `Downloads/Naruto_Episode 1.ts`.
+
+The folder-scan path bug (1.10.5) added `/tmp/bfmh/harness/repair_compare.ts`,
+which runs the real `repairFolder` against four mock adapters and shows the
+symptom directly: with a *rooted* listing (`list('Anime')` → `['/Anime/Ep 1.mp4']`)
+the 1.9.5 `childPath` returned `Anime//Anime/Ep 1.mp4`, so every `readBinary`
+threw and the repair reported "271 checked · none needed repair · 271 failed".
+The flat-rooted case is the one that reproduces the user's numbers exactly. The
+fix strips a leading slash from the folder and the child, and — for a
+device-absolute listing — keeps everything from the folder segment onward.
+`childPath` is the single join for both the repair scan and the video library, so
+the two share the bug and the fix.

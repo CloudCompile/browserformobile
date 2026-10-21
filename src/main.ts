@@ -474,7 +474,11 @@ export default class BrowserPlugin extends Plugin {
 				result.repaired > 0 ? `${result.repaired} repaired` : 'none needed repair',
 			];
 			if (result.repaired > 0) parts.push(`${Math.round(seconds / 60)} minutes of video fixed`);
-			if (result.failed.length > 0) parts.push(`${result.failed.length} failed`);
+			if (result.failed.length > 0) {
+				// A count alone is not diagnosable; the first reason names the
+				// cause (an unreadable path, a permissions error).
+				parts.push(`${result.failed.length} failed: ${result.failed[0]?.message ?? 'unknown error'}`);
+			}
 			new Notice(parts.join(' · '));
 		} catch (error) {
 			notice.hide();
