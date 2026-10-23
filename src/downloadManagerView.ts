@@ -120,6 +120,10 @@ export class DownloadManagerView extends ItemView {
 			const cache = (raw as { downloadScanCache?: Record<string, CacheEntry> } | null)?.downloadScanCache;
 			if (cache && typeof cache === 'object') {
 				this.scanCache = new Map(Object.entries(cache));
+				(this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData = {
+					...((this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData ?? {}),
+					downloadScanCache: cache,
+				};
 			}
 		} catch {
 			// Ignore cache-load failures; a full scan will follow.
@@ -130,6 +134,10 @@ export class DownloadManagerView extends ItemView {
 		try {
 			const raw = (await this.plugin.loadData()) ?? {};
 			raw.downloadScanCache = Object.fromEntries(this.scanCache);
+			(this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData = {
+				...((this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData ?? {}),
+				downloadScanCache: raw.downloadScanCache,
+			};
 			await this.plugin.saveData(raw);
 		} catch {
 			// Persistence is best-effort; the in-memory cache still helps.

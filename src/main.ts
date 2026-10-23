@@ -560,9 +560,10 @@ export default class BrowserPlugin extends Plugin {
 	}
 
 	private async persist(data: BrowserData): Promise<void> {
-		this.browserData = data;
+		this.browserData = { ...this.browserData, ...data };
 		await this.saveData({
 			...data,
+			downloadScanCache: (this.browserData as { downloadScanCache?: unknown }).downloadScanCache,
 			settings: this.settings,
 			watch: this.watchRecords,
 			stats: this.stats.toJSON(),
