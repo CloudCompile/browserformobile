@@ -4,6 +4,7 @@
 	"version": "1.11.9",
 	"minAppVersion": "1.13.0",
 	"description": "A tabbed web browser for Obsidian mobile, with history, bookmarks, cookies, an anime downloader, and an offline video library.",
-	"author": "OpenHands",
-	"isDesktopOnly": false
+	"author": "CJ Hauser",
+	"isDesktopOnly": false,
+	"authorUrl": "https://github.com/cjhauser"
 }

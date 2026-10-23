@@ -504,25 +504,51 @@ export class ExternalDestination implements Destination {
                 this.label = folder;
         }
 
+        /** Resolve a relative path against the base folder, rejecting traversal. */
+        private resolve(path: string): string | null {
+                if (!path.trim()) return null;
+                if (path.startsWith('/') || /^[a-zA-Z]:/.test(path)) return null;
+                const segments: string[] = [];
+                for (const part of path.split('/')) {
+                        if (part === '' || part === '.') continue;
+                        if (part === '..') {
+                                if (segments.length === 0) return null;
+                                segments.pop();
+                                continue;
+                        }
+                        if (part.includes('\\') || part.includes('\u0000')) return null;
+                        segments.push(part);
+                }
+                const normalized = segments.join('/');
+                return normalized ? normalized : null;
+        }
+
         validate(path: string): string | null {
                 if (!path.trim()) return 'Choose a filename.';
+                if (this.resolve(path) === null) return 'Path must stay inside the destination folder.';
                 return null;
         }
 
         displayPath(path: string): string {
-                return joinPath(this.folder, path);
+                const relative = this.resolve(path);
+                if (relative === null) return joinPath(this.folder, path);
+                return joinPath(this.folder, relative);
         }
 
         async open(path: string, options?: OpenOptions): Promise<FileWriter> {
-                const full = joinPath(this.folder, path);
+                const relative = this.resolve(path);
+                if (relative === null) throw new DownloadWriteError('Path must stay inside the destination folder.');
+                const full = joinPath(this.folder, relative);
                 const parent = full.slice(0, full.lastIndexOf('/'));
                 if (parent) await this.fs.promises.mkdir(parent, { recursive: true });
                 return new ExternalWriter(this.fs, full, options?.append ?? false);
         }
 
         async exists(path: string): Promise<boolean> {
+                const relative = this.resolve(path);
+                if (relative === null) return false;
                 try {
-                        await this.fs.promises.access(joinPath(this.folder, path));
+                        await this.fs.promises.access(joinPath(this.folder, relative));
                         return true;
                 } catch {
                         return false;
@@ -530,8 +556,10 @@ export class ExternalDestination implements Destination {
         }
 
         async size(path: string): Promise<number | null> {
+                const relative = this.resolve(path);
+                if (relative === null) return null;
                 try {
-                        const stat = await this.fs.promises.stat(joinPath(this.folder, path));
+                        const stat = await this.fs.promises.stat(joinPath(this.folder, relative));
                         return stat.size;
                 } catch {
                         return null;
@@ -539,37 +567,48 @@ export class ExternalDestination implements Destination {
         }
 
         async read(path: string): Promise<Uint8Array | null> {
+                const relative = this.resolve(path);
+                if (relative === null) return null;
                 try {
-                        return await this.fs.promises.readFile(joinPath(this.folder, path));
+                        return await this.fs.promises.readFile(joinPath(this.folder, relative));
                 } catch {
                         return null;
                 }
         }
 
         async write(path: string, data: Uint8Array): Promise<void> {
-                const full = joinPath(this.folder, path);
+                const relative = this.resolve(path);
+                if (relative === null) throw new DownloadWriteError('Path must stay inside the destination folder.');
+                const full = joinPath(this.folder, relative);
                 const parent = full.slice(0, full.lastIndexOf('/'));
                 if (parent) await this.fs.promises.mkdir(parent, { recursive: true });
                 await this.fs.promises.writeFile(full, data);
         }
 
         async remove(path: string): Promise<void> {
+                const relative = this.resolve(path);
+                if (relative === null) return;
                 try {
-                        await this.fs.promises.unlink(joinPath(this.folder, path));
+                        await this.fs.promises.unlink(joinPath(this.folder, relative));
                 } catch {
                         /* A missing file is not an error. */
                 }
         }
 
         async rename(from: string, to: string): Promise<void> {
-                const target = joinPath(this.folder, to);
+                const fromRel = this.resolve(from);
+                const toRel = this.resolve(to);
+                if (fromRel === null || toRel === null) throw new DownloadWriteError('Path must stay inside the destination folder.');
+                const target = joinPath(this.folder, toRel);
                 const parent = target.slice(0, target.lastIndexOf('/'));
                 if (parent) await this.fs.promises.mkdir(parent, { recursive: true });
-                await this.fs.promises.rename(joinPath(this.folder, from), target);
+                await this.fs.promises.rename(joinPath(this.folder, fromRel), target);
         }
 
         async truncate(path: string, size: number): Promise<void> {
-                const full = joinPath(this.folder, path);
+                const relative = this.resolve(path);
+                if (relative === null) return;
+                const full = joinPath(this.folder, relative);
                 const current = await this.size(path);
                 if (current === null || current <= size) return;
                 await this.fs.promises.truncate(full, size);

@@ -1,5 +1,6 @@
 import { injectBridge, postCookiesToFrame, registerBridgeChannel, unregisterBridgeChannel } from './bridge';
 import { loadPage } from './proxy';
+import { cookieMatchesHost } from './cookieStore';
 import type { CookieRecord, RenderMode } from './types';
 import { generateId, hostOf } from './utils';
 
@@ -158,12 +159,15 @@ export class ProxyRenderer implements Renderer {
 			}
 		});
 
+		const targetHost = (safeUrl(url)?.hostname ?? hostOf(url)).toLowerCase();
+		const scopedCookies = cookies.filter((cookie) => cookieMatchesHost(cookie, targetHost));
+
 		const result = await loadPage(url, {
 			proxyBase,
 			directFetch,
 			runScripts,
-			cookies,
-			ignoreCookies: cookies.length === 0,
+			cookies: scopedCookies,
+			ignoreCookies: scopedCookies.length === 0,
 		});
 
 		if (!result.ok) {
@@ -178,7 +182,7 @@ export class ProxyRenderer implements Renderer {
 			host: parsed?.hostname.toLowerCase() ?? hostOf(url),
 			path: parsed?.pathname ?? '/',
 			baseUrl: result.url,
-			cookies,
+			cookies: scopedCookies,
 		});
 
 		const frame = container.createEl('iframe', {
@@ -193,7 +197,7 @@ export class ProxyRenderer implements Renderer {
 
 		frame.addEventListener('load', () => {
 			this.clearReadyTimer();
-			postCookiesToFrame(frame, this.channel, this.context.cookies);
+			postCookiesToFrame(frame, this.channel, this.context.cookies.filter((c) => cookieMatchesHost(c, (safeUrl(result.url)?.hostname ?? hostOf(url)).toLowerCase())));
 			events.onReady(result.url);
 		});
 
@@ -221,7 +225,10 @@ export class ProxyRenderer implements Renderer {
 	}
 
 	setCookies(cookies: CookieRecord[]): void {
-		if (this.frame) postCookiesToFrame(this.frame, this.channel, cookies);
+		if (this.frame) {
+			const host = hostOf(this.context.url).toLowerCase();
+			postCookiesToFrame(this.frame, this.channel, cookies.filter((c) => cookieMatchesHost(c, host)));
+		}
 	}
 
 	private clearReadyTimer(): void {

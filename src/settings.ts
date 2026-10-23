@@ -116,7 +116,7 @@ export class BrowserSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Run page scripts',
-				desc: 'Let proxied pages run their own scripts. Most modern sites render in the browser and come up blank or broken without this. Turning it off blocks third-party scripts but breaks those sites.',
+				desc: 'Let proxied pages run their own scripts. Most modern sites render in the browser and come up blank or broken without this. Turning it off blocks third-party scripts but breaks those sites. Warning: the default is on; even when turned off, inline scripts are still left in place for sites that need them (off toggle only blocks third-party remote scripts).',
 				control: { type: 'toggle', key: 'runScripts' },
 			},
 			{
