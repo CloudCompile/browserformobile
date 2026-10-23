@@ -23,7 +23,8 @@ interface CacheEntry {
 	status: FileStatus;
 }
 
-const CONCURRENCY = 6;
+const CONCURRENCY = 2;
+const SCAN_FILE_BUDGET_MS = 1000;
 
 export class DownloadManagerView extends ItemView {
 	private readonly plugin: BrowserPlugin;
@@ -116,7 +117,7 @@ export class DownloadManagerView extends ItemView {
 
 	private async loadScanCache(): Promise<void> {
 		try {
-			const raw = await this.plugin.loadData();
+			const raw = await this.plugin.loadData() as Record<string, unknown> | null;
 			const cache = (raw as { downloadScanCache?: Record<string, CacheEntry> } | null)?.downloadScanCache;
 			if (cache && typeof cache === 'object') {
 				this.scanCache = new Map(Object.entries(cache));
@@ -132,7 +133,7 @@ export class DownloadManagerView extends ItemView {
 
 	private async saveScanCache(): Promise<void> {
 		try {
-			const raw = (await this.plugin.loadData()) ?? {};
+			const raw = ((await this.plugin.loadData()) ?? {}) as Record<string, unknown>;
 			raw.downloadScanCache = Object.fromEntries(this.scanCache);
 			(this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData = {
 				...((this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData ?? {}),
@@ -184,7 +185,22 @@ export class DownloadManagerView extends ItemView {
 					if (cached && cached.key === cacheKey) {
 						status = { ...cached.status };
 					} else {
-						const buffer = await adapter.readBinary(entry.path);
+						const extension = entry.name.slice(entry.name.lastIndexOf('.') + 1).toLowerCase();
+						if (extension !== 'mp4') {
+							status = { needsRepair: false, durationSeconds: null };
+							this.scanCache.set(entry.path, { key: cacheKey, status });
+							return;
+						}
+						const readResult: { kind: 'data'; buffer: ArrayBuffer } | { kind: 'timeout' } = await Promise.race([
+							adapter.readBinary(entry.path).then((buffer) => ({ kind: 'data' as const, buffer })),
+							new Promise<{ kind: 'timeout' }>((resolve) => {
+								window.setTimeout(() => resolve({ kind: 'timeout' }), SCAN_FILE_BUDGET_MS);
+							}),
+						]);
+						if (readResult.kind === 'timeout') {
+							throw new Error(`scan budget exceeded (${SCAN_FILE_BUDGET_MS}ms)`);
+						}
+						const buffer = readResult.buffer;
 						const data = new Uint8Array(buffer);
 						const patch = inspectDurationEnhanced(data);
 						const healthy =
@@ -198,6 +214,9 @@ export class DownloadManagerView extends ItemView {
 					}
 					this.statuses.set(entry.path, status);
 				} catch (error) {
+					if (entry.size > 0) {
+						console.debug('[bfm scan] failed file', entry.path, entry.size, error instanceof Error ? error.message : String(error));
+					}
 					this.statuses.set(entry.path, {
 						needsRepair: false,
 						durationSeconds: null,
