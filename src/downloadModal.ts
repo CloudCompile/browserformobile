@@ -2,7 +2,9 @@ import { App, Modal, Notice, Platform, Setting, setIcon } from 'obsidian';
 import {
         AnimeApiError,
         loadEpisodes,
+        loadAnimeInfo,
         searchSeries,
+        type AnimeInfo,
         type EpisodeSummary,
         type SeriesSummary,
 } from './animeApi';
@@ -38,7 +40,7 @@ const QUALITY_CHOICES: { value: string; label: string }[] = [
         { value: '360', label: '360p' },
 ];
 
-type Stage = 'search' | 'episodes' | 'queue';
+type Stage = 'search' | 'detail' | 'episodes' | 'queue';
 
 /**
  * Search a series, pick episodes, and hand them to the download manager. The
@@ -47,7 +49,12 @@ type Stage = 'search' | 'episodes' | 'queue';
 export class DownloadModal extends Modal {
         private options: DownloadModalOptions;
         private series: SeriesSummary[] = [];
+        private totalSeriesPages = 1;
+        private currentPage = 1;
+        private includeAdult = false;
+        private lastKeyword = '';
         private selected: SeriesSummary | null = null;
+        private animeInfo: AnimeInfo | null = null;
         private episodes: EpisodeSummary[] = [];
         private chosen = new Set<string>();
         private searchValue = '';
@@ -114,6 +121,7 @@ export class DownloadModal extends Modal {
                 this.bodyEl.empty();
                 this.renderStageTabs();
                 if (this.stage === 'search') this.renderSearch();
+                else if (this.stage === 'detail') this.renderDetail();
                 else if (this.stage === 'episodes') this.renderEpisodes();
                 else this.renderQueue();
                 this.renderStatus();
@@ -124,6 +132,7 @@ export class DownloadModal extends Modal {
                 const active = this.manager.activeCount;
                 const stages: { id: Stage; label: string }[] = [
                         { id: 'search', label: 'Search' },
+                        { id: 'detail', label: 'Details' },
                         { id: 'episodes', label: 'Episodes' },
                         { id: 'queue', label: active > 0 ? `Queue (${active})` : 'Queue' },
                 ];
@@ -134,8 +143,10 @@ export class DownloadModal extends Modal {
                         });
                         if (this.stage === entry.id) button.addClass('is-active');
                         if (entry.id === 'episodes' && !this.selected) button.disabled = true;
+                        if (entry.id === 'detail' && !this.animeInfo) button.disabled = true;
                         button.addEventListener('click', () => {
                                 if (entry.id === 'episodes' && !this.selected) return;
+                                if (entry.id === 'detail' && !this.animeInfo) return;
                                 this.stage = entry.id;
                                 this.render();
                         });
@@ -160,6 +171,7 @@ export class DownloadModal extends Modal {
                 const button = row.createEl('button', { cls: 'mod-cta', text: 'Search' });
                 const run = () => {
                         this.searchValue = input.value;
+                        this.currentPage = 1;
                         void this.doSearch();
                 };
                 button.addEventListener('click', run);
@@ -168,6 +180,18 @@ export class DownloadModal extends Modal {
                                 event.preventDefault();
                                 run();
                         }
+                });
+
+                // 18+ toggle re-runs the search with rated=R_PLUS.
+                const filterRow = this.bodyEl.createDiv({ cls: 'bfm-dl-search-filters' });
+                const adultLabel = filterRow.createEl('label', { cls: 'bfm-dl-search-filter' });
+                const adultCheckbox = adultLabel.createEl('input', { attr: { type: 'checkbox' } });
+                adultCheckbox.checked = this.includeAdult;
+                adultLabel.createSpan({ text: ' Include 18+ titles' });
+                adultCheckbox.addEventListener('change', () => {
+                        this.includeAdult = adultCheckbox.checked;
+                        this.currentPage = 1;
+                        void this.doSearch();
                 });
 
                 if (this.busy) {
@@ -191,6 +215,9 @@ export class DownloadModal extends Modal {
                         }
                         const info = card.createDiv({ cls: 'bfm-dl-result-info' });
                         info.createDiv({ cls: 'bfm-dl-result-title', text: series.title });
+                        if (series.adultContent) {
+                                info.createSpan({ cls: 'bfm-dl-badge', text: '18+' });
+                        }
                         const meta: string[] = [];
                         if (series.showType) meta.push(series.showType);
                         meta.push(`${series.eps || series.sub} episodes`);
@@ -199,18 +226,60 @@ export class DownloadModal extends Modal {
                         info.createDiv({ cls: 'bfm-dl-result-meta', text: meta.join(' · ') });
                         card.addEventListener('click', () => void this.openSeries(series));
                 }
+
+                // Pagination.
+                const pager = this.bodyEl.createDiv({ cls: 'bfm-dl-pager' });
+                const prev = pager.createEl('button', { text: 'Prev' });
+                prev.disabled = this.currentPage <= 1 || this.busy;
+                prev.addEventListener('click', () => {
+                        if (this.currentPage > 1) {
+                                this.currentPage--;
+                                void this.doSearch();
+                        }
+                });
+                pager.createSpan({ text: `Page ${this.currentPage} of ${this.totalSeriesPages}` });
+                const next = pager.createEl('button', { text: 'Next' });
+                next.disabled = this.currentPage >= this.totalSeriesPages || this.busy;
+                next.addEventListener('click', () => {
+                        if (this.currentPage < this.totalSeriesPages) {
+                                this.currentPage++;
+                                void this.doSearch();
+                        }
+                });
         }
 
         private async doSearch(): Promise<void> {
                 if (this.busy) return;
                 const keyword = this.searchValue.trim();
                 if (!keyword) return;
+                const keywordChanged = keyword !== this.lastKeyword;
+                if (keywordChanged) {
+                        this.lastKeyword = keyword;
+                        this.currentPage = 1;
+                        this.selected = null;
+                        this.animeInfo = null;
+                        this.episodes = [];
+                        this.chosen.clear();
+                }
                 this.busy = true;
                 this.render();
                 try {
-                        this.series = await searchSeries(this.options.apiBase, keyword);
+                        const result = await searchSeries(this.options.apiBase, keyword, {
+                                page: this.currentPage,
+                                includeAdult: this.includeAdult,
+                        });
+                        this.series = result.series;
+                        this.totalSeriesPages = result.totalPages;
+                        if (this.currentPage > this.totalSeriesPages) {
+                                this.currentPage = this.totalSeriesPages;
+                                this.series = (await searchSeries(this.options.apiBase, keyword, {
+                                        page: this.currentPage,
+                                        includeAdult: this.includeAdult,
+                                })).series;
+                        }
                 } catch (error) {
                         this.series = [];
+                        this.totalSeriesPages = 1;
                         this.notifyError(error);
                 } finally {
                         this.busy = false;
@@ -218,9 +287,168 @@ export class DownloadModal extends Modal {
                 }
         }
 
+        private renderDetail(): void {
+                const series = this.selected;
+                if (!series) {
+                        this.stage = 'search';
+                        this.render();
+                        return;
+                }
+                if (this.busy && !this.animeInfo) {
+                        this.bodyEl.createEl('p', { cls: 'bfm-dl-hint', text: 'Loading details…' });
+                        return;
+                }
+                const info = this.animeInfo;
+
+                const container = this.bodyEl.createDiv({ cls: 'bfm-dl-detail' });
+                if (info?.poster || series.poster) {
+                        container.createEl('img', {
+                                cls: 'bfm-dl-poster',
+                                attr: { src: info?.poster || series.poster || '', alt: '', loading: 'lazy' },
+                        });
+                }
+                const box = container.createDiv({ cls: 'bfm-dl-detail-info' });
+                box.createEl('h3', { text: info?.title || series.title });
+                if (info?.japaneseTitle || series.japaneseTitle) {
+                        box.createDiv({ cls: 'bfm-dl-result-meta', text: info?.japaneseTitle || (series.japaneseTitle as string) });
+                }
+                const meta: string[] = [];
+                if (info?.showType || series.showType) meta.push(info?.showType || series.showType);
+                if (info?.duration) meta.push(info.duration);
+                if (info?.status) meta.push(info.status);
+                if (info?.score) meta.push(`Score ${info.score}`);
+                if (meta.length > 0) box.createDiv({ cls: 'bfm-dl-result-meta', text: meta.join(' · ') });
+                if (info?.adultContent) {
+                        box.createSpan({ cls: 'bfm-dl-badge', text: '18+' });
+                }
+                if (info?.genres && info.genres.length > 0) {
+                        box.createDiv({ cls: 'bfm-dl-result-meta', text: `Genres: ${info.genres.join(', ')}` });
+                }
+                if (info?.studios && info.studios.length > 0) {
+                        box.createDiv({ cls: 'bfm-dl-result-meta', text: `Studios: ${info.studios.join(', ')}` });
+                }
+                if (info?.overview) {
+                        box.createEl('p', { cls: 'bfm-dl-hint', text: info.overview });
+                }
+
+                // Seasons (clickable to open that season's detail page).
+                if (info?.seasons && info.seasons.length > 0) {
+                        const sec = this.bodyEl.createDiv({ cls: 'bfm-dl-section' });
+                        sec.createEl('h4', { text: 'Seasons' });
+                        const list = sec.createDiv({ cls: 'bfm-dl-results' });
+                        for (const season of info.seasons) {
+                                const card = list.createDiv({ cls: 'bfm-dl-result' });
+                                if (season.poster) {
+                                        card.createEl('img', {
+                                                cls: 'bfm-dl-poster',
+                                                attr: { src: season.poster, alt: '', loading: 'lazy' },
+                                        });
+                                }
+                                const inf = card.createDiv({ cls: 'bfm-dl-result-info' });
+                                inf.createDiv({ cls: 'bfm-dl-result-title', text: season.title || season.id });
+                                const m: string[] = [];
+                                if (season.showType) m.push(season.showType);
+                                if (season.isActive) m.push('current');
+                                inf.createDiv({ cls: 'bfm-dl-result-meta', text: m.join(' · ') });
+                                card.addEventListener('click', () => {
+                                        const pseudo: SeriesSummary = {
+                                                id: season.id,
+                                                title: season.title || season.id,
+                                                japaneseTitle: season.japaneseTitle,
+                                                poster: season.poster,
+                                                showType: season.showType || 'TV',
+                                                sub: 0,
+                                                dub: 0,
+                                                eps: 0,
+                                        };
+                                        void this.openSeries(pseudo);
+                                });
+                        }
+                }
+
+                // Recommended (compact).
+                if (info?.recommended && info.recommended.length > 0) {
+                        const sec = this.bodyEl.createDiv({ cls: 'bfm-dl-section' });
+                        sec.createEl('h4', { text: 'Recommended' });
+                        const list = sec.createDiv({ cls: 'bfm-dl-results' });
+                        for (const rec of info.recommended.slice(0, 8)) {
+                                const card = list.createDiv({ cls: 'bfm-dl-result' });
+                                if (rec.poster) {
+                                        card.createEl('img', {
+                                                cls: 'bfm-dl-poster',
+                                                attr: { src: rec.poster, alt: '', loading: 'lazy' },
+                                        });
+                                }
+                                const inf = card.createDiv({ cls: 'bfm-dl-result-info' });
+                                inf.createDiv({ cls: 'bfm-dl-result-title', text: rec.title });
+                                card.addEventListener('click', () => void this.openSeries(rec));
+                        }
+                }
+
+                // Related (compact, grouped).
+                if (info?.related) {
+                        const groups = Object.entries(info.related).filter(([, v]) => Array.isArray(v) && v.length > 0);
+                        if (groups.length > 0) {
+                                const sec = this.bodyEl.createDiv({ cls: 'bfm-dl-section' });
+                                sec.createEl('h4', { text: 'Related' });
+                                for (const [name, items] of groups) {
+                                        const group = sec.createDiv({ cls: 'bfm-dl-related-group' });
+                                        group.createSpan({ cls: 'bfm-dl-result-meta', text: `${name}: ` });
+                                        for (const item of items.slice(0, 6)) {
+                                                const link = group.createEl('a', { cls: 'bfm-dl-link', text: item.title });
+                                                link.addEventListener('click', (ev) => {
+                                                        ev.preventDefault();
+                                                        void this.openSeries(item);
+                                                });
+                                                group.createSpan({ text: ' · ' });
+                                        }
+                                }
+                        }
+                }
+
+                const actions = this.bodyEl.createDiv({ cls: 'bfm-dl-actions' });
+                const viewEpisodes = actions.createEl('button', { cls: 'mod-cta', text: 'View episodes' });
+                viewEpisodes.addEventListener('click', () => void this.loadEpisodesForSelected());
+                const back = actions.createEl('button', { text: 'Back to search' });
+                back.addEventListener('click', () => {
+                        this.stage = 'search';
+                        this.render();
+                });
+        }
+
+
         private async openSeries(series: SeriesSummary): Promise<void> {
                 this.busy = true;
                 this.selected = series;
+                this.animeInfo = null;
+                this.render();
+                try {
+                        const info = await loadAnimeInfo(this.options.apiBase, series.id);
+                        this.animeInfo = info;
+                        // Prefer API's canonical title/poster where available.
+                        this.selected = {
+                                ...series,
+                                title: info.title || series.title,
+                                japaneseTitle: info.japaneseTitle ?? series.japaneseTitle,
+                                poster: info.poster ?? series.poster,
+                                showType: info.showType || series.showType,
+                                adultContent: info.adultContent,
+                        };
+                        this.stage = 'detail';
+                } catch (error) {
+                        this.selected = null;
+                        this.animeInfo = null;
+                        this.notifyError(error);
+                } finally {
+                        this.busy = false;
+                        this.render();
+                }
+        }
+
+        private async loadEpisodesForSelected(): Promise<void> {
+                const series = this.selected;
+                if (!series) return;
+                this.busy = true;
                 this.render();
                 try {
                         const detail = await loadEpisodes(this.options.apiBase, series.id);
@@ -228,7 +456,6 @@ export class DownloadModal extends Modal {
                         this.chosen = new Set(detail.episodes.map((episode) => episode.id));
                         this.stage = 'episodes';
                 } catch (error) {
-                        this.selected = null;
                         this.notifyError(error);
                 } finally {
                         this.busy = false;

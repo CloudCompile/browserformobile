@@ -2,8 +2,9 @@ import { requestUrl } from 'obsidian';
 
 /**
  * Client for the anime-api instance at animeapi.cjhauser.me, which fronts the
- * aniwaves.ru catalogue. Only three endpoints exist and there is no schema
- * endpoint; these shapes were derived by probing the live service.
+ * aniwaves.ru catalogue. Four endpoints exist (no schema endpoint): /api/search,
+ * /api/info, /api/episodes/:id, /api/stream; shapes were derived by probing the
+ * live service (see review/animeapi-coverage.md).
  */
 export const DEFAULT_API_BASE = 'https://animeapi.cjhauser.me';
 
@@ -20,6 +21,8 @@ export interface SeriesSummary {
         sub: number;
         dub: number;
         eps: number;
+        /** Present when the API surfaces an adult-content flag (search/filter may). */
+        adultContent?: boolean;
 }
 
 export interface EpisodeSummary {
@@ -35,6 +38,41 @@ export interface EpisodeSummary {
 export interface SeriesDetail {
         totalEpisodes: number;
         episodes: EpisodeSummary[];
+}
+
+export interface AnimeSeason {
+        id: string;
+        title: string | null;
+        japaneseTitle: string | null;
+        showType: string | null;
+        poster: string | null;
+        isActive: boolean;
+}
+
+export interface AnimeInfo {
+        adultContent: boolean;
+        id: string;
+        dataId: string | null;
+        title: string | null;
+        japaneseTitle: string | null;
+        poster: string | null;
+        showType: string;
+        duration: string | null;
+        status: string | null;
+        score: string | null;
+        genres: string[];
+        studios: string[];
+        overview: string | null;
+        metadata: Record<string, unknown>;
+        seasons: AnimeSeason[];
+        recommended: SeriesSummary[];
+        related: Record<string, SeriesSummary[]>;
+        popular: SeriesSummary[];
+}
+
+export interface SearchResult {
+        series: SeriesSummary[];
+        totalPages: number;
 }
 
 /** A quality variant advertised by an HLS master playlist. */
@@ -117,30 +155,78 @@ async function getJson(base: string, path: string): Promise<unknown> {
         }
 }
 
-export async function searchSeries(base: string, keyword: string): Promise<SeriesSummary[]> {
+export async function searchSeries(
+        base: string,
+        keyword: string,
+        options?: { page?: number; includeAdult?: boolean },
+): Promise<{ series: SeriesSummary[]; totalPages: number }> {
         const query = keyword.trim();
-        if (!query) return [];
-        const payload = (await getJson(base, `/api/search?keyword=${encodeURIComponent(query)}`)) as {
-                results?: { data?: unknown };
+        if (!query) return { series: [], totalPages: 1 };
+        const requestedPage = options?.page;
+        const page: number = requestedPage && requestedPage > 0 && Number.isFinite(requestedPage) ? requestedPage : 1;
+        const includeAdult = options?.includeAdult ?? false;
+
+        // Build a search URL for a given page number.
+        const buildUrl = (p: number): string => {
+                const params: string[] = [];
+                params.push(`keyword=${encodeURIComponent(query)}`);
+                params.push(`page=${encodeURIComponent(String(p))}`);
+                if (includeAdult) params.push('rated=R_PLUS');
+                return `/api/search?${params.join('&')}`;
         };
-        const rows = payload?.results?.data;
-        if (!Array.isArray(rows)) return [];
-        return rows.map((row) => {
-                const record = row as Record<string, unknown>;
-                const info = (record.tvInfo ?? {}) as Record<string, unknown>;
-                const japaneseTitle = asString(record.japanese_title);
-                const poster = asString(record.poster);
-                return {
-                        id: asString(record.id),
-                        title: asString(record.title),
-                        japaneseTitle: japaneseTitle || null,
-                        poster: poster || null,
-                        showType: asString(info.showType),
-                        sub: asNumber(info.sub),
-                        dub: asNumber(info.dub),
-                        eps: asNumber(info.eps),
-                };
-        }).filter((series) => series.id);
+
+        // Parse a raw search payload into the canonical shape. An \"empty\" over-page
+        // response has no `data` array and no totalPage, so we flag it as overPage
+        // instead of silently faking \"Page 1 of 1\".
+        const parsePayload = (payload: unknown): { series: SeriesSummary[]; totalPages: number; overPage: boolean } => {
+                const raw = (payload ?? {}) as { results?: { data?: unknown; totalPage?: unknown; message?: unknown } };
+                const rows = raw?.results?.data;
+                const series = Array.isArray(rows)
+                        ? rows
+                                .map((row) => {
+                                        const record = row as Record<string, unknown>;
+                                        const info = (record.tvInfo ?? {}) as Record<string, unknown>;
+                                        const japaneseTitle = asString(record.japanese_title);
+                                        const poster = asString(record.poster);
+                                        return {
+                                                id: asString(record.id),
+                                                title: asString(record.title),
+                                                japaneseTitle: japaneseTitle || null,
+                                                poster: poster || null,
+                                                showType: asString(info.showType),
+                                                sub: asNumber(info.sub),
+                                                dub: asNumber(info.dub),
+                                                eps: asNumber(info.eps),
+                                                adultContent:
+                                                        typeof record.adultContent === 'boolean'
+                                                                ? record.adultContent
+                                                                : typeof info.adultContent === 'boolean'
+                                                                        ? info.adultContent
+                                                                        : undefined,
+                                        };
+                                })
+                                .filter((seriesItem) => seriesItem.id)
+                        : [];
+                const totalPageNumber = asNumber(raw?.results?.totalPage);
+                const overPage = !Array.isArray(rows) && totalPageNumber === 0 && page > 1;
+                const totalPages = Math.max(1, totalPageNumber);
+                return { series, totalPages, overPage };
+        };
+
+        const firstResponse = await getJson(base, buildUrl(page));
+        const first = parsePayload(firstResponse);
+        if (!first.overPage) return { series: first.series, totalPages: first.totalPages };
+
+        // Page exceeded the available range. Re-fetch page 1 to learn the real
+        // total, then fetch the last valid page so the caller lands on real
+        // results instead of an empty \"Page 1 of 1\".
+        const pageOneResponse = await getJson(base, buildUrl(1));
+        const pageOne = parsePayload(pageOneResponse);
+        if (!pageOne.series.length) return { series: [], totalPages: Math.max(1, pageOne.totalPages) };
+        const target = Math.max(1, Math.min(pageOne.totalPages, pageOne.totalPages));
+        const lastResponse = await getJson(base, buildUrl(target));
+        const last = parsePayload(lastResponse);
+        return { series: last.series, totalPages: last.totalPages };
 }
 
 export async function loadEpisodes(base: string, seriesId: string): Promise<SeriesDetail> {
@@ -163,9 +249,129 @@ export async function loadEpisodes(base: string, seriesId: string): Promise<Seri
                         dubbed: Boolean(record.dubbed),
                 };
         }).filter((episode) => episode.id);
+        if (episodes.length === 0) {
+                throw new AnimeApiError('The anime API returned no episodes for this series.');
+        }
         return {
                 totalEpisodes: asNumber(payload?.results?.totalEpisodes) || episodes.length,
                 episodes,
+        };
+}
+
+export async function loadAnimeInfo(base: string, seriesId: string): Promise<AnimeInfo> {
+        const payload = (await getJson(
+                base,
+                `/api/info?id=${encodeURIComponent(seriesId)}`,
+        )) as { results?: { data?: unknown; seasons?: unknown } };
+
+        const data = (payload?.results?.data ?? null) as Record<string, unknown> | null;
+        if (!data) {
+                throw new AnimeApiError('The anime API returned no details for this series.');
+        }
+
+        const animeInfo = (data.animeInfo ?? {}) as Record<string, unknown>;
+        const tvInfo = (data.tvInfo ?? animeInfo.tvInfo ?? {}) as Record<string, unknown>;
+        const metadata = { ...animeInfo };
+        // Drop fields we hoist to top-level so they are not duplicated as raw blobs.
+        delete metadata.Overview;
+        delete metadata.Genre;
+        delete metadata.Scores;
+        delete metadata.tvInfo;
+
+        const genresRaw = Array.isArray(animeInfo.Genre)
+                ? animeInfo.Genre
+                : (Array.isArray(data.Genre) ? data.Genre : []);
+        const genres = genresRaw.map((g) => String(g)).filter(Boolean);
+
+        const posterRaw = asString(data.poster);
+        const japaneseRaw = asString(data.japanese_title);
+
+        const toSummary = (row: unknown): SeriesSummary | null => {
+                const record = (row ?? {}) as Record<string, unknown>;
+                const id = asString(record.id);
+                if (!id) return null;
+                const info = (record.tvInfo ?? {}) as Record<string, unknown>;
+                return {
+                        id,
+                        title: asString(record.title),
+                        japaneseTitle: asString(record.japanese_title) || null,
+                        poster: asString(record.poster) || null,
+                        showType: asString(record.showType) || asString(info.showType) || 'Unknown',
+                        sub: asNumber(info.sub),
+                        dub: asNumber(info.dub),
+                        eps: asNumber(info.eps),
+                        // Mirror search path so adult-content badges stay consistent in
+                        // detail view's recommended/related/popular lists. The backend only
+                        // surfaces adultContent on the search payload; related entries fall
+                        // back to undefined until we have richer probes (see coverage doc).
+                        adultContent:
+                                typeof record.adultContent === 'boolean'
+                                        ? record.adultContent
+                                        : typeof info.adultContent === 'boolean'
+                                                ? info.adultContent
+                                        : undefined,
+                };
+        };
+
+        const mapList = (value: unknown): SeriesSummary[] =>
+                Array.isArray(value) ? value.map(toSummary).filter((s): s is SeriesSummary => Boolean(s)) : [];
+
+        const relatedRaw = (data.related_data ?? {}) as Record<string, unknown>;
+        const related: Record<string, SeriesSummary[]> = {};
+        for (const [key, value] of Object.entries(relatedRaw)) {
+                related[key] = mapList(value);
+        }
+
+        const seasonsRaw = (payload?.results?.seasons ?? data.seasons ?? []) as unknown;
+        const seasons: AnimeSeason[] = Array.isArray(seasonsRaw)
+                ? seasonsRaw
+                        .map((row) => {
+                                const record = (row ?? {}) as Record<string, unknown>;
+                                const id = asString(record.id);
+                                if (!id) return null;
+                                return {
+                                        id,
+                                        title: asString(record.title) || null,
+                                        japaneseTitle: asString(record.japanese_title) || null,
+                                        showType: asString(record.showType) || null,
+                                        poster: asString(record.season_poster) || null,
+                                        isActive: Boolean(record.isActive),
+                                };
+                        })
+                        .filter((s): s is AnimeSeason => Boolean(s))
+                : [];
+
+        const overviewRaw = asString(animeInfo.Overview);
+        const scoreRaw = asString(animeInfo.Scores);
+        const durationRaw = asString(tvInfo.duration);
+        const statusRaw = asString(animeInfo.Status) || asString(metadata.Status);
+        const showType = asString(data.showType) || asString(tvInfo.showType) || 'Unknown';
+        const studiosRaw = animeInfo.Studios;
+        const studios = Array.isArray(studiosRaw)
+                ? studiosRaw.map((s) => String(s)).filter(Boolean)
+                : typeof studiosRaw === 'string' && studiosRaw.trim()
+                        ? [studiosRaw.trim()]
+                        : [];
+
+        return {
+                adultContent: Boolean(data.adultContent),
+                id: asString(data.id) || seriesId,
+                dataId: asString(data.data_id) || null,
+                title: asString(data.title) || null,
+                japaneseTitle: japaneseRaw || null,
+                poster: posterRaw || null,
+                showType,
+                duration: durationRaw || null,
+                status: statusRaw || null,
+                score: scoreRaw || null,
+                genres,
+                studios,
+                overview: overviewRaw || null,
+                metadata,
+                seasons,
+                recommended: mapList(data.recommended_data),
+                related,
+                popular: mapList(data.popular_data),
         };
 }
 
