@@ -1,5 +1,5 @@
 import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
-import { repairDuration, needsRepair, inspectDuration, repairFolder } from './doctor';
+import { repairDuration, inspectDurationEnhanced, repairFolder } from './doctor';
 import { type LibraryItem, type LibraryEntry } from './library';
 import { ConfirmModal } from './modals';
 import { formatBytes, formatDuration } from './hls';
@@ -23,7 +23,7 @@ interface CacheEntry {
 	status: FileStatus;
 }
 
-const CONCURRENCY = 4;
+const CONCURRENCY = 6;
 
 export class DownloadManagerView extends ItemView {
 	private readonly plugin: BrowserPlugin;
@@ -93,11 +93,13 @@ export class DownloadManagerView extends ItemView {
 		this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-dm-body' });
 		this.listEl = this.bodyEl.createDiv({ cls: 'bfm-dm-list' });
 
+		await this.loadScanCache();
 		await this.scan();
 	}
 
 	async onClose(): Promise<void> {
 		this.cancelled = true;
+		void this.saveScanCache();
 		this.contentEl.empty();
 	}
 
@@ -112,6 +114,28 @@ export class DownloadManagerView extends ItemView {
 		this.progressText.setText(text);
 	}
 
+	private async loadScanCache(): Promise<void> {
+		try {
+			const raw = await this.plugin.loadData();
+			const cache = (raw as { downloadScanCache?: Record<string, CacheEntry> } | null)?.downloadScanCache;
+			if (cache && typeof cache === 'object') {
+				this.scanCache = new Map(Object.entries(cache));
+			}
+		} catch {
+			// Ignore cache-load failures; a full scan will follow.
+		}
+	}
+
+	private async saveScanCache(): Promise<void> {
+		try {
+			const raw = (await this.plugin.loadData()) ?? {};
+			raw.downloadScanCache = Object.fromEntries(this.scanCache);
+			await this.plugin.saveData(raw);
+		} catch {
+			// Persistence is best-effort; the in-memory cache still helps.
+		}
+	}
+
 	private async scan(): Promise<void> {
 		if (this.busy) return;
 		this.busy = true;
@@ -124,11 +148,11 @@ export class DownloadManagerView extends ItemView {
 			this.statuses.clear();
 			this.setProgress(true, 0, total === 0 ? 'Nothing to scan.' : `Scanning 0/${total}…`);
 
-			const adapter = this.app.vault.adapter as unknown as {
-				readBinary(path: string): Promise<ArrayBuffer>;
-			};
+			const present = new Set(entries.map((entry) => entry.path));
+			for (const path of [...this.scanCache.keys()]) {
+				if (!present.has(path)) this.scanCache.delete(path);
+			}
 
-			// Pre-mark every entry as scanning so the list can paint immediately.
 			for (const entry of entries) {
 				this.statuses.set(entry.path, {
 					needsRepair: false,
@@ -137,6 +161,10 @@ export class DownloadManagerView extends ItemView {
 				});
 			}
 			this.render();
+
+			const adapter = this.app.vault.adapter as unknown as {
+				readBinary(path: string): Promise<ArrayBuffer>;
+			};
 
 			let done = 0;
 			const handleOne = async (entry: LibraryEntry): Promise<void> => {
@@ -150,9 +178,13 @@ export class DownloadManagerView extends ItemView {
 					} else {
 						const buffer = await adapter.readBinary(entry.path);
 						const data = new Uint8Array(buffer);
+						const patch = inspectDurationEnhanced(data);
+						const healthy =
+							patch.durationSeconds !== null
+							&& ((patch.staleTrackHeaders ?? 0) + (patch.mismatchedTrackHeaders ?? 0)) > 0;
 						status = {
-							needsRepair: needsRepair(data),
-							durationSeconds: inspectDuration(data).durationSeconds,
+							needsRepair: healthy,
+							durationSeconds: patch.durationSeconds,
 						};
 						this.scanCache.set(entry.path, { key: cacheKey, status });
 					}
@@ -165,11 +197,15 @@ export class DownloadManagerView extends ItemView {
 					});
 				} finally {
 					done++;
-					this.setProgress(true, (done / Math.max(1, total)) * 100, `Scanning ${done}/${total} · ${entry.name}`);
+					if (done % 10 === 0 || done === total) {
+						this.setProgress(true, (done / Math.max(1, total)) * 100, `Scanning ${done}/${total}…`);
+					}
+					if (done % 50 === 0 || done === total) {
+						this.render();
+					}
 				}
 			};
 
-			// Concurrency pool.
 			const queue: LibraryEntry[] = [...entries];
 			let cursor = 0;
 			const active: Promise<void>[] = [];
@@ -180,17 +216,15 @@ export class DownloadManagerView extends ItemView {
 						const entry = queue[idx]!;
 						await handleOne(entry);
 						if (this.cancelled) return;
-						// Incremental paint every few files.
-						if (done % 2 === 0) this.render();
 					}
 				})());
 			}
 			await Promise.all(active);
 
 			this.setProgress(true, 100, `Done · ${total} file${total === 1 ? '' : 's'} scanned.`);
-			// Briefly show completion, then hide.
 			window.setTimeout(() => this.setProgress(false, 0, ''), 1200);
 			this.render();
+			void this.saveScanCache();
 		} catch (error) {
 			this.setProgress(false, 0, '');
 			new Notice(error instanceof Error ? error.message : 'Scan failed.');
@@ -285,13 +319,16 @@ export class DownloadManagerView extends ItemView {
 			};
 			const buffer = await adapter.readBinary(item.path);
 			const data = new Uint8Array(buffer);
-			if (!needsRepair(data)) {
+			const patch = inspectDurationEnhanced(data);
+			const isUnhealthy = patch.durationSeconds !== null
+				&& ((patch.staleTrackHeaders ?? 0) + (patch.mismatchedTrackHeaders ?? 0)) > 0;
+			if (!isUnhealthy) {
 				notice.hide();
 				new Notice(`${item.name}: nothing to repair.`);
-				const ins = inspectDuration(data);
-				const status: FileStatus = { needsRepair: false, durationSeconds: ins.durationSeconds };
+				const status: FileStatus = { needsRepair: false, durationSeconds: patch.durationSeconds };
 				this.statuses.set(item.path, status);
 				this.scanCache.set(item.path, { key: `${item.modified}|${item.size}`, status });
+				await this.saveScanCache();
 				this.render();
 				return;
 			}
@@ -311,6 +348,7 @@ export class DownloadManagerView extends ItemView {
 			};
 			this.statuses.set(item.path, status);
 			this.scanCache.set(item.path, { key: `${item.modified}|${item.size}`, status });
+			await this.saveScanCache();
 			notice.hide();
 			new Notice(`Repaired ${item.name} (${formatDuration(repaired.durationSeconds)}).`);
 			this.render();
@@ -368,6 +406,7 @@ export class DownloadManagerView extends ItemView {
 				await this.plugin.deleteItem(item);
 				this.statuses.delete(item.path);
 				this.scanCache.delete(item.path);
+				await this.saveScanCache();
 				new Notice(`Deleted ${item.name}`);
 				await this.scan();
 			} catch (error) {
@@ -383,5 +422,3 @@ export class DownloadManagerView extends ItemView {
 		}
 	}
 }
-
-// no-op placeholder removed
