@@ -56,9 +56,11 @@ export class DownloadManagerView extends ItemView {
 		header.createEl('h2', { text: 'Download manager' });
 
 		const toolbar = this.contentEl.createDiv({ cls: 'bfm-dm-toolbar' });
-		const refreshBtn = toolbar.createEl('button', { text: 'Refresh scan' });
-		refreshBtn.addEventListener('click', () => void this.scan());
-		const repairAllBtn = toolbar.createEl('button', { cls: 'mod-cta', text: 'Repair all' });
+		const scanBtn = toolbar.createEl('button', { text: 'Scan' });
+		scanBtn.addEventListener('click', () => void this.scan());
+		const fixNeededBtn = toolbar.createEl('button', { text: 'Fix needs-repair' });
+		fixNeededBtn.addEventListener('click', () => void this.repairNeedsRepair());
+		const repairAllBtn = toolbar.createEl('button', { cls: 'mod-cta', text: 'Fix all' });
 		repairAllBtn.addEventListener('click', () => void this.repairAll());
 
 		const filters = toolbar.createDiv({ cls: 'bfm-dm-filters' });
@@ -95,7 +97,8 @@ export class DownloadManagerView extends ItemView {
 		this.listEl = this.bodyEl.createDiv({ cls: 'bfm-dm-list' });
 
 		await this.loadScanCache();
-		await this.scan();
+		this.hydrateStatusesFromCache();
+		this.render();
 	}
 
 	async onClose(): Promise<void> {
@@ -131,6 +134,12 @@ export class DownloadManagerView extends ItemView {
 		}
 	}
 
+	private hydrateStatusesFromCache(): void {
+		this.statuses.clear();
+		for (const [path, cached] of this.scanCache) {
+			this.statuses.set(path, { ...cached.status });
+		}
+	}
 	private async saveScanCache(): Promise<void> {
 		try {
 			const raw = ((await this.plugin.loadData()) ?? {}) as Record<string, unknown>;
@@ -391,6 +400,27 @@ export class DownloadManagerView extends ItemView {
 		}
 	}
 
+	private async repairNeedsRepair(): Promise<void> {
+		if (this.busy) return;
+		const targets = this.plugin.library.items().filter((item) => {
+			const st = this.statuses.get(item.path);
+			return Boolean(st?.needsRepair && !st.failed);
+		});
+		if (targets.length === 0) {
+			new Notice('Nothing needs repair.');
+			return;
+		}
+		this.busy = true;
+		try {
+			for (const item of targets) {
+				if (this.cancelled) break;
+				await this.repairOne(item);
+			}
+		} finally {
+			this.busy = false;
+			window.setTimeout(() => this.setProgress(false, 0, ''), 800);
+		}
+	}
 	private async repairAll(): Promise<void> {
 		if (this.busy) return;
 		this.busy = true;
