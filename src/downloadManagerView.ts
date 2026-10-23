@@ -1,6 +1,6 @@
 import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
 import { repairDuration, needsRepair, inspectDuration, repairFolder } from './doctor';
-import { type LibraryItem } from './library';
+import { type LibraryItem, type LibraryEntry } from './library';
 import { ConfirmModal } from './modals';
 import { formatBytes, formatDuration } from './hls';
 import type BrowserPlugin from './main';
@@ -15,15 +15,28 @@ interface FileStatus {
 	durationSeconds: number | null;
 	repaired?: number | null;
 	failed?: string;
+	scanning?: boolean;
 }
+
+interface CacheEntry {
+	key: string;
+	status: FileStatus;
+}
+
+const CONCURRENCY = 4;
 
 export class DownloadManagerView extends ItemView {
 	private readonly plugin: BrowserPlugin;
 	private filter: Filter = 'all';
 	private bodyEl!: HTMLElement;
 	private listEl!: HTMLElement;
+	private progressEl!: HTMLElement;
+	private progressFill!: HTMLElement;
+	private progressText!: HTMLElement;
 	private statuses = new Map<string, FileStatus>();
+	private scanCache = new Map<string, CacheEntry>();
 	private busy = false;
+	private cancelled = false;
 
 	constructor(leaf: WorkspaceLeaf, plugin: BrowserPlugin) {
 		super(leaf);
@@ -72,6 +85,11 @@ export class DownloadManagerView extends ItemView {
 			hint.setText(emptyHint);
 		}
 
+		this.progressEl = this.contentEl.createDiv({ cls: 'bfm-dm-progress' });
+		this.progressEl.setCssProps({ display: 'none' });
+		this.progressFill = this.progressEl.createDiv({ cls: 'bfm-dm-progress-fill' });
+		this.progressText = this.progressEl.createDiv({ cls: 'bfm-dm-progress-text' });
+
 		this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-dm-body' });
 		this.listEl = this.bodyEl.createDiv({ cls: 'bfm-dm-list' });
 
@@ -79,6 +97,7 @@ export class DownloadManagerView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		this.cancelled = true;
 		this.contentEl.empty();
 	}
 
@@ -87,38 +106,93 @@ export class DownloadManagerView extends ItemView {
 		return 'Downloads saved outside the vault are not listed here. Only videos inside your vault appear.';
 	}
 
+	private setProgress(visible: boolean, pct: number, text: string): void {
+		this.progressEl.setCssProps({ display: visible ? 'block' : 'none' });
+		this.progressFill.setCssProps({ width: `${Math.max(0, Math.min(100, pct))}%` });
+		this.progressText.setText(text);
+	}
+
 	private async scan(): Promise<void> {
 		if (this.busy) return;
 		this.busy = true;
-		const notice = new Notice('Scanning downloads…', 0);
+		this.cancelled = false;
 		try {
 			await this.plugin.refreshLibrary();
 			const library = this.plugin.library;
+			const entries = library.entries;
+			const total = entries.length;
 			this.statuses.clear();
+			this.setProgress(true, 0, total === 0 ? 'Nothing to scan.' : `Scanning 0/${total}…`);
+
 			const adapter = this.app.vault.adapter as unknown as {
 				readBinary(path: string): Promise<ArrayBuffer>;
 			};
-			for (const entry of library.entries) {
+
+			// Pre-mark every entry as scanning so the list can paint immediately.
+			for (const entry of entries) {
+				this.statuses.set(entry.path, {
+					needsRepair: false,
+					durationSeconds: null,
+					scanning: true,
+				});
+			}
+			this.render();
+
+			let done = 0;
+			const handleOne = async (entry: LibraryEntry): Promise<void> => {
+				if (this.cancelled) return;
 				try {
-					const buffer = await adapter.readBinary(entry.path);
-					const data = new Uint8Array(buffer);
-					const ins = inspectDuration(data);
-					this.statuses.set(entry.path, {
-						needsRepair: needsRepair(data),
-						durationSeconds: ins.durationSeconds,
-					});
+					const cacheKey = `${entry.modified}|${entry.size}`;
+					const cached = this.scanCache.get(entry.path);
+					let status: FileStatus;
+					if (cached && cached.key === cacheKey) {
+						status = { ...cached.status };
+					} else {
+						const buffer = await adapter.readBinary(entry.path);
+						const data = new Uint8Array(buffer);
+						status = {
+							needsRepair: needsRepair(data),
+							durationSeconds: inspectDuration(data).durationSeconds,
+						};
+						this.scanCache.set(entry.path, { key: cacheKey, status });
+					}
+					this.statuses.set(entry.path, status);
 				} catch (error) {
 					this.statuses.set(entry.path, {
 						needsRepair: false,
 						durationSeconds: null,
 						failed: error instanceof Error ? error.message : String(error),
 					});
+				} finally {
+					done++;
+					this.setProgress(true, (done / Math.max(1, total)) * 100, `Scanning ${done}/${total} · ${entry.name}`);
 				}
+			};
+
+			// Concurrency pool.
+			const queue: LibraryEntry[] = [...entries];
+			let cursor = 0;
+			const active: Promise<void>[] = [];
+			for (let i = 0; i < CONCURRENCY && cursor < queue.length; i++) {
+				active.push((async () => {
+					while (cursor < queue.length) {
+						const idx = cursor++;
+						const entry = queue[idx]!;
+						await handleOne(entry);
+						if (this.cancelled) return;
+						// Incremental paint every few files.
+						if (done % 2 === 0) this.render();
+					}
+				})());
 			}
-			notice.hide();
+			await Promise.all(active);
+
+			this.setProgress(true, 100, `Done · ${total} file${total === 1 ? '' : 's'} scanned.`);
+			// Briefly show completion, then hide.
+			window.setTimeout(() => this.setProgress(false, 0, ''), 1200);
 			this.render();
 		} catch (error) {
-			notice.hide();
+			this.setProgress(false, 0, '');
 			new Notice(error instanceof Error ? error.message : 'Scan failed.');
 		} finally {
 			this.busy = false;
@@ -129,6 +203,7 @@ export class DownloadManagerView extends ItemView {
 		const st = this.statuses.get(item.path);
 		if (!st) return 'healthy';
 		if (st.failed) return 'failed';
+		if (st.scanning) return 'healthy';
 		if (st.repaired !== undefined && st.repaired !== null) return 'repaired';
 		return st.needsRepair ? 'needs-repair' : 'healthy';
 	}
@@ -178,7 +253,7 @@ export class DownloadManagerView extends ItemView {
 
 		const badge = row.createDiv({ cls: `bfm-dm-status bfm-dm-status-${status}` });
 		const labels: Record<string, string> = {
-			healthy: 'Healthy',
+			healthy: st?.scanning ? 'Scanning…' : 'Healthy',
 			'needs-repair': 'Needs repair',
 			repaired: 'Repaired',
 			failed: 'Failed',
@@ -202,6 +277,7 @@ export class DownloadManagerView extends ItemView {
 		if (this.busy) return;
 		this.busy = true;
 		const notice = new Notice(`Repairing ${item.name}…`, 0);
+		this.setProgress(true, 0, `Repairing ${item.name}…`);
 		try {
 			const adapter = this.app.vault.adapter as unknown as {
 				readBinary(path: string): Promise<ArrayBuffer>;
@@ -213,7 +289,9 @@ export class DownloadManagerView extends ItemView {
 				notice.hide();
 				new Notice(`${item.name}: nothing to repair.`);
 				const ins = inspectDuration(data);
-				this.statuses.set(item.path, { needsRepair: false, durationSeconds: ins.durationSeconds });
+				const status: FileStatus = { needsRepair: false, durationSeconds: ins.durationSeconds };
+				this.statuses.set(item.path, status);
+				this.scanCache.set(item.path, { key: `${item.modified}|${item.size}`, status });
 				this.render();
 				return;
 			}
@@ -226,11 +304,13 @@ export class DownloadManagerView extends ItemView {
 				return;
 			}
 			await adapter.writeBinary(item.path, repaired.data.buffer.slice(repaired.data.byteOffset, repaired.data.byteOffset + repaired.data.byteLength) as ArrayBuffer);
-			this.statuses.set(item.path, {
+			const status: FileStatus = {
 				needsRepair: false,
 				durationSeconds: repaired.durationSeconds,
 				repaired: repaired.durationSeconds,
-			});
+			};
+			this.statuses.set(item.path, status);
+			this.scanCache.set(item.path, { key: `${item.modified}|${item.size}`, status });
 			notice.hide();
 			new Notice(`Repaired ${item.name} (${formatDuration(repaired.durationSeconds)}).`);
 			this.render();
@@ -242,6 +322,7 @@ export class DownloadManagerView extends ItemView {
 			this.render();
 		} finally {
 			this.busy = false;
+			window.setTimeout(() => this.setProgress(false, 0, ''), 800);
 		}
 	}
 
@@ -255,16 +336,12 @@ export class DownloadManagerView extends ItemView {
 			list(path: string): Promise<{ files: string[]; folders: string[] }>;
 			exists(path: string): Promise<boolean>;
 		};
-		const notice = new Notice('Checking downloaded videos…', 0);
+		this.setProgress(true, 0, 'Checking downloaded videos…');
 		try {
 			const result = await repairFolder(adapter, folder, (path, done, total) => {
-				try {
-					(notice as unknown as { setMessage?: (m: string) => void }).setMessage?.(`${done + 1}/${total} · ${path.split('/').pop()}`);
-				} catch {
-					/* ignore */
-				}
+				this.setProgress(true, (done / Math.max(1, total)) * 100, `${done + 1}/${total} · ${path.split('/').pop() ?? path}`);
 			});
-			notice.hide();
+			this.setProgress(true, 100, `Done · ${result.scanned} checked.`);
 			const seconds = result.fixed.reduce((sum, entry) => sum + entry.durationSeconds, 0);
 			const parts = [
 				`${result.scanned} checked`,
@@ -273,9 +350,10 @@ export class DownloadManagerView extends ItemView {
 			if (result.repaired > 0) parts.push(`${Math.round(seconds / 60)} min fixed`);
 			if (result.failed.length > 0) parts.push(`${result.failed.length} failed`);
 			new Notice(parts.join(' · '));
+			window.setTimeout(() => this.setProgress(false, 0, ''), 1500);
 			await this.scan();
 		} catch (error) {
-			notice.hide();
+			this.setProgress(false, 0, '');
 			new Notice(error instanceof Error ? error.message : 'Repair could not be completed.');
 		} finally {
 			this.busy = false;
@@ -289,6 +367,7 @@ export class DownloadManagerView extends ItemView {
 			try {
 				await this.plugin.deleteItem(item);
 				this.statuses.delete(item.path);
+				this.scanCache.delete(item.path);
 				new Notice(`Deleted ${item.name}`);
 				await this.scan();
 			} catch (error) {
@@ -304,3 +383,5 @@ export class DownloadManagerView extends ItemView {
 		}
 	}
 }
+
+// no-op placeholder removed

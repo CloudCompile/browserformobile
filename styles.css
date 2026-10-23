@@ -1510,3 +1510,20 @@
 .bfm-dm-btn-danger {
 	color: var(--text-error);
 }
+.bfm-dm-progress {
+	margin: 8px 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.bfm-dm-progress-fill {
+	height: 6px;
+	width: 0%;
+	background: var(--interactive-accent);
+	border-radius: 3px;
+	transition: width 120ms linear;
+}
+.bfm-dm-progress-text {
+	font-size: 0.85em;
+	opacity: 0.8;
+}
