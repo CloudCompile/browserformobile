@@ -108,19 +108,66 @@ export function inspectDuration(data: Uint8Array): DurationPatch {
         return { durationSeconds, staleTrackHeaders };
 }
 
-/** True when the file looks like an MP4 with stale track durations. */
+/** True when the file looks like an MP4 whose track headers still need fixing.
+ *
+ *  Covers the original 1.1.0 sentinel case (`0xffffffff`) and the "wrong
+ *  scaling" case where the track duration was written in milliseconds even
+ *  though the movie runs on its 90 kHz clock: those files play at the right
+ *  length in header-aware players (VLC, browsers) but show up as a few
+ *  seconds in Google Photos / Samsung Gallery. The true duration is still
+ *  recoverable from the movie header.
+ */
 export function needsRepair(data: Uint8Array): boolean {
         if (data.byteLength < 16 || readType(new DataView(data.buffer, data.byteOffset, data.byteLength), 4) !== 'ftyp') {
                 return false;
         }
-        const patch = inspectDuration(data);
-        return patch.staleTrackHeaders > 0 && patch.durationSeconds !== null;
+        const patch = inspectDurationEnhanced(data);
+        return patch.durationSeconds !== null && (patch.staleTrackHeaders > 0 || patch.mismatchedTrackHeaders > 0);
+}
+
+/** Inspect an MP4 and also count track headers whose duration is not the
+ *  recovered (correctly scaled) one. */
+export function inspectDurationEnhanced(data: Uint8Array): DurationPatch & { mismatchedTrackHeaders: number } {
+        const base = inspectDuration(data);
+        let mismatchedTrackHeaders = 0;
+        if (base.durationSeconds !== null) {
+                const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+                const top = boxes(view, 0, data.byteLength);
+                const moov = top.find((entry) => entry.type === 'moov');
+                if (moov) {
+                        const mvhd = boxes(view, moov.box.start + 8, moov.box.end).find((e) => e.type === 'mvhd');
+                        if (mvhd) {
+                                const mvTimescale = readTimescale(view, mvhd.box) || 90000;
+                                const movieTicks = Math.round(base.durationSeconds * mvTimescale);
+                                for (const entry of boxes(view, moov.box.start + 8, moov.box.end)) {
+                                        if (entry.type !== 'trak') continue;
+                                        const parts = boxes(view, entry.box.start + 8, entry.box.end);
+                                        const tkhd = parts.find((p) => p.type === 'tkhd');
+                                        if (tkhd) {
+                                                const actual = readDuration(view, tkhd.box);
+                                                if (Math.abs(actual - movieTicks) > 2) mismatchedTrackHeaders++;
+                                        }
+                                        const mdia = parts.find((p) => p.type === 'mdia');
+                                        if (mdia) {
+                                                const mdhd = boxes(view, mdia.box.start + 8, mdia.box.end).find((m) => m.type === 'mdhd');
+                                                if (mdhd) {
+                                                        const mdTimescale = readTimescale(view, mdhd.box) || 1000;
+                                                        const expected = Math.round(base.durationSeconds * mdTimescale);
+                                                        const actual = readDuration(view, mdhd.box);
+                                                        if (Math.abs(actual - expected) > 2) mismatchedTrackHeaders++;
+                                                }
+                                        }
+                                }
+                        }
+                }
+        }
+        return { ...base, mismatchedTrackHeaders };
 }
 
 /** Return a repaired copy, or null when nothing can be done. */
 export function repairDuration(data: Uint8Array): { data: Uint8Array; durationSeconds: number } | null {
         const patch = inspectDuration(data);
-        if (patch.durationSeconds === null || patch.staleTrackHeaders === 0) return null;
+        if (patch.durationSeconds === null) return null;
         return { data: patchDuration(data, patch.durationSeconds), durationSeconds: patch.durationSeconds };
 }
 

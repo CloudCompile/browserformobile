@@ -149,7 +149,7 @@ export function patchDuration(input: Uint8Array, durationSeconds: number): Uint8
         // video, the sample rate for audio), so each needs its own scaling.
         for (const trak of traks) {
                 const tkhd = findChild(view, trak, 'tkhd');
-                if (tkhd) writeDuration(view, tkhd, Math.round(durationSeconds * 1000));
+                if (tkhd) writeDuration(view, tkhd, movieTicks);
                 const mdia = findChild(view, trak, 'mdia');
                 const mdhd = mdia ? findChild(view, mdia, 'mdhd') : null;
                 if (mdhd) {
