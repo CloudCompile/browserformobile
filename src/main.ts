@@ -13,6 +13,7 @@ import { BrowserStore } from './store';
 import type { BrowserData } from './types';
 import { DEFAULT_SEARCH_TEMPLATE, LEGACY_SEARCH_TEMPLATE } from './utils';
 import { BrowserView, VIEW_TYPE_BROWSER } from './view';
+import { DownloadManagerView, VIEW_TYPE_DOWNLOADS } from './downloadManagerView';
 
 interface PersistedShape extends Partial<BrowserData> {
 	settings?: Partial<BrowserSettings>;
@@ -64,6 +65,7 @@ export default class BrowserPlugin extends Plugin {
 		);
 
 		this.registerView(VIEW_TYPE_BROWSER, (leaf: WorkspaceLeaf) => new BrowserView(leaf, this));
+		this.registerView(VIEW_TYPE_DOWNLOADS, (leaf: WorkspaceLeaf) => new DownloadManagerView(leaf, this));
 
 		this.addRibbonIcon('globe', 'Open browser', () => {
 			void this.activateView();
@@ -75,6 +77,10 @@ export default class BrowserPlugin extends Plugin {
 
 		this.addRibbonIcon('film', 'Video library', () => {
 			this.openLibrary();
+		});
+
+		this.addRibbonIcon('hard-drive', 'Download manager', () => {
+			void this.activateDownloadManager();
 		});
 
 		this.addRibbonIcon('bar-chart-2', 'Download statistics', () => {
@@ -201,7 +207,7 @@ export default class BrowserPlugin extends Plugin {
 		void this.saveWatchRecords();
 	}
 
-	private async deleteItem(item: LibraryItem): Promise<void> {
+	async deleteItem(item: LibraryItem): Promise<void> {
 		const adapter = this.app.vault.adapter as unknown as {
 			remove(path: string): Promise<void>;
 		};
@@ -438,6 +444,14 @@ export default class BrowserPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: 'open-download-manager',
+			name: 'Open download manager',
+			callback: () => {
+				void this.activateDownloadManager();
+			},
+		});
+
+		this.addCommand({
 			id: 'open-download-stats',
 			name: 'Open download statistics',
 			callback: () => {
@@ -484,6 +498,18 @@ export default class BrowserPlugin extends Plugin {
 			notice.hide();
 			new Notice(error instanceof Error ? error.message : 'The repair could not be completed.');
 		}
+	}
+
+	async activateDownloadManager(): Promise<void> {
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOWNLOADS);
+		const first = existing[0];
+		if (first) {
+			await this.app.workspace.revealLeaf(first);
+			return;
+		}
+		const leaf = this.app.workspace.getLeaf('tab');
+		await leaf.setViewState({ type: VIEW_TYPE_DOWNLOADS, active: true });
+		await this.app.workspace.revealLeaf(leaf);
 	}
 
 	async activateView(): Promise<void> {

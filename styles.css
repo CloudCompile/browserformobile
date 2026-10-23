@@ -1428,3 +1428,85 @@
 	}
 }
 
+
+/* Download manager view */
+.bfm-download-manager {
+	padding: 12px;
+}
+.bfm-dm-header h2 {
+	margin: 0 0 8px;
+}
+.bfm-dm-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	margin-bottom: 8px;
+}
+.bfm-dm-filters {
+	display: flex;
+	gap: 6px;
+	margin-left: auto;
+}
+.bfm-dm-filter {
+	cursor: pointer;
+}
+.bfm-dm-filter.is-active {
+	font-weight: 600;
+}
+.bfm-dm-hint {
+	margin: 8px 0;
+	padding: 8px;
+	border-radius: 6px;
+	opacity: 0.85;
+}
+.bfm-dm-empty {
+	text-align: center;
+	padding: 24px 8px;
+}
+.bfm-dm-row {
+	display: grid;
+	grid-template-columns: 1fr auto auto auto;
+	gap: 8px;
+	align-items: center;
+	padding: 10px 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.bfm-dm-main {
+	min-width: 0;
+}
+.bfm-dm-title {
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.bfm-dm-meta {
+	font-size: 0.85em;
+	opacity: 0.75;
+}
+.bfm-dm-status {
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-size: 0.8em;
+	white-space: nowrap;
+}
+.bfm-dm-status-healthy {
+	background: var(--color-green-rgb, 30, 132, 73);
+}
+.bfm-dm-status-needs-repair {
+	background: var(--color-orange-rgb, 180, 110, 30);
+}
+.bfm-dm-status-repaired {
+	background: var(--color-green-rgb, 30, 132, 73);
+}
+.bfm-dm-status-failed {
+	background: var(--color-red-rgb, 200, 50, 50);
+}
+.bfm-dm-actions {
+	display: flex;
+	gap: 6px;
+}
+.bfm-dm-btn-danger {
+	color: var(--text-error);
+}
