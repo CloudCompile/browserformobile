@@ -1,4 +1,6 @@
 import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
+import { AnimeCache, type CachePersistence } from './animeCache';
+import { setAnimeCache } from './animeApi';
 import { DownloadManager, type DownloaderOptions } from './downloader';
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
 import { repairFolder } from './doctor';
@@ -21,6 +23,8 @@ interface PersistedShape extends Partial<BrowserData> {
 	watch?: Record<string, WatchRecord>;
 	/** The download statistics log. */
 	stats?: DownloadRun[];
+	/** Cached anime API responses, so a restart does not re-fetch the catalogue. */
+	animeCache?: unknown;
 }
 
 export default class BrowserPlugin extends Plugin {
@@ -29,6 +33,7 @@ export default class BrowserPlugin extends Plugin {
 	downloader!: DownloadManager;
 	library!: VideoLibrary;
 	stats!: StatsStore;
+	animeCache!: AnimeCache;
 
 	private browserData: Partial<BrowserData> = {};
 	private downloadModal: DownloadModal | null = null;
@@ -38,6 +43,8 @@ export default class BrowserPlugin extends Plugin {
 	private watchRecords: Record<string, WatchRecord> = {};
 	/** The run log as loaded, handed to the stats store in onload. */
 	private statsRuns: DownloadRun[] = [];
+	/** Cached API responses as loaded, handed to the anime cache in onload. */
+	private animeCacheRecords: unknown = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -52,6 +59,10 @@ export default class BrowserPlugin extends Plugin {
 
 		this.stats = new StatsStore();
 		this.stats.load(this.statsRuns);
+
+		this.animeCache = new AnimeCache(this.animeCachePersistence());
+		this.animeCache.load(this.animeCacheRecords);
+		this.applyAnimeCacheSetting();
 
 		this.downloader = new DownloadManager(
 			this.app,
@@ -91,11 +102,34 @@ export default class BrowserPlugin extends Plugin {
 		this.addSettingTab(new BrowserSettingTab(this.app, this));
 
 		this.registerDomEvent(window, 'beforeunload', () => {
+			this.animeCache.dispose();
 			this.store.dispose();
 		});
 	}
 
+	/**
+	 * Install or remove the API cache. Passing null makes every request go
+	 * straight to the network, which is what the setting disables.
+	 */
+	applyAnimeCacheSetting(): void {
+		setAnimeCache(this.settings.animeCacheEnabled ? this.animeCache : null);
+	}
+
+	/**
+	 * The anime cache persists through the same `saveData` call as everything
+	 * else, merged rather than overwritten so a cache write cannot drop settings.
+	 */
+	private animeCachePersistence(): CachePersistence {
+		return {
+			saveData: async (data) => {
+				this.animeCacheRecords = data;
+				await this.saveSettings();
+			},
+		};
+	}
+
 	onunload(): void {
+		this.animeCache.dispose();
 		this.store.dispose();
 		this.downloader.dispose();
 		this.playerModal?.close();
@@ -137,6 +171,16 @@ export default class BrowserPlugin extends Plugin {
 		this.libraryModal = modal;
 		modal.open();
 		void modal.refresh();
+	}
+
+	/**
+	 * Drop every cached API response. Useful after a title's metadata is corrected
+	 * upstream, or when a cached stream URL has gone stale and downloads fail.
+	 */
+	clearAnimeCache(): void {
+		this.animeCache.clear();
+		void this.animeCache.flush();
+		new Notice('Anime cache cleared.');
 	}
 
 	/** Open the download statistics page. */
@@ -420,6 +464,14 @@ export default class BrowserPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: 'clear-anime-cache',
+			name: 'Clear anime cache',
+			callback: () => {
+				this.clearAnimeCache();
+			},
+		});
+
+		this.addCommand({
 			id: 'open-anime-downloader',
 			name: 'Open anime downloader',
 			callback: () => {
@@ -548,6 +600,7 @@ export default class BrowserPlugin extends Plugin {
 		}
 		this.browserData = raw ?? {};
 		this.watchRecords = raw?.watch ?? {};
+		this.animeCacheRecords = raw?.animeCache ?? null;
 	}
 
 	async saveSettings(): Promise<void> {
@@ -556,6 +609,7 @@ export default class BrowserPlugin extends Plugin {
 			settings: this.settings,
 			watch: this.watchRecords,
 			stats: this.stats.toJSON(),
+			animeCache: this.animeCacheRecords,
 		});
 	}
 
@@ -564,6 +618,9 @@ export default class BrowserPlugin extends Plugin {
 		await this.saveData({
 			...data,
 			downloadScanCache: (this.browserData as { downloadScanCache?: unknown }).downloadScanCache,
+			// Navigation calls this on every page load; without carrying the cache
+			// through, the first page load would wipe it.
+			animeCache: this.animeCacheRecords,
 			settings: this.settings,
 			watch: this.watchRecords,
 			stats: this.stats.toJSON(),

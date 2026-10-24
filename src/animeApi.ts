@@ -1,4 +1,5 @@
 import { requestUrl } from 'obsidian';
+import type { AnimeCache } from './animeCache';
 
 /**
  * Client for the anime-api instance at animeapi.cjhauser.me, which fronts the
@@ -7,6 +8,16 @@ import { requestUrl } from 'obsidian';
  * live service (see review/animeapi-coverage.md).
  */
 export const DEFAULT_API_BASE = 'https://animeapi.cjhauser.me';
+
+/**
+ * The cache every request goes through, installed once at plugin load. Null in
+ * tests and before load, in which case requests go straight to the network.
+ */
+let activeCache: AnimeCache | null = null;
+
+export function setAnimeCache(cache: AnimeCache | null): void {
+        activeCache = cache;
+}
 
 /** The `Referer` the CDN's HLS endpoints expect. Segments 404 without it. */
 export const STREAM_REFERER = 'https://play.echovideo.ru/';
@@ -132,7 +143,23 @@ function asNumber(value: unknown): number {
         return 0;
 }
 
+/**
+ * Fetch a path as JSON, through the cache when one is installed.
+ *
+ * The cache key includes the base so two API endpoints cannot serve each
+ * other's payloads, and the path already carries the query string, so every
+ * distinct request is its own entry.
+ */
 async function getJson(base: string, path: string): Promise<unknown> {
+        const cache = activeCache;
+        if (cache) {
+                const key = `${base}${path}`;
+                return cache.getOrFetch(key, path, () => fetchJson(base, path));
+        }
+        return fetchJson(base, path);
+}
+
+async function fetchJson(base: string, path: string): Promise<unknown> {
         let response;
         try {
                 response = await requestUrl({
@@ -415,11 +442,12 @@ export async function loadStream(base: string, episodeId: string): Promise<Strea
         }
 
         // The API's default server does not always serve a file: for some series it
-        // answers with an embed-only one (DatSaV) while the same response's `servers`
-        // list also names download-capable servers (Vidplay, MyCloud). The default is
-        // accepted as-is only when it yields a file; otherwise the alternates are
-        // tried by name — the API matches on `serverName` and ignores numeric ids —
-        // and the first that returns a file wins.
+        // answers with an embed-only one while the same response's `servers` list
+        // also names download-capable servers. The default is accepted as-is only
+        // when it yields a file; otherwise the alternates are tried by name — the
+        // API matches on `serverName` and ignores numeric ids — and the first that
+        // returns a file wins. The API itself no longer returns DatSaV, but an
+        // embed-only default still occurs, so this fallback stays.
         let chosen = link;
         let url = asString(((chosen.link ?? {}) as Record<string, unknown>).file) || null;
         if (!url) {

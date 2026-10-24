@@ -73,6 +73,22 @@ Each episode is fetched from the stream catalogue, its quality variants are read
 from the playlist, and the closest one to your preferred quality is downloaded.
 While a download runs the queue shows its speed and an estimate of the time left.
 
+### Caching
+
+The anime API answers slowly: it runs without a persistent cache of its own, and
+a single search fans out across several sources. The plugin therefore caches API
+responses itself, so repeating a search or re-opening a series is instant.
+
+Search results are kept for 10 minutes, episode lists for 12 hours, and series
+details for a week — metadata barely changes, so it is held the longest. The
+cache is stored in the same local `data.json` as everything else and is never
+sent anywhere. Stream URLs are cached in memory only for 10 minutes: a link saved
+from a previous session is usually dead by the next one.
+
+Turn caching off with **Cache anime details** in settings, or clear it at any
+time with the **Clear anime cache** command — useful if a title's details were
+corrected upstream, or if a cached stream URL has gone stale.
+
 ### Quality
 
 Streams are **720p only** in practice. Every series and server probed returned a
@@ -112,6 +128,8 @@ That is worth remembering for a large library.
 
 ### Download settings
 
+- **Cache anime details** — store API responses locally so repeat lookups are
+  instant. On by default.
 - **Anime API endpoint** — the catalogue used for search and streams.
 - **Download quality** — preferred height; the closest available is used.
 - **Download format** — MP4 or TS, as above.
@@ -278,6 +296,11 @@ Nothing is collected or sent anywhere by the plugin itself. The download
 statistics log — series names, episode labels, sizes, and speeds — is kept in the
 same file and never leaves your device; **Clear statistics** deletes it.
 
+Cached anime API responses are stored there too: search results, series details,
+and episode lists, with the stream URLs you have used kept in memory only. This
+data never leaves your device. **Clear anime cache** deletes it, and turning off
+**Cache anime details** stops it being written at all.
+
 When proxy mode is used, the address you are visiting is sent to the configured
 proxy service so it can fetch the page for you. The default is `allorigins.win`,
 a public service. Because public proxies are unreliable, when the default keeps
@@ -300,6 +323,10 @@ which is what makes client-rendered sites work but also lets third-party
 analytics on those pages run; turn off **Run page scripts** to block them.
 
 ## Commands
+
+Alongside the browser and downloader commands, **Clear anime cache** empties the
+stored anime API responses.
+
 
 All actions are available from the command palette: open browser, new tab, close
 tab, next and previous tab, back, forward, reload, focus address bar, toggle

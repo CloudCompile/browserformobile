@@ -663,6 +663,30 @@ path.
   `current` read a silent zero. Removing the thinning also cut mean ETA error by
   ~13 points (52.8% -> 39.5%). Every progress callback is now kept.
 
+### Anime API caching
+
+- `src/animeCache.ts` is a TTL cache over the anime API's JSON, installed into
+  `src/animeApi.ts` at plugin load via `setAnimeCache`. It exists because the
+  API is slow: it runs as serverless functions, so no cache of its own survives
+  between requests and every call is cold, and a search fans out across every
+  provider upstream. The cache has to live in the plugin.
+- **Only API JSON is cached.** The stream CDN's playlist and segments are not:
+  `loadStream` caches the API call but still re-reads the manifest, because that
+  lives on the CDN and is short-lived.
+- **Stream entries are memory-only.** `isPersistable` excludes `/api/stream`:
+  a URL saved from the last session is usually dead by the next one, and a
+  stale link fails *late* — mid-download — which is worse than a miss.
+- TTLs differ per endpoint (`ttlForPath`): info a week, episodes 12h, search and
+  stream 10min. Metadata barely changes; a stream URL does.
+- A failed request is never cached, and concurrent requests for the same key
+  share one in-flight promise, so a double-tap does not double the upstream load.
+- The cache persists through the same `saveData` as everything else. **Any code
+  that writes settings must carry `animeCache` through**, or it will wipe the
+  cache — `persist()` (called on every navigation) and `saveSettings()` both do.
+  This is the same trap `downloadScanCache` has.
+- `clearAnimeCache` is exposed as a command and the whole feature as the
+  **Cache anime details** setting.
+
 ### Releases
 
 A release is two commits: the feature work, then a separate `Release X.Y.Z`

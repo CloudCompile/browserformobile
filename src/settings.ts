@@ -22,6 +22,12 @@ export interface BrowserSettings {
 	openExternalLinksInSystemBrowser: boolean;
 	/** Base URL of the anime API used by the downloader. */
 	animeApiBase: string;
+	/**
+	 * Cache anime API responses on disk. The API is slow to answer because it
+	 * runs serverless, where no cache of its own survives between requests, so
+	 * repeating a search or re-opening a series would otherwise re-fetch it.
+	 */
+	animeCacheEnabled: boolean;
 	/** Preferred stream height in pixels. The closest available is used. */
 	downloadQuality: number;
 	/** MP4 is a single playable file; TS streams to disk with lower memory. */
@@ -50,6 +56,7 @@ export const DEFAULT_SETTINGS: BrowserSettings = {
 	confirmDestructiveActions: true,
 	openExternalLinksInSystemBrowser: false,
 	animeApiBase: DEFAULT_API_BASE,
+	animeCacheEnabled: true,
 	// Sources are 720p, so this is the usual answer; the closest variant is used
 	// when a stream does not offer the exact height.
 	downloadQuality: 720,
@@ -135,6 +142,11 @@ export class BrowserSettingTab extends PluginSettingTab {
 				control: { type: 'toggle', key: 'openExternalLinksInSystemBrowser' },
 			},
 			{
+				name: 'Cache anime details',
+				desc: 'Store search results, series details, episode lists, and stream URLs on disk so repeating a lookup is instant. The API answers slowly because it runs without a persistent cache of its own. Only anime API responses are stored.',
+				control: { type: 'toggle', key: 'animeCacheEnabled' },
+			},
+			{
 				name: 'Anime API endpoint',
 				desc: 'Base URL of the anime catalogue used by the downloader. Change this if you self-host the API.',
 				control: { type: 'text', key: 'animeApiBase', placeholder: DEFAULT_API_BASE },
@@ -195,6 +207,10 @@ export class BrowserSettingTab extends PluginSettingTab {
 
 	async setControlValue(key: string, value: unknown): Promise<void> {
 		(this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+		if (key === 'animeCacheEnabled') {
+			// Take effect at once rather than on the next reload.
+			this.plugin.applyAnimeCacheSetting();
+		}
 		await this.plugin.saveSettings();
 	}
 
