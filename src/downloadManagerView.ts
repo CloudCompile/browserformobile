@@ -3,7 +3,7 @@ import { repairDuration, inspectDurationEnhanced, repairFolder } from './doctor'
 import { type LibraryItem, type LibraryEntry } from './library';
 import { ConfirmModal } from './modals';
 import { formatBytes, formatDuration } from './hls';
-import type BrowserPlugin from './main';
+import type AnimePlugin from './main';
 import { externalStorageAvailable } from './destination';
 
 export const VIEW_TYPE_DOWNLOADS = 'browser-for-mobile-download-manager';
@@ -27,7 +27,7 @@ const CONCURRENCY = 2;
 const SCAN_FILE_BUDGET_MS = 1000;
 
 export class DownloadManagerView extends ItemView {
-	private readonly plugin: BrowserPlugin;
+	private readonly plugin: AnimePlugin;
 	private filter: Filter = 'all';
 	private bodyEl!: HTMLElement;
 	private listEl!: HTMLElement;
@@ -39,7 +39,7 @@ export class DownloadManagerView extends ItemView {
 	private busy = false;
 	private cancelled = false;
 
-	constructor(leaf: WorkspaceLeaf, plugin: BrowserPlugin) {
+	constructor(leaf: WorkspaceLeaf, plugin: AnimePlugin) {
 		super(leaf);
 		this.plugin = plugin;
 	}
@@ -124,10 +124,6 @@ export class DownloadManagerView extends ItemView {
 			const cache = (raw as { downloadScanCache?: Record<string, CacheEntry> } | null)?.downloadScanCache;
 			if (cache && typeof cache === 'object') {
 				this.scanCache = new Map(Object.entries(cache));
-				(this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData = {
-					...((this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData ?? {}),
-					downloadScanCache: cache,
-				};
 			}
 		} catch {
 			// Ignore cache-load failures; a full scan will follow.
@@ -142,13 +138,10 @@ export class DownloadManagerView extends ItemView {
 	}
 	private async saveScanCache(): Promise<void> {
 		try {
-			const raw = ((await this.plugin.loadData()) ?? {}) as Record<string, unknown>;
-			raw.downloadScanCache = Object.fromEntries(this.scanCache);
-			(this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData = {
-				...((this.plugin as unknown as { browserData?: Record<string, unknown> }).browserData ?? {}),
-				downloadScanCache: raw.downloadScanCache,
-			};
-			await this.plugin.saveData(raw);
+			// Write through the plugin's own data file so a concurrent saveSettings
+			// cannot drop the scan cache.
+			this.plugin.downloadScanCache = Object.fromEntries(this.scanCache);
+			await this.plugin.saveSettings();
 		} catch {
 			// Persistence is best-effort; the in-memory cache still helps.
 		}

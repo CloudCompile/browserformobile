@@ -268,39 +268,46 @@ this.registerInterval(
 - Plugin guidelines: https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines
 - Style guide: https://help.obsidian.md/style-guide
 
-## Browser for Mobile — project notes
+## Anime for Mobile — project notes
 
-This repo is the **Browser for Mobile** plugin. Everything below is specific to
-this codebase.
+This repo is the **Anime for Mobile** plugin (folder and plugin id stay
+`browser-for-mobile` so existing installs upgrade in place). Everything below is
+specific to this codebase.
+
+**The web browser was removed in 3.0.0.** A plugin cannot embed a real engine on
+mobile, so the iframe/proxy renderer was never reliable. Do not reintroduce a
+browser: there is no `src/view.ts`, `renderer.ts`, `proxy.ts`, `bridge.ts`,
+`store.ts`, `cookieStore.ts`, `tabs.ts`, `sheet.ts`, `viewport.ts` or
+`types.ts` any more. The plugin is now the downloader, the library, the details
+page and the recommendations.
 
 ### Architecture
 
 - `src/main.ts` — plugin lifecycle only: settings load/save, view registration,
-  ribbon icon, command registration. Keep it minimal.
-- `src/view.ts` — the `ItemView`. Builds the chrome (top address row, content
-  pane, bottom action bar), owns navigation, history, and renderer lifecycle,
-  and hosts the bottom sheets.
-- `src/sheet.ts` — `Sheet`, a bottom sheet: dimmed backdrop, grabber, drag-to-
-  dismiss, and `addRow` for icon+label actions. Used by the overflow menu and
-  the tab switcher. Positioned inside the view (absolute), not fixed to the
-  window, because a view is one workspace pane.
-- `src/viewport.ts` — `keyboardInset()`, the height the soft keyboard covers,
-  derived from `visualViewport`. Pure, so it is unit-testable.
-- `src/renderer.ts` — two renderers: `DirectRenderer` (iframe, works when the
-  site allows embedding) and `ProxyRenderer` (fetched HTML in a sandboxed frame).
-- `src/proxy.ts` — page fetching. `loadPage()` tries Obsidian's native
-  `requestUrl` first and only falls back to the CORS proxy. `rewriteHtml()`
-  injects `<base>`, strips `integrity`, neutralises restrictive meta tags
-  (including `refresh`), and blocks remote scripts. `framePolicyFromHeaders()`
-  and `probeFramePolicy()` read a site's `X-Frame-Options` /
-  `Content-Security-Policy` to predict a refused embed before rendering.
-- `src/bridge.ts` — script injected into proxied pages. Relays title, link
-  clicks, cookie reads/writes, and readiness back to the host via
-  `postMessage`, using a per-render channel id.
-- `src/store.ts` / `src/tabs.ts` — persisted state (history, bookmarks, cookies,
-  tabs) with a debounced writer.
-- `src/cookieStore.ts` — cookie parsing, merging, pruning, host matching, and
-  Netscape export.
+  ribbon icons, command registration, and the modal wiring. Keep it minimal.
+- `src/animeApi.ts` — the catalogue client: search, info, episodes, streams, and
+  `/api/preview/:id` for the rich details page. All responses are unwrapped from
+  the API's `{ success, results }` envelope here.
+- `src/animeCache.ts` — TTL cache installed into `animeApi.ts` via
+  `setAnimeCache`. See the caching notes further down.
+- `src/downloader.ts` — the `DownloadManager`: queue, staging, resume, rate
+  limiting, and the wake lock.
+- `src/hls.ts` / `src/transmux.ts` — playlist parsing and MP4 conversion.
+- `src/downloadModal.ts` — the downloader window (search, episode picker, queue).
+- `src/downloadManagerView.ts` — an `ItemView` that scans the download folder and
+  offers per-file repair.
+- `src/library.ts` / `src/libraryModal.ts` / `src/playerModal.ts` — the offline
+  library: filename parsing, the list, and playback with saved position.
+- `src/detailsModal.ts` — the full details page, including the recommendation
+  section.
+- `src/recommend.ts` — the pure ranking engine: `tokenize`, `buildTasteProfile`,
+  `bm25Scores`, `rankRecommendations`, `blendModelScores`. No I/O, so it is
+  directly testable.
+- `src/decision.ts` — the decision-model layer: `TinyDecideRanker` (local,
+  vendored) and `JevRanker` (hosted, TypeSafe System One).
+- `src/recommendService.ts` — orchestration: `deriveSeeds` from the download
+  history and `collectRecommendations` across the catalogue.
+- `src/stats.ts` / `src/statsModal.ts` — the run log and its summary page.
 - `src/settings.ts` — uses the **declarative settings API**
   (`getSettingDefinitions`). Do not re-add an imperative `display()`; lint flags
   it once `minAppVersion` is 1.13.0.
@@ -310,86 +317,30 @@ this codebase.
 - **`minAppVersion` is 1.13.0.** The declarative settings API and
   `setDestructive()` require it. Lowering it will fail lint
   (`obsidianmd/no-unsupported-api`).
-- **The chrome is a top address row plus a bottom action bar.** A phone cannot
-  reach a top row one-handed, so the frequent actions (reload, bookmark, tabs,
-  home, open-external) live in a bottom bar and the top row keeps back/forward,
-  the address field, and the overflow button. Do not move primary actions back
-  to the top, and do not duplicate back/forward in both rows — a test asserts
-  the two rows are disjoint.
-- **The tab strip is desktop-only; narrow screens use the tab switcher.** Below
-  700px `.bfm-tabs` is `display: none` and the `layers` button in the bottom bar
-  opens the tab sheet instead. The strip stays above 700px, where there is room
-  for both.
-- **`--bfm-keyboard-inset` lifts the bottom bar over the soft keyboard.** The
-  on-screen keyboard shrinks the visual viewport without resizing the layout, so
-  a bar pinned to the layout bottom is drawn under the keyboard. `watchKeyboard`
-  publishes the covered height from `visualViewport` and the bar consumes it as
-  bottom padding. Use `panel.setCssProps(...)`, not `element.style.*`; lint
-  (`obsidianmd/no-static-styles-assignment`) rejects direct style writes.
-- **The sheets are absolutely positioned inside the view.** A `position: fixed`
-  panel would escape the view and cover the rest of Obsidian. The overlay is the
-  positioning context, so `.bfm-root` must stay `position: relative`.
-- **Drag handles opt out of touch scrolling, the sheet body does not.**
-  `touch-action: none` belongs on the grabber and title only; putting it on
-  `.bfm-sheet` (as it once was) stops the list from scrolling with a finger.
-- **Direct mode is desktop-only in practice.** Electron ignores
-  `X-Frame-Options` and CSP `frame-ancestors`, so on desktop most sites frame
-  fine and direct stays the default. Android WebView enforces both, so a
-  refusing site renders Chromium's `ERR_BLOCKED_BY_RESPONSE` error page inside
-  the frame. `view.ts` therefore defaults to proxy mode when `Platform.isMobile`.
-- **A refused embed cannot be detected from the frame, so it is preflighted by
-  header.** A blocked frame and an allowed cross-origin frame are observationally
-  identical from the host: both fire `load` in ~100 ms, both expose
-  `contentDocument === null` and `contentWindow.length === 0`, and no
-  `securitypolicyviolation` event or resource-timing gap distinguishes them.
-  `probeFramePolicy` (`src/proxy.ts`) instead reads `X-Frame-Options` /
-  CSP `frame-ancestors` from the response through `requestUrl`, and
-  `mountRenderer` switches to the proxy when the site refuses framing — without
-  it the frame shows Chromium's `ERR_BLOCKED_BY_RESPONSE` and looks dead. Probe
-  with **GET**, not HEAD: some servers (news.ycombinator.com) send
-  `X-Frame-Options: DENY` only on a real navigation, so a HEAD-only check misses
-  them. Results are cached per origin and a failed probe is treated as frameable,
-  so the direct path still gets its chance. Do not replace this with DOM sniffing
-  of the frame; that genuinely cannot work.
-- **Proxied pages run their own scripts by default** (`runScripts`, the "Run
-  page scripts" setting). The proxy frame already has `allow-scripts`, so
-  blocking was a privacy choice, not a technical limit — and it left every
-  client-rendered site (DuckDuckGo, SPAs) blank or mangled. `rewriteHtml`'s
-  `runScripts` flag only decides whether `<script src>` tags are neutralised;
-  integrity and restrictive meta tags are stripped either way.
-- **The bridge shims what an opaque origin lacks.** `localStorage` /
-  `sessionStorage` throw on access in the sandbox and `innerWidth` is 0, both
-  of which crash framework boot. Keep the `safeStorage` / viewport shims in
-  `bridge.ts` ahead of any page script. `window.parent` is also shimmed to
-  `window` so a page probing `parent.document` (framebusting, embed detection)
-  resolves instead of throwing a `SecurityError` mid-boot. `window.top` is an
-  own, non-configurable property and **cannot** be shimmed, which is why page
-  errors must never be treated as fatal (below).
-- **A page script error is not a load failure.** The bridge forwards page errors
-  to `onPageError`; `view.ts` marks the tab and shows **page error** in the
-  status bar without touching the DOM. Routing them through `onError` made
-  `renderErrorState` call `pageEl.empty()` and blank pages that had rendered
-  fine — the reported `SecurityError` from `window.top` did exactly that.
-- **The sandboxed frame must never get `allow-same-origin`.** It is opaque on
-  purpose; the bridge is the only channel.
-- **Cross-origin frames cannot be inspected**, so titles and navigation come
-  from the injected bridge, never from reading the frame DOM.
-- **`rewriteHtml` must never rewrite inside a raw-text element body**
-  (`script`, `style`, `textarea`, `title`). A page may hold markup in a string
-  — DuckDuckGo's loader does `document.write('<script src="'+s+i+'"><\/script>')`
-  — and emitting a literal `</script>` there ends the real block early and
-  breaks the page with "Invalid or unexpected token". `blockRemoteScripts`
-  walks the document as the parser would and only neutralises tags at markup
-  level; `transformOutsideOpaqueBlocks` guards the meta/integrity pass.
-- Third-party proxy default is `https://api.allorigins.win/get?url=` (JSON
-  mode, exported as `DEFAULT_PROXY_BASE`). It is flaky and often returns 5xx;
-  retries and the `FALLBACK_PROXIES` chain live in `proxyRequest`. The chain is
-  only used when `proxyBase` equals `DEFAULT_PROXY_BASE`, so a user's own proxy
-  is never bypassed. Order: the Cloudflare Worker
-  (`cors-proxy.christopher-j-hauser2025.workers.dev`, the only one that relays
-  POST, declared via `methods`), then `r.jina.ai` (needs `x-respond-with: html`
-  or it returns markdown), `api.cors.lol`, and `allorigins.win/raw`. HTTP 429
-  and 408 are treated as transient so the chain continues past a rate limit.
+- **`saveSettings()` writes the whole `data.json`.** Anything not spread into
+  that one `saveData` call is dropped on the next save. `downloadScanCache` and
+  `animeCache` both live here for exactly that reason; the old browser code
+  carried them through a `browserData` spread that no longer exists. If you add
+  a new persisted key, add it to `PersistedShape`, load it in `loadSettings`,
+  and include it in `saveSettings`.
+- **The download manager writes its scan cache through `plugin.saveSettings()`**,
+  not a bare `saveData`, so a concurrent save cannot drop it.
+- **Recommendations must always render.** `scoreWithModel` returns an empty map
+  on any failure (no key, network error, malformed reply) and the caller falls
+  back to the vote ordering. Never surface a model error in the details page.
+- **The recommendation models are opt-in and the hosted one sends user data.**
+  `recommendationModel` defaults to `'off'`. Only the taste profile and candidate
+  titles are ever sent, and only for `'hosted'`. Do not widen what is sent, and
+  do not enable a model by default.
+- **`src/vendor/tinydecide.js` is vendored third-party code** (Apache-2.0,
+  minified). It is excluded from lint (`src/vendor` in `eslint.config.mts`) and
+  must not be edited by hand. Weights are downloaded at runtime, not bundled.
+- **Settings use the declarative API.** Add a field to `AnimeSettings`,
+  `DEFAULT_SETTINGS`, and `getSettingDefinitions` — all three, or the control
+  renders with no effect.
+- **Playback is the platform video element.** MPEG-TS cannot be decoded by a
+  browser engine, so the library refuses it with a message rather than showing a
+  black rectangle. Do not promise TS playback.
 
 ### Build, lint, test
 
@@ -398,23 +349,17 @@ npm run build   # tsc --noEmit && esbuild production
 npm run lint    # eslint, must be clean (0 errors, 0 warnings)
 ```
 
-There is no committed test runner. Ad-hoc harnesses were built under
-`/tmp/bfmtest` using a stubbed `obsidian` module (via esbuild `--alias`) plus
-`jsdom`, covering: utils, cookie parsing/merge/prune, TabStore navigation,
-HTML rewriting, the injected bridge, the proxy fetch/fallback logic, and the
-full view with a DOM. The mobile-UI pass added `/tmp/bfmh/view.test.ts` (real
-`BrowserView` in jsdom: chrome structure, menu-sheet contents, tab-switcher
-switch/close/new, tab badge, and the keyboard inset) and
-`/tmp/bfmh/viewport.test.ts` (the `keyboardInset` edge cases). Bundle the view
-with `--alias:obsidian=./obsidian-view-stub.ts`, which adds `ItemView`,
-`SuggestModal`, `Plugin`, and the `setCssProps` DOM augmentation; run the
-harness as CJS with `--external:jsdom` (the ESM variant fails on jsdom's
-`require('node:fs')`).
+**Vitest is now the committed test runner** (`npm test`), with
+`tests/obsidian-stub.ts` aliased for the `obsidian` module. Current suites:
+`utils`, `destination`, `library`, `perf`, `animeApi`, `animeCache`,
+`recommend`, and `decision`. Earlier ad-hoc harnesses under `/tmp/bfmtest` and
+`/tmp/bfmh` (built with esbuild `--alias:obsidian=...` plus jsdom) covered the
+removed browser view and the downloader internals; the downloader ones are
+still the reference for staging, resume, rate limiting, and MP4 conversion.
 
 ## Anime downloader — project notes
 
-Added in 1.1.0. A separate feature from the browser view; shares only the
-settings object and the plugin instance.
+Added in 1.1.0. Now the core of the plugin rather than a side feature.
 
 ### Architecture
 
@@ -682,8 +627,8 @@ path.
   share one in-flight promise, so a double-tap does not double the upstream load.
 - The cache persists through the same `saveData` as everything else. **Any code
   that writes settings must carry `animeCache` through**, or it will wipe the
-  cache — `persist()` (called on every navigation) and `saveSettings()` both do.
-  This is the same trap `downloadScanCache` has.
+  cache — `saveSettings()` does, and the download manager writes its own scan
+  cache through `saveSettings()` too for the same reason.
 - `clearAnimeCache` is exposed as a command and the whole feature as the
   **Cache anime details** setting.
 

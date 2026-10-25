@@ -15,6 +15,8 @@ export interface LibraryCallbacks {
 	onDelete(item: LibraryItem): Promise<void>;
 	/** Re-scan the folder; the modal re-renders when it resolves. */
 	onRefresh(): Promise<unknown>;
+	/** Show the full details page for a series. */
+	onDetails?(series: string): void;
 	onClosed?(): void;
 	/** Shown in place of the empty state, e.g. when files live outside the vault. */
 	emptyHint?: string;
@@ -143,6 +145,14 @@ export class LibraryModal extends Modal {
 				});
 			}
 
+			let infoButton: HTMLElement | null = null;
+			if (this.callbacks.onDetails && item.series) {
+				infoButton = row.createEl('button', { cls: 'bfm-library-item-info' });
+				setIcon(infoButton, 'info');
+				infoButton.setAttribute('aria-label', `Details for ${item.series}`);
+				infoButton.addEventListener('click', () => this.callbacks.onDetails?.(item.series));
+			}
+
 			const play = row.createEl('button', { cls: 'bfm-library-item-play' });
 			setIcon(play, 'play');
 			play.setAttribute('aria-label', `Play ${describeEntry(item)}`);
@@ -156,6 +166,7 @@ export class LibraryModal extends Modal {
 			row.addEventListener('click', (event) => {
 				if (event.target === play || play.contains(event.target as Node)) return;
 				if (event.target === remove || remove.contains(event.target as Node)) return;
+				if (infoButton && (event.target === infoButton || infoButton.contains(event.target as Node))) return;
 				this.callbacks.onPlay(item);
 			});
 		}

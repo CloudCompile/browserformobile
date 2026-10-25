@@ -508,3 +508,315 @@ export function selectVariant(variants: StreamVariant[], preferredHeight: number
         if (atOrBelow.length > 0) return atOrBelow[0] ?? null;
         return variants[0] ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Rich details (/api/preview/:id)
+//
+// The API rebuilds this payload from the MyAnimeList mirror rather than from the
+// upstream page, because the upstream detail page is dead. Every block is
+// optional: a title with no recommendations, themes or trailer is normal, and a
+// missing block must not blank the whole page.
+// ---------------------------------------------------------------------------
+
+export interface PreviewImage {
+        small: string | null;
+        medium: string | null;
+        large: string | null;
+}
+
+/** A company entry. `id` links to the producer page upstream. */
+export interface PreviewCompany {
+        id: number;
+        name: string;
+        url: string | null;
+}
+
+export interface PreviewTrailer {
+        youtubeId: string | null;
+        url: string | null;
+        embedUrl: string | null;
+}
+
+export interface PreviewRelation {
+        relation: string | null;
+        malId: number | null;
+        type: string | null;
+        title: string | null;
+}
+
+export interface PreviewLink {
+        name: string | null;
+        url: string | null;
+}
+
+export interface PreviewDetail {
+        id: number | null;
+        url: string | null;
+        title: string | null;
+        titleEnglish: string | null;
+        titleJapanese: string | null;
+        image: string | null;
+        images: PreviewImage | null;
+        synopsis: string | null;
+        type: string | null;
+        episodes: number | null;
+        status: string | null;
+        score: number | null;
+        scoredBy: number | null;
+        members: number | null;
+        favorites: number | null;
+        rank: number | null;
+        popularity: number | null;
+        duration: string | null;
+        rating: string | null;
+        source: string | null;
+        season: string | null;
+        year: number | null;
+        aired: { from: string | null; to: string | null; string: string | null };
+        broadcast: { day: string | null; time: string | null; timezone: string | null; string: string | null };
+        trailer: PreviewTrailer;
+        genres: string[];
+        themes: string[];
+        demographics: string[];
+        studios: PreviewCompany[];
+        producers: PreviewCompany[];
+        licensors: PreviewCompany[];
+        relations: PreviewRelation[];
+        streaming: PreviewLink[];
+        externalLinks: PreviewLink[];
+}
+
+export interface PreviewVoiceActor {
+        id: number | null;
+        name: string | null;
+        language: string | null;
+        image: string | null;
+}
+
+export interface PreviewCharacter {
+        id: number | null;
+        name: string | null;
+        image: string | null;
+        role: string | null;
+        favorites: number | null;
+        voiceActors: PreviewVoiceActor[];
+}
+
+export interface PreviewStaffMember {
+        id: number | null;
+        name: string | null;
+        image: string | null;
+        role: string | null;
+}
+
+export interface PreviewRecommendation {
+        id: number | null;
+        title: string | null;
+        image: string | null;
+        votes: number | null;
+}
+
+export interface PreviewTheme {
+        kind: string | null;
+        title: string | null;
+        artist: string | null;
+        episodes: string | null;
+}
+
+export interface AnimePreview {
+        source: string;
+        malId: number | null;
+        detail: PreviewDetail;
+        characters: PreviewCharacter[];
+        staff: PreviewStaffMember[];
+        recommendations: PreviewRecommendation[];
+        themes: PreviewTheme[];
+}
+
+function asStringList(value: unknown): string[] {
+        return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function asCompanies(value: unknown): PreviewCompany[] {
+        if (!Array.isArray(value)) return [];
+        return value
+                .map((row) => {
+                        const record = (row ?? {}) as Record<string, unknown>;
+                        return {
+                                id: asNumber(record.id),
+                                name: asString(record.name),
+                                url: asString(record.url) || null,
+                        };
+                })
+                .filter((company) => company.name);
+}
+
+function asNullableString(value: unknown): string | null {
+        const text = asString(value);
+        return text || null;
+}
+
+function asNullableNumber(value: unknown): number | null {
+        if (value === null || value === undefined || value === '') return null;
+        const parsed = asNumber(value);
+        return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizePreviewDetail(raw: unknown): PreviewDetail {
+        const record = (raw ?? {}) as Record<string, unknown>;
+        const images = (record.images ?? null) as Record<string, unknown> | null;
+        const trailer = (record.trailer ?? {}) as Record<string, unknown>;
+        const aired = (record.aired ?? {}) as Record<string, unknown>;
+        const broadcast = (record.broadcast ?? {}) as Record<string, unknown>;
+        const links = (value: unknown): PreviewLink[] =>
+                Array.isArray(value)
+                        ? value.map((row) => {
+                                  const link = (row ?? {}) as Record<string, unknown>;
+                                  return { name: asNullableString(link.name), url: asNullableString(link.url) };
+                          })
+                        : [];
+        return {
+                id: asNullableNumber(record.id),
+                url: asNullableString(record.url),
+                title: asNullableString(record.title),
+                titleEnglish: asNullableString(record.titleEnglish),
+                titleJapanese: asNullableString(record.titleJapanese),
+                image: asNullableString(record.image),
+                images: images
+                        ? {
+                                  small: asNullableString(images.small),
+                                  medium: asNullableString(images.medium),
+                                  large: asNullableString(images.large),
+                          }
+                        : null,
+                synopsis: asNullableString(record.synopsis),
+                type: asNullableString(record.type),
+                episodes: asNullableNumber(record.episodes),
+                status: asNullableString(record.status),
+                score: asNullableNumber(record.score),
+                scoredBy: asNullableNumber(record.scoredBy),
+                members: asNullableNumber(record.members),
+                favorites: asNullableNumber(record.favorites),
+                rank: asNullableNumber(record.rank),
+                popularity: asNullableNumber(record.popularity),
+                duration: asNullableString(record.duration),
+                rating: asNullableString(record.rating),
+                source: asNullableString(record.source),
+                season: asNullableString(record.season),
+                year: asNullableNumber(record.year),
+                aired: {
+                        from: asNullableString(aired.from),
+                        to: asNullableString(aired.to),
+                        string: asNullableString(aired.string),
+                },
+                broadcast: {
+                        day: asNullableString(broadcast.day),
+                        time: asNullableString(broadcast.time),
+                        timezone: asNullableString(broadcast.timezone),
+                        string: asNullableString(broadcast.string),
+                },
+                trailer: {
+                        youtubeId: asNullableString(trailer.youtubeId),
+                        url: asNullableString(trailer.url),
+                        embedUrl: asNullableString(trailer.embedUrl),
+                },
+                genres: asStringList(record.genres),
+                themes: asStringList(record.themes),
+                demographics: asStringList(record.demographics),
+                studios: asCompanies(record.studios),
+                producers: asCompanies(record.producers),
+                licensors: asCompanies(record.licensors),
+                relations: Array.isArray(record.relations)
+                        ? record.relations.map((row) => {
+                                  const relation = (row ?? {}) as Record<string, unknown>;
+                                  return {
+                                          relation: asNullableString(relation.relation),
+                                          malId: asNullableNumber(relation.malId),
+                                          type: asNullableString(relation.type),
+                                          title: asNullableString(relation.title),
+                                  };
+                          })
+                        : [],
+                streaming: links(record.streaming),
+                externalLinks: links(record.externalLinks),
+        };
+}
+
+/**
+ * Load the full details payload for a series.
+ *
+ * Returns null when the API has no record for the title (a valid answer for a
+ * series that is not on the mirror) so the caller can show a "no details" state
+ * rather than an error.
+ */
+export async function loadPreview(base: string, seriesId: string): Promise<AnimePreview | null> {
+        const payload = (await getJson(
+                base,
+                `/api/preview/${encodeURIComponent(seriesId)}`,
+        )) as { results?: { detail?: unknown } | null };
+        const results = payload?.results ?? null;
+        if (!results || !results.detail) return null;
+
+        const record = results as Record<string, unknown>;
+        return {
+                source: asString(record.source) || 'jikan',
+                malId: asNullableNumber(record.malId),
+                detail: normalizePreviewDetail(record.detail),
+                characters: Array.isArray(record.characters)
+                        ? record.characters.map((row) => {
+                                  const character = (row ?? {}) as Record<string, unknown>;
+                                  return {
+                                          id: asNullableNumber(character.id),
+                                          name: asNullableString(character.name),
+                                          image: asNullableString(character.image),
+                                          role: asNullableString(character.role),
+                                          favorites: asNullableNumber(character.favorites),
+                                          voiceActors: Array.isArray(character.voiceActors)
+                                                  ? character.voiceActors.map((actor) => {
+                                                            const voice = (actor ?? {}) as Record<string, unknown>;
+                                                            return {
+                                                                    id: asNullableNumber(voice.id),
+                                                                    name: asNullableString(voice.name),
+                                                                    language: asNullableString(voice.language),
+                                                                    image: asNullableString(voice.image),
+                                                            };
+                                                    })
+                                                  : [],
+                                  };
+                          })
+                        : [],
+                staff: Array.isArray(record.staff)
+                        ? record.staff.map((row) => {
+                                  const member = (row ?? {}) as Record<string, unknown>;
+                                  return {
+                                          id: asNullableNumber(member.id),
+                                          name: asNullableString(member.name),
+                                          image: asNullableString(member.image),
+                                          role: asNullableString(member.role),
+                                  };
+                          })
+                        : [],
+                recommendations: Array.isArray(record.recommendations)
+                        ? record.recommendations.map((row) => {
+                                  const rec = (row ?? {}) as Record<string, unknown>;
+                                  return {
+                                          id: asNullableNumber(rec.id),
+                                          title: asNullableString(rec.title),
+                                          image: asNullableString(rec.image),
+                                          votes: asNullableNumber(rec.votes),
+                                  };
+                          })
+                        : [],
+                themes: Array.isArray(record.themes)
+                        ? record.themes.map((row) => {
+                                  const theme = (row ?? {}) as Record<string, unknown>;
+                                  return {
+                                          kind: asNullableString(theme.kind),
+                                          title: asNullableString(theme.title),
+                                          artist: asNullableString(theme.artist),
+                                          episodes: asNullableString(theme.episodes),
+                                  };
+                          })
+                        : [],
+        };
+}

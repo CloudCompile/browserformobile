@@ -15,6 +15,8 @@ export default defineConfig(
 		'package.json',
 		'package-lock.json',
 		'tsconfig.json',
+		// Vendored third-party engine, minified and outside our TS project.
+		'src/vendor',
 	]),
 	{
 		languageOptions: {

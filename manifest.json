@@ -1,10 +1,10 @@
 {
-	"id": "browser-for-mobile",
-	"name": "Browser for Mobile",
-	"version": "2.0.0",
-	"minAppVersion": "1.13.0",
-	"description": "A tabbed web browser for Obsidian mobile, with history, bookmarks, cookies, an anime downloader, and an offline video library.",
-	"author": "CJ Hauser",
-	"isDesktopOnly": false,
-	"authorUrl": "https://github.com/cjhauser"
+        "id": "browser-for-mobile",
+        "name": "Anime for Mobile",
+        "version": "3.0.0",
+        "minAppVersion": "1.13.0",
+        "description": "Search, download and watch anime on Obsidian mobile. Rich series details, an offline video library, download statistics, and recommendations based on what you have already downloaded.",
+        "author": "CJ Hauser",
+        "isDesktopOnly": false,
+        "authorUrl": "https://github.com/cjhauser"
 }

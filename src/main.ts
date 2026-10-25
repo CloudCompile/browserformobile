@@ -8,51 +8,61 @@ import { externalStorageAvailable } from './destination';
 import { VideoLibrary, type LibraryItem, type WatchRecord } from './library';
 import { LibraryModal } from './libraryModal';
 import { PlayerModal } from './playerModal';
-import { DEFAULT_SETTINGS, BrowserSettingTab, type BrowserSettings } from './settings';
+import { DEFAULT_SETTINGS, AnimeSettingTab, type AnimeSettings } from './settings';
 import { StatsStore, type DownloadRun } from './stats';
 import { StatsModal } from './statsModal';
-import { BrowserStore } from './store';
-import type { BrowserData } from './types';
-import { DEFAULT_SEARCH_TEMPLATE, LEGACY_SEARCH_TEMPLATE } from './utils';
-import { BrowserView, VIEW_TYPE_BROWSER } from './view';
+import { SeriesPickerModal } from './modals';
+import { DetailsModal } from './detailsModal';
+import { applyModelScores, collectRecommendations, deriveSeeds } from './recommendService';
+import { JevRanker, TinyDecideRanker, type DecisionDeps } from './decision';
+import type { Recommendation } from './recommend';
+import { requestUrl } from 'obsidian';
 import { DownloadManagerView, VIEW_TYPE_DOWNLOADS } from './downloadManagerView';
 
-interface PersistedShape extends Partial<BrowserData> {
-	settings?: Partial<BrowserSettings>;
+interface PersistedShape {
+	settings?: Partial<AnimeSettings>;
 	/** Watch progress per vault path, so the library survives a reload. */
 	watch?: Record<string, WatchRecord>;
 	/** The download statistics log. */
 	stats?: DownloadRun[];
 	/** Cached anime API responses, so a restart does not re-fetch the catalogue. */
 	animeCache?: unknown;
+	/** Last-seen state of every downloaded file, for the download manager. */
+	downloadScanCache?: Record<string, unknown>;
 }
 
-export default class BrowserPlugin extends Plugin {
-	settings!: BrowserSettings;
-	store!: BrowserStore;
+export default class AnimePlugin extends Plugin {
+	settings!: AnimeSettings;
 	downloader!: DownloadManager;
 	library!: VideoLibrary;
 	stats!: StatsStore;
 	animeCache!: AnimeCache;
 
-	private browserData: Partial<BrowserData> = {};
 	private downloadModal: DownloadModal | null = null;
 	private libraryModal: LibraryModal | null = null;
 	private playerModal: PlayerModal | null = null;
 	private statsModal: StatsModal | null = null;
+	private detailsModal: DetailsModal | null = null;
+	/** Re-ranks recommendations with a decision model, when one is enabled. */
+	private localRanker: TinyDecideRanker | null = null;
+	private hostedRanker: JevRanker | null = null;
 	private watchRecords: Record<string, WatchRecord> = {};
 	/** The run log as loaded, handed to the stats store in onload. */
 	private statsRuns: DownloadRun[] = [];
 	/** Cached API responses as loaded, handed to the anime cache in onload. */
 	private animeCacheRecords: unknown = null;
+	/**
+	 * Last-seen state of every downloaded file, keyed by path.
+	 *
+	 * The download manager keeps this so it can show which files need a duration
+	 * repair without re-reading each one on every open. It lives on the plugin
+	 * rather than in the view because `saveSettings` writes the whole data file and
+	 * would otherwise drop it.
+	 */
+	downloadScanCache: Record<string, unknown> = {};
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
-
-		this.store = new BrowserStore({
-			saveData: (data) => this.persist(data as BrowserData),
-		});
-		this.store.load(this.browserData);
 
 		this.library = new VideoLibrary();
 		this.library.load(this.watchRecords);
@@ -75,12 +85,7 @@ export default class BrowserPlugin extends Plugin {
 			},
 		);
 
-		this.registerView(VIEW_TYPE_BROWSER, (leaf: WorkspaceLeaf) => new BrowserView(leaf, this));
 		this.registerView(VIEW_TYPE_DOWNLOADS, (leaf: WorkspaceLeaf) => new DownloadManagerView(leaf, this));
-
-		this.addRibbonIcon('globe', 'Open browser', () => {
-			void this.activateView();
-		});
 
 		this.addRibbonIcon('download', 'Download anime', () => {
 			this.openDownloader();
@@ -99,11 +104,11 @@ export default class BrowserPlugin extends Plugin {
 		});
 
 		this.registerCommands();
-		this.addSettingTab(new BrowserSettingTab(this.app, this));
+		this.applyGlassSetting();
+		this.addSettingTab(new AnimeSettingTab(this.app, this));
 
 		this.registerDomEvent(window, 'beforeunload', () => {
 			this.animeCache.dispose();
-			this.store.dispose();
 		});
 	}
 
@@ -130,7 +135,6 @@ export default class BrowserPlugin extends Plugin {
 
 	onunload(): void {
 		this.animeCache.dispose();
-		this.store.dispose();
 		this.downloader.dispose();
 		this.playerModal?.close();
 		this.statsModal?.close();
@@ -163,6 +167,7 @@ export default class BrowserPlugin extends Plugin {
 			onPlay: (item) => this.playItem(item),
 			onDelete: (item) => this.deleteItem(item),
 			onRefresh: () => this.refreshLibrary(),
+			onDetails: (series) => this.openDetails(series),
 			onClosed: () => {
 				this.libraryModal = null;
 			},
@@ -200,6 +205,180 @@ export default class BrowserPlugin extends Plugin {
 		});
 		this.statsModal = modal;
 		modal.open();
+	}
+
+	/**
+	 * Open the full details page for a series.
+	 *
+	 * Recommendations are produced lazily by the modal, so the page shows the
+	 * details first and fills the recommendation list in when it is ready.
+	 */
+	openDetails(series: string): void {
+		const name = (series ?? '').trim();
+		if (!name) return;
+		if (this.detailsModal) {
+			this.detailsModal.close();
+			this.detailsModal = null;
+		}
+		const modal = new DetailsModal(
+			this.app,
+			{
+				series: name,
+				apiBase: this.settings.animeApiBase,
+				loadRecommendations: (seed) => this.recommendFor(seed),
+			},
+			{
+				onDownload: () => this.openDownloader(),
+				onOpenRecommendation: (title) => this.openDetails(title),
+				onClosed: () => {
+					this.detailsModal = null;
+				},
+			},
+		);
+		this.detailsModal = modal;
+		modal.open();
+	}
+
+	/** Every series name the plugin knows the user has downloaded. */
+	private ownedSeries(): string[] {
+		const names = new Set<string>();
+		for (const run of this.stats.toJSON()) {
+			if (run.series) names.add(run.series);
+		}
+		for (const entry of this.library.entries) {
+			if (entry.series) names.add(entry.series);
+		}
+		return [...names];
+	}
+
+	/**
+	 * Recommendations for a series, blended with the whole download history.
+	 *
+	 * The series being viewed is added to the profile at a high weight so its own
+	 * catalogue list leads, while the rest of the history supplies the text
+	 * signal that orders the results.
+	 */
+	private async recommendFor(seed: string): Promise<Recommendation[]> {
+		const history = deriveSeeds(
+			this.stats.toJSON(),
+			this.library.items().map((item) => ({
+				series: item.series,
+				watched: item.watched,
+				progress: item.progress?.position ?? 0,
+			})),
+		);
+		const others = history.filter((entry) => entry.series.toLowerCase() !== seed.toLowerCase());
+		const top = Math.max(1, ...others.map((entry) => entry.weight));
+		const seeds = [{ series: seed, weight: top + 1 }, ...others];
+		const owned = this.ownedSeries();
+
+		const result = await collectRecommendations(this.settings.animeApiBase, seeds, {
+			alreadyHave: owned,
+			limit: 12,
+		});
+		if (result.items.length === 0) return result.items;
+
+		const scores = await this.scoreWithModel(seed, result.items);
+		if (scores.size === 0) return result.items;
+		return applyModelScores(result.items, scores);
+	}
+
+	/**
+	 * Ask the configured decision model to re-rank the candidates.
+	 *
+	 * Returns an empty map when no model is enabled or it fails, which leaves the
+	 * vote-based ordering untouched.
+	 */
+	private async scoreWithModel(seed: string, items: Recommendation[]): Promise<Map<string, number>> {
+		const titles = items.map((item) => item.title);
+		if (titles.length === 0) return new Map();
+		const profile = `${seed}. ${this.ownedSeries().slice(0, 12).join(', ')}.`;
+
+		if (this.settings.recommendationModel === 'hosted') {
+			if (!this.settings.jevApiKey) return new Map();
+			this.hostedRanker ??= new JevRanker(this.decisionDeps());
+			return this.hostedRanker.score(profile, titles, this.settings.jevApiKey);
+		}
+		if (this.settings.recommendationModel === 'local') {
+			this.localRanker ??= new TinyDecideRanker(this.decisionDeps());
+			if (!(await this.localRanker.ensureLoaded())) {
+				new Notice('Could not load the local decision model; using the catalogue ranking.');
+				return new Map();
+			}
+			return this.localRanker.score(profile, titles);
+		}
+		return new Map();
+	}
+
+	/**
+	 * Model cache and network access.
+	 *
+	 * The weights are cached next to the plugin so the 6 MB download happens once.
+	 * `requestUrl` is used rather than `fetch` because it is the native client
+	 * Obsidian exposes to plugins, which is not bound by same-origin rules.
+	 */
+	private decisionDeps(): DecisionDeps {
+		const dir = this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`;
+		const modelPath = `${dir}/tinydecide-model.bin`;
+		const metaPath = `${dir}/tinydecide-meta.json`;
+		const adapter = this.app.vault.adapter;
+		const readBinary = async (path: string): Promise<ArrayBuffer | null> => {
+			try {
+				if (!(await adapter.exists(path))) return null;
+				return await adapter.readBinary(path);
+			} catch {
+				return null;
+			}
+		};
+		return {
+			readModel: () => readBinary(modelPath),
+			writeModel: async (data) => {
+				try {
+					await adapter.writeBinary(modelPath, data);
+				} catch {
+					/* A read-only vault just means it is fetched again next time. */
+				}
+			},
+			readMeta: () => readBinary(metaPath),
+			writeMeta: async (data) => {
+				try {
+					await adapter.writeBinary(metaPath, data);
+				} catch {
+					/* See above. */
+				}
+			},
+			download: async (url) => {
+				const response = await requestUrl({ url, method: 'GET', throw: false });
+				if (response.status >= 400) throw new Error(`HTTP ${response.status}`);
+				return response.arrayBuffer;
+			},
+			postJson: async (url, body, headers) => {
+				const response = await requestUrl({
+					url,
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', ...headers },
+					body: JSON.stringify(body),
+					throw: false,
+				});
+				if (response.status >= 400) throw new Error(`HTTP ${response.status}`);
+				return response.json as unknown;
+			},
+		};
+	}
+
+	/** Drop loaded model weights, e.g. when the setting is switched off. */
+	applyRecommendationModelSetting(): void {
+		if (this.settings.recommendationModel !== 'local') this.localRanker?.unload();
+	}
+
+	/**
+	 * Toggle the glass effect class on the document body.
+	 *
+	 * The CSS is scoped to `body.bfm-glass-on`, so switching the setting off
+	 * removes the effect without a reload and without touching the modal code.
+	 */
+	applyGlassSetting(): void {
+		document.body.toggleClass('bfm-glass-on', this.settings.glassEffect);
 	}
 
 	/** Append a finished run to the log and persist it. */
@@ -346,134 +525,34 @@ export default class BrowserPlugin extends Plugin {
 	}
 
 	private registerCommands(): void {
-		this.addCommand({
-			id: 'open-browser',
-			name: 'Open browser',
-			callback: () => {
-				void this.activateView();
-			},
-		});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 		this.addCommand({
-			id: 'new-tab',
-			name: 'New tab',
+			id: 'open-anime-details',
+			name: 'Anime: open details page',
 			callback: () => {
-				void this.withView((view) => view.navigate(this.settings.homePage));
+				const series = this.ownedSeries();
+				if (series.length === 0) {
+					new Notice('No downloaded series yet.');
+					return;
+				}
+				new SeriesPickerModal(this.app, series, (picked) => this.openDetails(picked)).open();
 			},
 		});
-
-		this.addCommand({
-			id: 'close-tab',
-			name: 'Close current tab',
-			callback: () => {
-				void this.withView((view) => view.closeTab());
-			},
-		});
-
-		this.addCommand({
-			id: 'next-tab',
-			name: 'Next tab',
-			callback: () => {
-				void this.withView((view) => view.nextTab());
-			},
-		});
-
-		this.addCommand({
-			id: 'previous-tab',
-			name: 'Previous tab',
-			callback: () => {
-				void this.withView((view) => view.prevTab());
-			},
-		});
-
-		this.addCommand({
-			id: 'go-back',
-			name: 'Go back',
-			callback: () => {
-				void this.withView((view) => view.goBack());
-			},
-		});
-
-		this.addCommand({
-			id: 'go-forward',
-			name: 'Go forward',
-			callback: () => {
-				void this.withView((view) => view.goForward());
-			},
-		});
-
-		this.addCommand({
-			id: 'reload-page',
-			name: 'Reload page',
-			callback: () => {
-				void this.withView((view) => view.reload());
-			},
-		});
-
-		this.addCommand({
-			id: 'focus-address-bar',
-			name: 'Focus address bar',
-			callback: () => {
-				void this.withView((view) => view.focusAddressBar());
-			},
-		});
-
-		this.addCommand({
-			id: 'toggle-proxy-rendering',
-			name: 'Toggle proxy rendering',
-			callback: () => {
-				void this.withView((view) => view.toggleProxy());
-			},
-		});
-
-		this.addCommand({
-			id: 'bookmark-page',
-			name: 'Bookmark current page',
-			callback: () => {
-				void this.withView((view) => view.toggleBookmark());
-			},
-		});
-
-		this.addCommand({
-			id: 'open-bookmarks',
-			name: 'Open bookmarks',
-			callback: () => {
-				void this.withView((view) => view.openBookmarks());
-			},
-		});
-
-		this.addCommand({
-			id: 'open-history',
-			name: 'Open history',
-			callback: () => {
-				void this.withView((view) => view.openHistory());
-			},
-		});
-
-		this.addCommand({
-			id: 'open-cookie-manager',
-			name: 'Manage cookies',
-			callback: () => {
-				void this.withView((view) => view.openCookieManager());
-			},
-		});
-
-		this.addCommand({
-			id: 'go-home',
-			name: 'Go to home page',
-			callback: () => {
-				void this.withView((view) => view.goHome());
-			},
-		});
-
-		this.addCommand({
-			id: 'clear-browsing-data',
-			name: 'Clear browsing data',
-			callback: () => {
-				void this.withView((view) => view.clearBrowsingData());
-			},
-		});
-
 		this.addCommand({
 			id: 'clear-anime-cache',
 			name: 'Clear anime cache',
@@ -575,66 +654,24 @@ export default class BrowserPlugin extends Plugin {
 		await this.app.workspace.revealLeaf(leaf);
 	}
 
-	async activateView(): Promise<void> {
-		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_BROWSER);
-		const first = existing[0];
-		if (first) {
-			await this.app.workspace.revealLeaf(first);
-			return;
-		}
-		const leaf = this.app.workspace.getLeaf('tab');
-		await leaf.setViewState({ type: VIEW_TYPE_BROWSER, active: true });
-		await this.app.workspace.revealLeaf(leaf);
-	}
-
-	private async withView(action: (view: BrowserView) => void): Promise<void> {
-		let view = this.app.workspace.getActiveViewOfType(BrowserView);
-		if (!view) {
-			await this.activateView();
-			view = this.app.workspace.getActiveViewOfType(BrowserView);
-		}
-		if (!view) {
-			new Notice('Could not open the browser.');
-			return;
-		}
-		action(view);
-	}
 
 	async loadSettings(): Promise<void> {
 		const raw = (await this.loadData()) as PersistedShape | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, raw?.settings ?? {});
 		this.statsRuns = Array.isArray(raw?.stats) ? raw.stats : [];
-		// Move the old JS-app search URL to the server-rendered endpoint; a
-		// user-chosen engine is left untouched.
-		if (this.settings.searchTemplate === LEGACY_SEARCH_TEMPLATE) {
-			this.settings.searchTemplate = DEFAULT_SEARCH_TEMPLATE;
-		}
-		this.browserData = raw ?? {};
 		this.watchRecords = raw?.watch ?? {};
 		this.animeCacheRecords = raw?.animeCache ?? null;
+		this.downloadScanCache = raw?.downloadScanCache ?? {};
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData({
-			...this.browserData,
 			settings: this.settings,
+			downloadScanCache: this.downloadScanCache,
 			watch: this.watchRecords,
 			stats: this.stats.toJSON(),
 			animeCache: this.animeCacheRecords,
 		});
 	}
 
-	private async persist(data: BrowserData): Promise<void> {
-		this.browserData = { ...this.browserData, ...data };
-		await this.saveData({
-			...data,
-			downloadScanCache: (this.browserData as { downloadScanCache?: unknown }).downloadScanCache,
-			// Navigation calls this on every page load; without carrying the cache
-			// through, the first page load would wipe it.
-			animeCache: this.animeCacheRecords,
-			settings: this.settings,
-			watch: this.watchRecords,
-			stats: this.stats.toJSON(),
-		});
-	}
 }

@@ -42,6 +42,10 @@ const SAVE_DEBOUNCE_MS = 2000;
  * that a newly aired episode shows up without a restart.
  */
 export function ttlForPath(path: string): number {
+        // Preview is metadata too: a series' cast and synopsis do not change, and
+        // the call fans out to five upstream requests on the API side, so it is
+        // the most expensive thing to re-fetch.
+        if (path.startsWith('/api/preview/')) return INFO_TTL_MS;
         if (path.startsWith('/api/info')) return INFO_TTL_MS;
         if (path.startsWith('/api/episodes/')) return EPISODES_TTL_MS;
         if (path.startsWith('/api/stream')) return STREAM_TTL_MS;

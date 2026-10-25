@@ -1,65 +1,41 @@
-# Browser for Mobile
+# Anime for Mobile
 
-A tabbed web browser that runs inside Obsidian, including on iOS and Android.
+Search, download and watch anime from inside Obsidian, on iOS and Android.
 
-Obsidian's desktop app ships a web viewer, but the mobile app does not. This
-plugin fills that gap with a browser pane you can open from the ribbon or the
-command palette. It supports tabs, back and forward history, bookmarks, a
-persistent cookie jar, and two rendering modes so it can cope with sites that
-refuse to be embedded.
+Obsidian has no video or catalogue tooling of its own, and on mobile the app
+cannot host a full browser engine. This plugin does the parts that work well
+natively instead: it searches a catalogue, downloads episodes in the background
+with resume, keeps an offline library that plays them back, and shows a full
+details page for each series with recommendations drawn from what you have
+already downloaded.
 
-## What works, and what does not
-
-This is important to understand before you install it.
-
-Obsidian mobile is not built on Electron, so there is no embedded Chromium you
-can drive the way the desktop app can. A plugin can only load a page in two
-ways:
-
-- **Direct mode** loads the site in an iframe. The platform handles cookies and
-  sessions normally, so logins work. It only works for sites that allow being
-  embedded. Sites that send `X-Frame-Options` or a strict
-  `Content-Security-Policy` will show an error instead. The plugin checks those
-  headers before loading and switches to proxy mode automatically when a site
-  refuses to be embedded, so you do not have to retry by hand.
-- **Proxy mode** fetches the page with the app's own HTTP client, falling back to
-  a CORS proxy when needed, sanitises the HTML, and renders it in a locked-down
-  frame. This works for most sites, including ones that block framing, but it is
-  a snapshot: it is not suitable for sites that require a real login. Pages run
-  their own scripts so client-rendered sites work; turn off **Run page scripts**
-  to block them instead.
-
-The HTTP client Obsidian exposes to plugins is a native one, so it is not bound
-by the browser's same-origin rules. Most pages therefore load with no third
-party involved at all. The proxy is a fallback for the minority of sites that
-refuse the direct request, and it can be turned off entirely in settings. Public
-proxies are unreliable, so when the configured proxy keeps failing the plugin
-tries a small set of built-in fallbacks before giving up.
-
-There is no way to build a full Chromium browser inside an Obsidian plugin on
-mobile. If a site needs a real engine, use **Open in system browser**.
+It was a web browser in an earlier life. That part is gone — a plugin cannot
+embed a real engine on mobile, so the proxy and iframe rendering it relied on
+was never going to be reliable. What remains is the downloader and the library,
+which do not need one.
 
 ## Features
 
-- Tabs with titles, close buttons, and a scrolling tab strip that fits a phone.
-- Address bar that accepts URLs or search terms.
-- Back, forward, reload, home, and open-in-system-browser.
-- Per-tab history, plus a searchable global history.
-- Bookmarks with a fuzzy search picker.
-- A cookie jar that proxied pages can read and write, with a manager to inspect,
-  export, and clear cookies per site.
-- Responsive, touch-friendly layout built for narrow screens, with safe-area
-  insets for notched phones and larger tap targets on touch devices.
-- An anime downloader: search a catalogue, pick episodes, and save them to disk.
-- A video library that lists your downloaded episodes and plays them, resuming
-  where you left off.
-- Live download and network speed while a run is in progress, plus a statistics
-  page summarising past downloads.
+- **Search and download** from an anime catalogue, with per-episode selection,
+  ranges, skip-filler, and "download missing".
+- **Resumable downloads** that continue from the last segment after a failure.
+- **An offline video library** that plays your episodes and remembers where you
+  stopped.
+- **A full details page** for any series: synopsis, genres, studios, cast and
+  staff, theme songs, trailer, and airing schedule.
+- **Recommendations** based on your download history, ranked either by the
+  catalogue's own votes or by a decision model — a small one that runs entirely
+  on your device, or a hosted one.
+- **Download statistics** covering size, speed, and time across past runs.
+- **Download manager** that scans your folder and repairs the duration of files
+  written by older versions.
+- **A responsive, touch-friendly layout** built for narrow screens, with
+  safe-area insets for notched phones and larger tap targets on touch devices.
 
 ## Anime downloader
 
-The downloader is a separate tool from the browser. Open it from the download
-ribbon icon or the **Open anime downloader** command.
+Open it from the download ribbon icon or the **Open anime downloader**
+command.
 
 Search for a series, pick it, then choose episodes. You can select all, select
 none, invert the selection, skip filler, add a numeric range such as 12–24, or
@@ -265,29 +241,63 @@ not appear here.
 ## Install
 
 Copy `main.js`, `manifest.json`, and `styles.css` into
-`<Vault>/.obsidian/plugins/browser-for-mobile/`, then enable **Browser for
+`<Vault>/.obsidian/plugins/browser-for-mobile/`, then enable **Anime for
 Mobile** in **Settings → Community plugins**.
+
+The plugin keeps its original folder and id, so an upgrade from the browser
+version installs over the top of it.
 
 ## Use
 
-Open the browser from the ribbon globe icon or the **Open browser** command.
-Type an address or a search phrase and press enter.
+Open the downloader from the download ribbon icon or the **Open anime
+downloader** command. Search for a series, pick it, choose episodes, and start
+the download; it keeps running if you close the window.
 
-If a page cannot be embedded, the plugin switches to the proxy automatically.
-If it still will not load, choose **Retry with proxy**, or open it in your
-system browser.
+Open a series' details page from the info button on any library row, or with the
+**Anime: open details page** command.
+
+## Details and recommendations
+
+The details page gathers everything the API knows about a series in one place:
+score, rank, popularity, status, season, studio, source material, synopsis,
+genres and themes, opening and ending themes, cast and staff, a link to the
+trailer, and the broadcast schedule.
+
+Below the details are **recommendations**. These are seeded from the series you
+are viewing plus everything else you have downloaded, so a series you have
+watched a lot pulls the list harder than one you tried once.
+
+Three ranking modes, chosen with **Recommendation model** in settings:
+
+- **Catalogue only** (default) uses the upstream site's own related-series votes
+  plus a text match against your history. No download, no key, no network beyond
+  the catalogue itself.
+- **Local decision model** downloads a small model once (about 6 MB) and runs it
+  entirely on your device, so nothing about your viewing leaves it.
+- **Hosted decision model** sends your download history and the candidate titles
+  to TypeSafe (typesafe.ai) and needs a **Jev API key**. Only the taste profile
+  and titles are sent — no file contents, no paths.
+
+Any model failure falls back to the catalogue ordering rather than showing an
+error, so recommendations always appear.
 
 ## Settings
 
-- **Home page** — loaded for new tabs.
-- **Search template** — use `%s` where the search terms go.
-- **Fetch pages directly** — use the built-in HTTP client before the proxy.
-- **Proxy endpoint** — the fallback CORS proxy. The default is allorigins.win, with built-in fallbacks.
-- **Always use proxy** — route everything through the proxy.
-- **Run page scripts** — let proxied pages run their own scripts. On by default; without it, sites that render in the browser (search engines, apps) come up blank or broken.
-- **Enable cookie jar** — store cookies locally and share them with proxied pages.
-- **Confirm destructive actions** — confirm before clearing data.
-- **Open external links in system browser** — hand off links that cannot be shown.
+- **Anime API endpoint** — the catalogue used for search, details, and streams.
+- **Cache anime details** — store API responses locally so repeat lookups are
+  instant. On by default.
+- **Download quality** — preferred height; the closest available is used.
+- **Download format** — MP4 or TS, as described below.
+- **Download folder** — where files go, relative to the vault.
+- **Save outside the vault** — desktop only; write to an absolute path.
+- **Filename template** — `{series}`, `{ep}`, `{ep:02}`, `{title}`, `{ext}`.
+- **Parallel segments** — segments fetched at once per episode.
+- **Parallel episodes** — episodes downloaded at once.
+- **Recommendation model** — catalogue only, local, or hosted, as above.
+- **Jev API key** — only used by the hosted model.
+- **Glass effect** — a translucent surface on the plugin's panels. Desktop only.
+- **Confirm destructive actions** — confirm before deleting a file or clearing
+  the download log.
 
 ## Privacy
 
@@ -301,38 +311,19 @@ and episode lists, with the stream URLs you have used kept in memory only. This
 data never leaves your device. **Clear anime cache** deletes it, and turning off
 **Cache anime details** stops it being written at all.
 
-When proxy mode is used, the address you are visiting is sent to the configured
-proxy service so it can fetch the page for you. The default is `allorigins.win`,
-a public service. Because public proxies are unreliable, when the default keeps
-failing the plugin also tries these fallbacks, in order:
+The recommendation models are the only feature that can send anything off your
+device, and only when you switch one on:
 
-1. `cors-proxy.christopher-j-hauser2025.workers.dev` (a Cloudflare Worker, GET and POST)
-2. `r.jina.ai` (GET)
-3. `api.cors.lol` (GET)
-4. `allorigins.win/raw` (GET)
-
-Only the page HTML is requested; the response is sanitised before display. Set
-your own **Proxy endpoint** to use a single, trusted service instead: when the
-endpoint is not the shipped default, no fallbacks are used and your address is
-never sent to any of the services above.
-
-Cookies saved by the plugin are only sent to the site they belong to. Proxied
-pages run in a sandboxed frame without same-origin access, so they cannot read
-your vault or the plugin's storage. By default they also run their own scripts,
-which is what makes client-rendered sites work but also lets third-party
-analytics on those pages run; turn off **Run page scripts** to block them.
+- **Local** runs on your device. Nothing is sent.
+- **Hosted** sends your download history and the candidate titles to TypeSafe.
+  It stays off until you choose it and supply a key.
 
 ## Commands
 
-Alongside the browser and downloader commands, **Clear anime cache** empties the
-stored anime API responses.
-
-
-All actions are available from the command palette: open browser, new tab, close
-tab, next and previous tab, back, forward, reload, focus address bar, toggle
-proxy rendering, bookmark page, open bookmarks, open history, manage cookies, go
-home, clear browsing data, open the anime downloader, repair downloaded
-videos, open the video library, and open download statistics.
+All actions are available from the command palette: open the anime downloader,
+open the video library, open the download manager, open download statistics,
+open a series' details page, repair downloaded videos, and clear the anime
+cache.
 
 ## Development
 
@@ -358,15 +349,10 @@ npm run lint
 
 ## Limitations
 
-- Some sites still cannot be shown, either because they block embedding or
-  because they need a full browser engine. Use the system browser for those.
-- Proxy mode shows a copy of a page fetched for you, not a live session. It is
-  best-effort: sites that rely on cross-origin requests or complex scripting may
-  still render imperfectly.
-- Cross-origin frames cannot be inspected, so the plugin relies on the injected
-  bridge for titles and navigation rather than reading the frame directly.
-- A page script that fails is reported in the status bar (**page error**) but
-  does not replace the page, since the document has already rendered. The bridge
-  presents the proxied frame as top-level so framebusting checks that read
-  `window.parent.document` do not abort a page's own startup.
-
+- Playback uses the platform's own video element, so a format it cannot decode
+  (MPEG-TS) will not play inside the plugin. Keep **Download format** on MP4 if
+  you want to watch in the library.
+- The catalogue is a third-party source. If it changes shape or goes away, search
+  and downloads stop working until the API is updated.
+- Recommendations are only as good as the history they are given. With an empty
+  history the list falls back to the catalogue's own related-series votes.
