@@ -214,6 +214,32 @@ export class SpeedTracker {
 }
 
 /**
+ * Cumulative durations per playlist, so the elapsed total is a lookup instead of
+ * a re-sum. `remainingBytesFromBitrate` runs on every progress tick — a few times
+ * a second per job — and re-adding the durations from zero each time made the
+ * cost grow with the episode's length. The playlist's array is the same object for
+ * the whole run, so a WeakMap keyed by it is enough and the entry is collected
+ * with the playlist.
+ */
+const cumulativeDurations = new WeakMap<number[], Float64Array>();
+
+/** Seconds of media in the first `count` segments. `sums[i]` is the total of the
+ * first `i` segments. */
+export function elapsedSeconds(durations: number[], count: number): number {
+	if (durations.length === 0) return 0;
+	let sums = cumulativeDurations.get(durations);
+	if (!sums) {
+		sums = new Float64Array(durations.length + 1);
+		for (let index = 0; index < durations.length; index++) {
+			sums[index + 1] = (sums[index] ?? 0) + (durations[index] ?? 0);
+		}
+		cumulativeDurations.set(durations, sums);
+	}
+	const clamped = Math.max(0, Math.min(count, durations.length));
+	return sums[clamped] ?? 0;
+}
+
+/**
  * Bytes still to download, from the stream's bitrate and the seconds of media
  * left. `completed` segments have been fetched and `bytes` counts them.
  *
@@ -228,9 +254,7 @@ export function remainingBytesFromBitrate(
 	bytes: number,
 ): number | null {
 	if (completed <= 0 || bytes <= 0 || durations.length === 0) return null;
-	let elapsed = 0;
-	const upTo = Math.min(completed, durations.length);
-	for (let i = 0; i < upTo; i++) elapsed += durations[i] ?? 0;
+	const elapsed = elapsedSeconds(durations, completed);
 	if (elapsed <= 0) return null;
 	const remainingSeconds = totalDuration - elapsed;
 	if (remainingSeconds <= 0) return 0;

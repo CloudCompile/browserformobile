@@ -1,5 +1,5 @@
 import { formatBytes, formatDuration } from './hls';
-import { collectFiles } from './utils';
+import { mapWithConcurrency, scanFiles } from './utils';
 
 /**
  * The local video library.
@@ -58,6 +58,13 @@ const WATCHED_TAIL_SECONDS = 30;
 
 const VIDEO_EXTENSIONS = new Set(['mp4', 'ts']);
 
+/**
+ * `stat` calls in flight during a scan. Each is a round-trip; a handful at once
+ * turns a large folder from one latency per file into one per batch, without
+ * swamping a phone's storage layer.
+ */
+const STAT_CONCURRENCY = 8;
+
 interface VaultAdapter {
 	list(path: string): Promise<{ files: string[]; folders: string[] }>;
 	exists(path: string): Promise<boolean>;
@@ -72,12 +79,36 @@ function escapeLiteral(text: string): string {
 }
 
 /**
+ * Cached compiled templates. `parseEntryName` runs per file on every scan, so
+ * recompiling the same pattern for each file was pure waste — a few hundred
+ * files meant a few hundred compilations per library open. A template always
+ * produces the same pattern, so caching by template is always safe.
+ */
+const NAME_REGEX_CACHE = new Map<string, RegExp | null>();
+
+/** Bound on cached templates; they come from settings, so this only grows if
+ * the setting is edited repeatedly. */
+const MAX_TEMPLATE_CACHE = 32;
+
+/**
  * Turn a filename template into a matcher that recovers its parts. The template
  * is the same one the downloader writes with, so a file the plugin produced
  * always parses; a file dropped in by hand matches only if it happens to fit.
  * Returns null when the template has no tokens to capture.
  */
 export function buildNameRegex(template: string): RegExp | null {
+	const cached = NAME_REGEX_CACHE.get(template);
+	if (cached !== undefined) return cached;
+	const built = compileNameRegex(template);
+	if (NAME_REGEX_CACHE.size >= MAX_TEMPLATE_CACHE) {
+		const oldest = NAME_REGEX_CACHE.keys().next().value;
+		if (oldest !== undefined) NAME_REGEX_CACHE.delete(oldest);
+	}
+	NAME_REGEX_CACHE.set(template, built);
+	return built;
+}
+
+function compileNameRegex(template: string): RegExp | null {
 	let pattern = '';
 	let last = 0;
 	let tokens = 0;
@@ -128,19 +159,22 @@ export function parseEntryName(name: string, template: string): ParsedName {
 	};
 }
 
-/** Walk a folder and return every playable file under it. */
-async function collectVideos(adapter: VaultAdapter, folder: string): Promise<string[]> {
-	return collectFiles(adapter, folder, (path) => {
-		// A staging file is an unfinished download, not an episode.
-		if (path.endsWith('.part') || path.endsWith('.part.json')) return false;
-		const name = path.slice(path.lastIndexOf('/') + 1);
-		const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
-		return VIDEO_EXTENSIONS.has(ext);
-	});
+/** A staging file is an unfinished download, not an episode. */
+function isVideo(path: string): boolean {
+	if (path.endsWith('.part') || path.endsWith('.part.json')) return false;
+	const name = path.slice(path.lastIndexOf('/') + 1);
+	const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+	return VIDEO_EXTENSIONS.has(ext);
 }
 
 export class VideoLibrary {
 	entries: LibraryEntry[] = [];
+
+	/**
+	 * Whether the last `refresh` saw the whole folder. False means "unknown",
+	 * not "empty", and anything that deletes state by absence must respect it.
+	 */
+	private scanComplete = false;
 
 	private readonly progress = new Map<string, WatchRecord>();
 
@@ -165,11 +199,23 @@ export class VideoLibrary {
 		return Object.fromEntries(this.progress);
 	}
 
-	/** Rebuild the entry list from the folder. Cheap enough to run on open. */
-	async refresh(adapter: VaultAdapter, folder: string, template: string): Promise<void> {
-		const paths = await collectVideos(adapter, folder);
-		const entries: LibraryEntry[] = [];
-		for (const path of paths) {
+	/**
+	 * Rebuild the entry list from the folder.
+	 *
+	 * Each file needs a `stat`, which is a round-trip, so they run with bounded
+	 * concurrency: awaiting them one at a time made opening the library cost one
+	 * latency per file, which is what made a large folder slow.
+	 *
+	 * `complete` reports whether the walk saw the whole tree. Callers that delete
+	 * state based on absence must check it — see `prune`.
+	 */
+	async refresh(
+		adapter: VaultAdapter,
+		folder: string,
+		template: string,
+	): Promise<{ complete: boolean }> {
+		const scan = await scanFiles(adapter, folder, isVideo);
+		const entries = await mapWithConcurrency(scan.files, STAT_CONCURRENCY, async (path) => {
 			const name = path.slice(path.lastIndexOf('/') + 1);
 			const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
 			const parsed = parseEntryName(name, template);
@@ -180,12 +226,14 @@ export class VideoLibrary {
 				size = stat?.size ?? 0;
 				modified = stat?.mtime ?? 0;
 			} catch {
-				/* A file that vanished mid-scan is skipped. */
+				/* A file that vanished mid-scan keeps its entry, with no size. */
 			}
-			entries.push({ path, name, ext, size, modified, ...parsed });
-		}
+			return { path, name, ext, size, modified, ...parsed };
+		});
 		entries.sort(compareEntries);
 		this.entries = entries;
+		this.scanComplete = scan.complete;
+		return { complete: scan.complete };
 	}
 
 	/** Entries with their progress attached, in display order. */
@@ -229,8 +277,18 @@ export class VideoLibrary {
 		return record.position / record.duration >= WATCHED_RATIO;
 	}
 
-	/** Drop progress for files that are no longer on disk. */
+	/**
+	 * Drop progress for files that are no longer on disk.
+	 *
+	 * Only runs after a *complete* scan. An incomplete walk — the folder was
+	 * renamed, the vault is not mounted, the adapter threw — reports no files,
+	 * which is indistinguishable from an empty folder unless you ask. Pruning on
+	 * that would delete the watch position of every episode at once. Losing one
+	 * resume point is small; losing all of them because a folder was briefly
+	 * unavailable is not.
+	 */
 	prune(): void {
+		if (!this.scanComplete) return;
 		const present = new Set(this.entries.map((entry) => entry.path));
 		for (const path of [...this.progress.keys()]) {
 			if (!present.has(path)) this.progress.delete(path);

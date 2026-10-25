@@ -11,7 +11,7 @@ import {
         RateLimitError,
         type MediaPlaylist,
 } from './hls';
-import { remainingBytesFromBitrate, SpeedTracker } from './perf';
+import { elapsedSeconds, remainingBytesFromBitrate, SpeedTracker } from './perf';
 import type { DownloadRun } from './stats';
 import { patchDuration, TransmuxStream } from './transmux';
 import { generateId } from './utils';
@@ -1015,10 +1015,7 @@ export class DownloadManager {
                         // Continue the timeline where the last run stopped. mux.js
                         // otherwise restarts at zero and the new fragments overlap
                         // what is already written.
-                        const base = Math.round(
-                                playlist.durations.slice(0, resumeFrom).reduce((sum, value) => sum + value, 0) *
-                                        MP4_TIMESCALE,
-                        );
+                        const base = Math.round(elapsedSeconds(playlist.durations, resumeFrom) * MP4_TIMESCALE);
                         if (base > 0) stream.setBaseMediaDecodeTime(base);
                 }
                 try {

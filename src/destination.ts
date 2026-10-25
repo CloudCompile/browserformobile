@@ -348,6 +348,9 @@ export class VaultDestination implements Destination {
         readonly label: string;
         readonly isExternal = false;
 
+        /** Folders confirmed to exist, so `ensureParents` stops re-checking them. */
+        private readonly knownFolders = new Set<string>();
+
         constructor(
                 private readonly adapter: {
                         writeBinary(path: string, data: ArrayBuffer): Promise<void>;
@@ -482,13 +485,27 @@ export class VaultDestination implements Destination {
                 let current = '';
                 for (const part of parts) {
                         current = current ? `${current}/${part}` : part;
-                        if (!(await this.adapter.exists(current))) {
+                        // Folders are created once and then stay. Re-checking every
+                        // parent on every open/write/rename cost a round-trip per
+                        // segment per file; remembering the ones already confirmed
+                        // leaves the first file paying for the folder and the rest
+                        // free. A failed mkdir is not remembered, so a transient
+                        // error is retried rather than cached as success.
+                        if (this.knownFolders.has(current)) continue;
+                        let present = false;
+                        try {
+                                present = await this.adapter.exists(current);
+                        } catch {
+                                present = false;
+                        }
+                        if (!present) {
                                 try {
                                         await this.adapter.mkdir(current);
                                 } catch {
                                         /* A concurrent download may have created it. */
                                 }
                         }
+                        this.knownFolders.add(current);
                 }
         }
 }

@@ -250,7 +250,7 @@ export async function searchSeries(
         const pageOneResponse = await getJson(base, buildUrl(1));
         const pageOne = parsePayload(pageOneResponse);
         if (!pageOne.series.length) return { series: [], totalPages: Math.max(1, pageOne.totalPages) };
-        const target = Math.max(1, Math.min(pageOne.totalPages, pageOne.totalPages));
+        const target = Math.max(1, pageOne.totalPages);
         const lastResponse = await getJson(base, buildUrl(target));
         const last = parsePayload(lastResponse);
         return { series: last.series, totalPages: last.totalPages };

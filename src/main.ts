@@ -208,15 +208,26 @@ export default class BrowserPlugin extends Plugin {
 		await this.saveSettings();
 	}
 
-	/** Re-scan the download folder and drop progress for files that are gone. */
-	async refreshLibrary(): Promise<void> {
+	/**
+	 * Re-scan the download folder and drop progress for files that are gone.
+	 *
+	 * Returns whether the walk was complete. `prune` already refuses to act on an
+	 * incomplete scan, but callers that keep their own per-file state (the scan
+	 * cache) need the flag too.
+	 */
+	async refreshLibrary(): Promise<{ complete: boolean }> {
 		const adapter = this.app.vault.adapter as unknown as {
 			list(path: string): Promise<{ files: string[]; folders: string[] }>;
 			exists(path: string): Promise<boolean>;
 			stat(path: string): Promise<{ size: number; mtime: number } | null>;
 		};
-		await this.library.refresh(adapter, this.libraryFolder(), this.settings.downloadFilenameTemplate);
+		const result = await this.library.refresh(
+			adapter,
+			this.libraryFolder(),
+			this.settings.downloadFilenameTemplate,
+		);
 		this.library.prune();
+		return result;
 	}
 
 	/** Play an entry, resuming from its saved position. */

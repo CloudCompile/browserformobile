@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { ExternalDestination, DownloadWriteError } from '../src/destination';
+import { describe, it, expect, vi } from 'vitest';
+import { ExternalDestination, DownloadWriteError, VaultDestination } from '../src/destination';
 
 function makeFs() {
         const files = new Map<string, Uint8Array>();
@@ -36,3 +36,44 @@ describe('ExternalDestination containment', () => {
                 await fw.close();
         });
 });
+
+/** A vault adapter that records which folders exist. */
+function makeAdapter() {
+        const folders = new Set<string>();
+        const adapter = {
+                writeBinary: async () => {},
+                appendBinary: async () => {},
+                readBinary: async () => new ArrayBuffer(0),
+                remove: async () => {},
+                rename: async () => {},
+                mkdir: async (path: string) => { folders.add(path); },
+                exists: vi.fn(async (path: string) => folders.has(path)),
+                stat: async () => null,
+                list: async () => ({ files: [], folders: [] }),
+        };
+        return adapter;
+}
+
+describe('VaultDestination folder caching', () => {
+        it('checks each parent folder only once across opens', async () => {
+                const adapter = makeAdapter();
+                const d = new VaultDestination(adapter, 'Anime');
+                // Two files in the same nested folder. The parents are identical, so
+                // after the first open the existence checks must not repeat.
+                await (await d.open('Season 1/Ep 1.mp4')).close();
+                const afterFirst = adapter.exists.mock.calls.length;
+                await (await d.open('Season 1/Ep 2.mp4')).close();
+                await (await d.open('Season 1/Ep 3.mp4')).close();
+                expect(adapter.exists.mock.calls.length).toBe(afterFirst);
+        });
+
+        it('still creates a folder the first time it is needed', async () => {
+                const adapter = makeAdapter();
+                const d = new VaultDestination(adapter, 'Anime');
+                await (await d.open('New/Ep 1.mp4')).close();
+                const checked = adapter.exists.mock.calls.map((call) => call[0] as string);
+                expect(checked).toContain('Anime');
+                expect(checked).toContain('Anime/New');
+        });
+});
+

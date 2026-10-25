@@ -159,16 +159,22 @@ export class DownloadManagerView extends ItemView {
 		this.busy = true;
 		this.cancelled = false;
 		try {
-			await this.plugin.refreshLibrary();
+			const { complete } = await this.plugin.refreshLibrary();
 			const library = this.plugin.library;
 			const entries = library.entries;
 			const total = entries.length;
 			this.statuses.clear();
 			this.setProgress(true, 0, total === 0 ? 'Nothing to scan.' : `Scanning 0/${total}…`);
 
-			const present = new Set(entries.map((entry) => entry.path));
-			for (const path of [...this.scanCache.keys()]) {
-				if (!present.has(path)) this.scanCache.delete(path);
+			// The per-file results are only invalidated when the walk actually saw
+			// the folder. An incomplete walk reports no files, and treating that as
+			// "everything is gone" would discard the repair state of every episode
+			// at once.
+			if (complete) {
+				const present = new Set(entries.map((entry) => entry.path));
+				for (const path of [...this.scanCache.keys()]) {
+					if (!present.has(path)) this.scanCache.delete(path);
+				}
 			}
 
 			for (const entry of entries) {

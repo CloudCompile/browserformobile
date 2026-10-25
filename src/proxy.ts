@@ -464,7 +464,41 @@ export function framePolicyFromHeaders(headers: Record<string, string>): {
 	return { blocked: false };
 }
 
-const framePolicyCache = new Map<string, { blocked: boolean; reason?: string }>();
+/**
+ * Cached framing policies, keyed by origin.
+ *
+ * Two bounds matter here. It is capped, because it is keyed by origin and a long
+ * browsing session visits an unbounded number of sites — without a cap the map
+ * grows for the life of the plugin. And entries expire, because a site can change
+ * its headers: a policy remembered forever means a site that fixes its framing
+ * keeps being routed through the proxy for the rest of the session, with no way
+ * for the user to recover short of a reload.
+ */
+const FRAME_POLICY_MAX = 200;
+const FRAME_POLICY_TTL_MS = 30 * 60_000;
+
+const framePolicyCache = new Map<
+	string,
+	{ policy: { blocked: boolean; reason?: string }; expiresAt: number }
+>();
+
+function readFramePolicy(origin: string): { blocked: boolean; reason?: string } | null {
+	const entry = framePolicyCache.get(origin);
+	if (!entry) return null;
+	if (Date.now() >= entry.expiresAt) {
+		framePolicyCache.delete(origin);
+		return null;
+	}
+	return entry.policy;
+}
+
+function writeFramePolicy(origin: string, policy: { blocked: boolean; reason?: string }): void {
+	if (framePolicyCache.size >= FRAME_POLICY_MAX) {
+		const oldest = framePolicyCache.keys().next().value;
+		if (oldest !== undefined) framePolicyCache.delete(oldest);
+	}
+	framePolicyCache.set(origin, { policy, expiresAt: Date.now() + FRAME_POLICY_TTL_MS });
+}
 
 /**
  * Ask the site for its framing policy before choosing the direct renderer.
@@ -474,8 +508,9 @@ const framePolicyCache = new Map<string, { blocked: boolean; reason?: string }>(
  * A GET is used rather than a HEAD because some servers only attach framing
  * headers to a real navigation — news.ycombinator.com sends
  * `X-Frame-Options: DENY` on GET but nothing on HEAD, so a HEAD-only check would
- * miss it. Results are cached per origin. Failures are non-fatal: an unknown
- * policy is treated as frameable so the direct path still gets its chance.
+ * miss it. Results are cached per origin, with a cap and a TTL. Failures are
+ * non-fatal: an unknown policy is treated as frameable so the direct path still
+ * gets its chance.
  */
 export async function probeFramePolicy(
 	url: string,
@@ -486,7 +521,7 @@ export async function probeFramePolicy(
 	} catch {
 		return { blocked: false };
 	}
-	const cached = framePolicyCache.get(target.origin);
+	const cached = readFramePolicy(target.origin);
 	if (cached) return cached;
 	const headers = buildHeaders(target, {});
 	// A cheap HEAD is conclusive when it already advertises a refusal.
@@ -495,7 +530,7 @@ export async function probeFramePolicy(
 		if (head.status < 400) {
 			const policy = framePolicyFromHeaders(head.headers ?? {});
 			if (policy.blocked) {
-				framePolicyCache.set(target.origin, policy);
+				writeFramePolicy(target.origin, policy);
 				return policy;
 			}
 		}
@@ -506,7 +541,7 @@ export async function probeFramePolicy(
 		const get = await requestUrl({ url, method: 'GET', headers, throw: false });
 		if (get.status >= 400) return { blocked: false };
 		const policy = framePolicyFromHeaders(get.headers ?? {});
-		framePolicyCache.set(target.origin, policy);
+		writeFramePolicy(target.origin, policy);
 		return policy;
 	} catch {
 		return { blocked: false };

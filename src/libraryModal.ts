@@ -14,7 +14,7 @@ export interface LibraryCallbacks {
 	/** Delete the file behind an item and forget its progress. */
 	onDelete(item: LibraryItem): Promise<void>;
 	/** Re-scan the folder; the modal re-renders when it resolves. */
-	onRefresh(): Promise<void>;
+	onRefresh(): Promise<unknown>;
 	onClosed?(): void;
 	/** Shown in place of the empty state, e.g. when files live outside the vault. */
 	emptyHint?: string;
