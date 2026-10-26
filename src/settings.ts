@@ -2,7 +2,7 @@ import { App, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
 import { DEFAULT_API_BASE } from './animeApi';
 import type AnimePlugin from './main';
 
-import { DEFAULT_SERVER_BASE, DEFAULT_SERVER_MODEL } from './llm';
+import { DEFAULT_SERVER_BASE, DEFAULT_SERVER_MODEL, LOCAL_MODELS } from './llm';
 
 export interface AnimeSettings {
         /** Ask before deleting files or clearing the download log. */
@@ -45,7 +45,7 @@ export interface AnimeSettings {
          * reached. `server` is a model on the user's own machine; `api` is a
          * hosted endpoint. Both are off by default.
          */
-        llmProvider: 'off' | 'server' | 'api';
+        llmProvider: 'off' | 'in-process' | 'server' | 'api';
         /** OpenAI-compatible base URL, e.g. `http://localhost:11434/v1`. */
         llmBaseUrl: string;
         /** Model name as the server knows it. */
@@ -59,6 +59,11 @@ export interface AnimeSettings {
         llmWebSearch: boolean;
         /** Search endpoint that accepts `?q=` and returns JSON or text. */
         llmSearchUrl: string;
+        /**
+         * Which local model the in-process provider loads, by id from
+         * `LOCAL_MODELS`. Runs inside the plugin through WebAssembly.
+         */
+        llmLocalModel: string;
         /** Apply the glass effect to the plugin's panels. Desktop only. */
         glassEffect: boolean;
 }
@@ -93,6 +98,7 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         llmApiKey: '',
         llmWebSearch: false,
         llmSearchUrl: '',
+        llmLocalModel: 'lfm2.5-230m',
         glassEffect: false,
 };
 
@@ -193,9 +199,19 @@ export class AnimeSettingTab extends PluginSettingTab {
                                         key: 'llmProvider',
                                         options: {
                                                 off: 'Off',
+                                                'in-process': 'In this plugin (offline, ~150 MB)',
                                                 server: 'Model server on my machine',
                                                 api: 'Hosted API',
                                         },
+                                },
+                        },
+                        {
+                                name: 'Local model',
+                                desc: 'Used when curating in this plugin. Runs entirely on your device through WebAssembly: no server, no account, nothing sent anywhere. It needs roughly the model size in free memory, so the smallest is the safest on a phone. The runtime is about 9 MB and is downloaded once, then cached.',
+                                control: {
+                                        type: 'dropdown',
+                                        key: 'llmLocalModel',
+                                        options: Object.fromEntries(LOCAL_MODELS.map((model) => [model.id, model.label])),
                                 },
                         },
                         {

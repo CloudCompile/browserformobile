@@ -316,7 +316,25 @@ page and the recommendations.
 - `src/llm.ts` — the optional language-model curator: the local model catalogue
   (LFM2.5 GGUF builds), the OpenAI-compatible `LlmClient` with a bounded tool
   loop, the native anime-API tool, the opt-in web-search tool, and
-  `curateWithModel`. It mines **every**
+  `curateWithModel`. `gatherCatalogueNotes` fetches facts up front for providers
+  whose model cannot be trusted to call a tool.
+- `src/llmLocal.ts` — the **in-process** curator, a third provider beside
+  `server` and `api`. It runs a GGUF model inside the plugin through wllama
+  (llama.cpp compiled to WebAssembly). Key facts:
+  - `WLLAMA_WASM_URL` / `WLLAMA_MODULE_URL` are fetched once at runtime and
+    **hash-checked** against `WASM_SHA256` / `MODULE_SHA256` before use. wllama
+    is deliberately not a dependency: it publishes raw TypeScript under `src/`,
+    points `main` at an unpublished `index.js`, and its `esm/index.d.ts` drags
+    that source into our type check. Fetching keeps the build and dependency tree
+    untouched.
+  - Verified working: LFM2.5-230M loads in ~2.5 s in a browser and reorders by
+    taste correctly. Grammar-constrained decoding is **~5× faster** than
+    unconstrained (7.1 s vs 35.5 s) and cannot emit malformed JSON.
+  - **Do not put provenance in the prompt.** With `Erased — suggested by
+    Steins;Gate` the model emitted `"Steins"` and `"Gate"` as separate picks. The
+    prompt lists titles and vote counts only.
+  - **Do not trust "choose the best N".** A 230M model asked for three picks
+    returned five, so the limit is enforced in `parseCuratorReply`. It mines **every**
   seed, `DEFAULT_CONCURRENCY` (4) at a time, and calls `onResults` after each one
   so the page fills in while a long history is still being read. `MAX_SEEDS` is a
   200 ceiling against a pathological history, not a policy — do not reintroduce a
@@ -352,6 +370,10 @@ page and the recommendations.
   of runs; used linearly one series outweighed a thirty-series library 25:1 and
   every recommendation traced back to it. Keep the damping and keep `diversify`
   in the pipeline, or that symptom comes back.
+- **Curator providers share one contract.** `off`, `in-process`, `server` and
+  `api` all funnel through `parseCuratorReply` / `applyCuratorPicks`, so the
+  add-never guarantee and the pick limit hold for every one of them. A new
+  provider must not bypass them.
 - **The LLM curator can re-order but never add.** `parseCuratorReply` keeps only
   titles that were offered, so a hallucinated series cannot reach the page, and
   every failure path (`off`, unreachable server, unusable reply) returns the

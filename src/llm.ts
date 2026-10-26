@@ -156,6 +156,12 @@ export function buildCuratorSystemPrompt(): string {
  *
  * The history is capped so a large library cannot push the candidates out of the
  * model's context — the candidates are the part it has to reason about.
+ *
+ * The provenance (`because`) is deliberately **not** included. It was, and it made
+ * a real 230M model split a seed name on its own punctuation: a candidate reading
+ * `Erased — suggested by Steins;Gate` came back as the picks `"Steins"` and
+ * `"Gate"`. The provenance is for display, and the model does not need it to
+ * judge a title.
  */
 export function buildCuratorUserPrompt(
         history: string[],
@@ -168,11 +174,7 @@ export function buildCuratorUserPrompt(
         lines.push('Candidates:');
         candidates.forEach((candidate, index) => {
                 const votes = candidate.votes ? ` (${candidate.votes} votes)` : '';
-                const reason =
-                        candidate.because && candidate.because.length > 0
-                                ? ` — suggested by ${candidate.because[0]}`
-                                : '';
-                lines.push(`${index + 1}. ${candidate.title}${votes}${reason}`);
+                lines.push(`${index + 1}. ${candidate.title}${votes}`);
         });
         lines.push('');
         lines.push(`Choose the best ${limit} and reply with JSON only.`);
@@ -187,7 +189,7 @@ export function buildCuratorUserPrompt(
  * fail safe: unknown titles are dropped rather than shown, so the worst case is
  * a shorter list, never a phantom entry.
  */
-export function parseCuratorReply(reply: string, allowed: string[]): string[] {
+export function parseCuratorReply(reply: string, allowed: string[], limit?: number): string[] {
         const allowedByLower = new Map(allowed.map((title) => [title.trim().toLowerCase(), title]));
         const picks: string[] = [];
         const seen = new Set<string>();
@@ -234,7 +236,9 @@ export function parseCuratorReply(reply: string, allowed: string[]): string[] {
                 // Fallback: one title per line, in the order given.
                 for (const line of reply.split(/\r?\n/)) accept(line);
         }
-        return picks;
+        // Asking for "the best N" is not a guarantee: a 230M model asked for three
+        // picks returned five. Truncate here rather than trusting the instruction.
+        return limit && limit > 0 ? picks.slice(0, limit) : picks;
 }
 
 /**
@@ -381,7 +385,7 @@ export async function curateWithModel<T extends { title: string; because?: strin
         } catch {
                 return { items: ranked, curated: false };
         }
-        const picks = parseCuratorReply(reply, deps.allowedTitles);
+        const picks = parseCuratorReply(reply, deps.allowedTitles, limit);
         if (picks.length === 0) return { items: ranked, curated: false };
         return { items: applyCuratorPicks(ranked, picks), curated: true };
 }
@@ -581,4 +585,36 @@ export async function probeServer(
                         }`,
                 };
         }
+}
+
+/**
+ * Gather catalogue facts about the leading candidates, without the model asking.
+ *
+ * The `server` and `api` providers let the model call a lookup tool itself. A
+ * 230M model in the plugin cannot be trusted to do that reliably — it may never
+ * call the tool, or call it with a mangled title — so for in-process runs the
+ * facts are fetched up front and put in the prompt instead. The result is a
+ * better answer for less work, at the cost of looking up a fixed slice rather
+ * than only what the model is curious about.
+ *
+ * Only the leading candidates are looked up: they are the ones a re-ranking can
+ * realistically promote, and the lookup is one round trip each.
+ */
+export async function gatherCatalogueNotes(
+        candidates: Array<{ title: string }>,
+        lookup: (title: string) => Promise<string | null>,
+        limit = 8,
+): Promise<string> {
+        const slice = candidates.slice(0, limit);
+        const notes = await Promise.all(
+                slice.map(async (candidate) => {
+                        try {
+                                const note = await lookup(candidate.title);
+                                return note?.trim() ? note.trim() : null;
+                        } catch {
+                                return null;
+                        }
+                }),
+        );
+        return notes.filter((note): note is string => note !== null).join('\n\n');
 }

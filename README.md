@@ -306,6 +306,15 @@ anywhere unless you turn it on.
   fit — 230M is 149 MB and quick, 1.2B is noticeably better at judgement.
 - **Hosted API** needs no local setup, but your viewing history and the candidate
   titles are sent to that provider.
+- **In this plugin** runs the model inside Obsidian, through WebAssembly. Nothing
+  leaves your device and there is no server to run — the trade is size and speed.
+  The runtime is about 9 MB, downloaded once and cached, and the model is a
+  separate one-time download (149 MB for the smallest). It is the only mode that
+  works offline.
+
+The two tools below are for the server and API modes. The in-process mode looks
+catalogue facts up in advance instead, because a model small enough to run in
+Obsidian is not reliable at deciding when to call a tool.
 
 The model gets two tools. One looks series up on your own anime API, so it can
 read a synopsis and genre list before deciding rather than guessing from a title.

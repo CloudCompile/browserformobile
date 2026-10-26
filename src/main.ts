@@ -21,9 +21,13 @@ import {
         createWebSearchTool,
         curateWithModel,
         describeCatalogueEntry,
+        findLocalModel,
+        gatherCatalogueNotes,
         LlmClient,
+        modelDownloadUrl,
         type CuratorTool,
 } from './llm';
+import { curateInProcess, WllamaRuntime, type LocalRuntime } from './llmLocal';
 import { loadPreview, searchSeries } from './animeApi';
 import type { Recommendation, TasteSeed } from './recommend';
 import { requestUrl } from 'obsidian';
@@ -57,6 +61,8 @@ export default class AnimePlugin extends Plugin {
 	/** Re-ranks recommendations with a decision model, when one is enabled. */
 	private localRanker: TinyDecideRanker | null = null;
 	private hostedRanker: JevRanker | null = null;
+	/** The in-process curator runtime, created on first use. */
+	private llmRuntime: LocalRuntime | null = null;
 	private watchRecords: Record<string, WatchRecord> = {};
 	/** The run log as loaded, handed to the stats store in onload. */
 	private statsRuns: DownloadRun[] = [];
@@ -325,6 +331,9 @@ export default class AnimePlugin extends Plugin {
 		usedSeeds: string[],
 	): Promise<{ items: Recommendation[]; curated: boolean }> {
 		if (this.settings.llmProvider === 'off') return { items, curated: false };
+		if (this.settings.llmProvider === 'in-process') {
+			return await this.curateInProcess(items, usedSeeds);
+		}
 		const tools = this.curatorTools();
 		try {
 			const client = new LlmClient(
@@ -345,6 +354,78 @@ export default class AnimePlugin extends Plugin {
 		} catch {
 			return { items, curated: false };
 		}
+	}
+
+	/**
+	 * Curate with a model running inside the plugin.
+	 *
+	 * The catalogue facts are gathered up front rather than offered as a tool, and
+	 * the model is loaded lazily, so nothing here runs until the user has chosen
+	 * this provider and asked for recommendations.
+	 */
+	private async curateInProcess(
+		items: Recommendation[],
+		usedSeeds: string[],
+	): Promise<{ items: Recommendation[]; curated: boolean }> {
+		try {
+			const runtime = this.localRuntime();
+			if (!runtime) return { items, curated: false };
+			const notes = await gatherCatalogueNotes(items, (title) => this.lookupForCurator(title));
+			return await curateInProcess(items, {
+				runtime,
+				allowedTitles: items.map((item) => item.title),
+				history: usedSeeds,
+				limit: items.length,
+				notes,
+			});
+		} catch {
+			return { items, curated: false };
+		}
+	}
+
+	/**
+	 * The in-process runtime, created once and reused.
+	 *
+	 * wllama is imported dynamically so its ~380 KB of JavaScript never loads at
+	 * plugin start, and its wasm is fetched separately and cached, so a release
+	 * still ships the usual three files.
+	 */
+	private localRuntime(): LocalRuntime | null {
+		const model = findLocalModel(this.settings.llmLocalModel);
+		if (!model) return null;
+		if (this.llmRuntime) return this.llmRuntime;
+		const dir = this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`;
+		const wasmPath = `${dir}/wllama.wasm`;
+		const modulePath = `${dir}/wllama-module.js`;
+		const adapter = this.app.vault.adapter;
+		this.llmRuntime = new WllamaRuntime(
+			{
+				wasmPath,
+				modulePath,
+				readFile: async (path) => {
+					try {
+						if (!(await adapter.exists(path))) return null;
+						return await adapter.readBinary(path);
+					} catch {
+						return null;
+					}
+				},
+				writeFile: async (path, data) => {
+					try {
+						await adapter.writeBinary(path, data);
+					} catch {
+						/* A read-only vault just means it is fetched again next time. */
+					}
+				},
+				download: async (url) => {
+					const response = await requestUrl({ url, method: 'GET', throw: false });
+					if (response.status >= 400) throw new Error(`HTTP ${response.status}`);
+					return response.arrayBuffer;
+				},
+			},
+			{ url: modelDownloadUrl(model), label: model.label },
+		);
+		return this.llmRuntime;
 	}
 
 	/** The tools the curator may call. */

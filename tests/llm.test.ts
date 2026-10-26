@@ -57,14 +57,25 @@ describe('prompt building', () => {
                 expect(buildCuratorSystemPrompt()).toMatch(/never invent/i);
         });
 
-        it('lists every candidate with its reason', () => {
+        it('lists every candidate with its vote count', () => {
                 const prompt = buildCuratorUserPrompt(['Haikyuu!!'], [
                         { title: 'One Piece', votes: 80, because: ['Naruto'] },
                         { title: 'Bleach' },
                 ], 2);
-                expect(prompt).toContain('1. One Piece (80 votes) — suggested by Naruto');
+                expect(prompt).toContain('1. One Piece (80 votes)');
                 expect(prompt).toContain('2. Bleach');
                 expect(prompt).toContain('Choose the best 2');
+        });
+
+        it('keeps provenance out of the prompt', () => {
+                // A real 230M model split a seed name on the punctuation of the
+                // "— suggested by Steins;Gate" annotation, emitting "Steins" and
+                // "Gate" as two separate picks. Provenance is for display only.
+                const prompt = buildCuratorUserPrompt(['Haikyuu!!'], [
+                        { title: 'Erased', votes: 30, because: ['Steins;Gate'] },
+                ], 1);
+                expect(prompt).not.toContain('suggested by');
+                expect(prompt).not.toContain('Steins');
         });
 
         it('caps the history so it cannot crowd out the candidates', () => {
