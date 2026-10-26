@@ -1,6 +1,6 @@
 {
         "name": "obsidian-browser-for-mobile",
-        "version": "3.0.0",
+        "version": "3.0.1",
         "description": "Search, download and watch anime from Obsidian mobile, with series details, an offline video library and recommendations.",
         "main": "main.js",
         "type": "module",
