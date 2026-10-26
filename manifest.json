@@ -1,7 +1,7 @@
 {
 	"id": "browser-for-mobile",
 	"name": "Anime for Mobile",
-	"version": "3.0.2",
+	"version": "3.0.3",
 	"minAppVersion": "1.13.0",
 	"description": "Search, download and watch anime on Obsidian mobile. Rich series details, an offline video library, download statistics, and recommendations based on what you have already downloaded.",
 	"author": "CJ Hauser",
