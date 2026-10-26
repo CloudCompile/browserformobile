@@ -308,7 +308,11 @@ page and the recommendations.
 - `src/decision.ts` — the decision-model layer: `TinyDecideRanker` (local,
   vendored) and `JevRanker` (hosted, TypeSafe System One).
 - `src/recommendService.ts` — orchestration: `deriveSeeds` from the download
-  history and `collectRecommendations` across the catalogue.
+  history and `collectRecommendations` across the catalogue. It mines **every**
+  seed, `DEFAULT_CONCURRENCY` (4) at a time, and calls `onResults` after each one
+  so the page fills in while a long history is still being read. `MAX_SEEDS` is a
+  200 ceiling against a pathological history, not a policy — do not reintroduce a
+  small cap, because a library of thirty series then reports itself as four.
 - `src/stats.ts` / `src/statsModal.ts` — the run log and its summary page.
 - `src/settings.ts` — uses the **declarative settings API**
   (`getSettingDefinitions`). Do not re-add an imperative `display()`; lint flags

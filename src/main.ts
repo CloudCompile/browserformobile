@@ -257,7 +257,7 @@ export default class AnimePlugin extends Plugin {
 			this.recommendationsModal = null;
 		}
 		const modal = new RecommendationsModal(this.app, {
-			onLoad: (progress) => this.buildRecommendations(progress),
+			onLoad: (progress, onResults) => this.buildRecommendations(progress, onResults),
 			onDetails: (title) => this.openDetails(title),
 			onDownload: (title) => this.openDownloader(title),
 			onClosed: () => {
@@ -276,6 +276,7 @@ export default class AnimePlugin extends Plugin {
 	 */
 	private async buildRecommendations(
 		progress: (done: number, total: number, seed: string) => void,
+		onResults: (items: Recommendation[], done: number, total: number) => void,
 	): Promise<RecommendationsResult> {
 		const seeds = this.tasteSeeds();
 		if (seeds.length === 0) return { items: [], usedSeeds: [], failedSeeds: [] };
@@ -284,6 +285,7 @@ export default class AnimePlugin extends Plugin {
 			alreadyHave: this.ownedSeries(),
 			limit: 24,
 			onProgress: progress,
+			onResults,
 		});
 		if (result.items.length === 0) return result;
 

@@ -12,8 +12,15 @@ export interface RecommendationsResult {
 }
 
 export interface RecommendationsCallbacks {
-        /** Build the ranked list, reporting progress as each seed is mined. */
-        onLoad(progress: (done: number, total: number, seed: string) => void): Promise<RecommendationsResult>;
+        /**
+         * Build the ranked list. `onProgress` reports the seed being mined and
+         * `onResults` receives the list so far, so a long history can fill in
+         * rather than leaving the page blank until every seed is read.
+         */
+        onLoad(
+                progress: (done: number, total: number, seed: string) => void,
+                onResults: (items: Recommendation[], done: number, total: number) => void,
+        ): Promise<RecommendationsResult>;
         /** Open the full details page for a recommendation. */
         onDetails(title: string): void;
         /** Queue episodes for a recommendation through the downloader. */
@@ -78,11 +85,22 @@ export class RecommendationsModal extends Modal {
                 this.progress = { done: 0, total: 0, seed: '' };
                 this.render();
                 try {
-                        const result = await this.callbacks.onLoad((done, total, seed) => {
-                                if (id !== this.requestId) return;
-                                this.progress = { done, total, seed };
-                                this.renderProgress();
-                        });
+                        const result = await this.callbacks.onLoad(
+                                (done, total, seed) => {
+                                        if (id !== this.requestId) return;
+                                        this.progress = { done, total, seed };
+                                        this.renderProgress();
+                                },
+                                (items, done, total) => {
+                                        if (id !== this.requestId) return;
+                                        // The list is only ever added to, so repainting on
+                                        // each pass shows progress without losing the grid.
+                                        this.items = items;
+                                        this.progress = { ...this.progress, done, total };
+                                        if (items.length > 0) this.render();
+                                        else this.renderProgress();
+                                },
+                        );
                         if (id !== this.requestId) return;
                         this.items = result.items;
                         this.usedSeeds = result.usedSeeds;
@@ -104,6 +122,10 @@ export class RecommendationsModal extends Modal {
 
                 if (this.loading) {
                         this.renderProgress();
+                        // A long history arrives a seed at a time, so show what is
+                        // already known underneath the progress bar rather than
+                        // holding the whole page back for the last seed.
+                        if (this.items.length > 0) this.renderGrid();
                         return;
                 }
                 if (this.failed) {

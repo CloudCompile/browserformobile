@@ -280,12 +280,15 @@ The details page recommends more like the series you are looking at. The
 recommendations page answers the other question — what to watch next — so no
 series is privileged: the seeds are your download history itself.
 
-It shows a poster grid, one card per title, with the reason it is there
-("Because you downloaded Naruto and One Piece"). Mining the seeds takes a moment
-because each one is a separate lookup, so the page appears immediately and shows
-which seed it is working on. If a seed cannot be read, the list still appears and
-says it may be missing titles rather than quietly looking complete. **Refresh**
-rebuilds it.
+Every series in your history is used as a seed — the more you have downloaded,
+the wider the list. It shows a poster grid, one card per title, with the reason
+it is there ("Because you downloaded Naruto and One Piece").
+
+Mining the seeds takes a moment because each one is a separate lookup, so the
+page appears immediately, shows which seed it is working on, and fills the grid
+in as results arrive rather than staying blank until the last one is read. If a
+seed cannot be read, the list still appears and says it may be missing titles
+rather than quietly looking complete. **Refresh** rebuilds it.
 
 Three ranking modes, chosen with **Recommendation model** in settings:
 
