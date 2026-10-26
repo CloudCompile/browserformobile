@@ -104,9 +104,14 @@ export function findLocalModel(id: string): LocalModelOption | null {
  * - `api` — a hosted OpenAI-compatible endpoint. Works with no local setup, but
  *   the history and candidate titles go to that provider.
  *
- * Embedding the runtime in-process was considered and rejected: it needs a native
- * module per platform, cannot work on mobile, and would make the plugin depend on
- * a binary rather than a model.
+ * In-process inference is deliberately not offered here. The obvious route, a
+ * native binding such as node-llama-cpp, ships a `.node` binary per platform and
+ * genuinely cannot load on mobile. A WebAssembly build of llama.cpp can run in a
+ * WebView, so it is not impossible on mobile — but it is a large feature of its
+ * own: a multi-megabyte `.wasm` to bundle, a separate 150 MB+ model download, a
+ * memory footprint that mobile WebViews are quick to kill, and a decode loop with
+ * sampling and grammar-constrained JSON that an encoder-only model does not need.
+ * A local server reaches the same models today with none of that.
  */
 export type LlmProvider = 'off' | 'server' | 'api';
 
