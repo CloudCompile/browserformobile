@@ -18,7 +18,10 @@
 export interface TasteSeed {
         /** Series name as the downloader recorded it. */
         series: string;
-        /** Downloads plus completed watches. Higher means more engaged. */
+        /**
+         * Bounded engagement score, not a raw count. Higher means more engaged,
+         * but the scale is damped — see `dampEngagement`.
+         */
         weight: number;
 }
 
@@ -90,15 +93,31 @@ function termFrequency(terms: string[]): Map<string, number> {
  * than one tried once, so weights accumulate. Series names are the only thing
  * the history records, so that is what the profile is keyed on.
  */
+/**
+ * Damp a raw engagement count onto a bounded scale.
+ *
+ * The raw count is episode-level: a series watched through contributes dozens of
+ * runs while a series tried once contributes one. Used linearly that lets one
+ * favourite outweigh the rest of the library by a factor of twenty-five, which is
+ * how a list built from thirty series came out reading as though it were built
+ * from one. Log-damping preserves the ordering — more is still more — while
+ * flattening the ratio, and the `1 +` floor keeps a single download meaningful
+ * instead of negligible.
+ */
+export function dampEngagement(raw: number): number {
+        const safe = Number.isFinite(raw) && raw > 0 ? raw : 0;
+        return Math.round((1 + Math.log2(1 + safe)) * 100) / 100;
+}
+
 export function buildTasteProfile(
         downloads: Array<{ series: string }>,
         watched: Array<{ series: string; watched: boolean; progress?: number }> = [],
 ): TasteSeed[] {
-        const weights = new Map<string, number>();
+        const counts = new Map<string, number>();
         const add = (series: string, amount: number) => {
                 const name = (series ?? '').trim();
                 if (!name) return;
-                weights.set(name, (weights.get(name) ?? 0) + amount);
+                counts.set(name, (counts.get(name) ?? 0) + amount);
         };
 
         for (const run of downloads) add(run.series, 1);
@@ -108,8 +127,8 @@ export function buildTasteProfile(
                 else if ((item.progress ?? 0) > 0) add(item.series, 1);
         }
 
-        return [...weights.entries()]
-                .map(([series, weight]) => ({ series, weight }))
+        return [...counts.entries()]
+                .map(([series, count]) => ({ series, weight: dampEngagement(count) }))
                 .sort((left, right) => right.weight - left.weight || left.series.localeCompare(right.series));
 }
 
@@ -262,6 +281,101 @@ export function rankRecommendations(
 
         ranked.sort((left, right) => right.score - left.score || left.title.localeCompare(right.title));
         return ranked;
+}
+
+/**
+ * Spread the list across seeds so one series cannot fill it.
+ *
+ * Catalogue recommendation lists overlap heavily: a popular title is suggested by
+ * a dozen different seeds, so ranking purely by score produced a page where every
+ * card traced back to the same series. This walks the ranked list and defers a
+ * candidate once the seed it would be credited to has already contributed
+ * `maxPerSeed` titles.
+ *
+ * A candidate is credited to whichever of its seeds is least represented, and the
+ * `because` order is rewritten to match, so the reason shown on the card is the
+ * one that actually earned it a place.
+ *
+ * `maxPerSeed` is a target rather than a guarantee: when the pool is too small to
+ * fill `limit` without exceeding it — two seeds and room for eight, say — the
+ * remaining slots are filled anyway, because a short page is worse than a
+ * repeated reason. Those extra picks still go to the currently least-represented
+ * seed, so the tail spreads instead of stacking on whichever seed scores highest.
+ */
+export function diversify(
+        ranked: Recommendation[],
+        options: { limit?: number; maxPerSeed?: number } = {},
+): Recommendation[] {
+        const cap = options.limit ?? ranked.length;
+        const maxPerSeed = options.maxPerSeed ?? 3;
+        const picked: Recommendation[] = [];
+        const deferred: Recommendation[] = [];
+        const used = new Map<string, number>();
+
+        for (const item of ranked) {
+                if (picked.length >= cap) {
+                        deferred.push(item);
+                        continue;
+                }
+                const reasons = item.because.length > 0 ? item.because : [''];
+                let chosen: string = reasons[0] ?? '';
+                let chosenCount = Number.POSITIVE_INFINITY;
+                for (const reason of reasons) {
+                        const count = used.get(reason) ?? 0;
+                        if (count < chosenCount) {
+                                chosenCount = count;
+                                chosen = reason;
+                        }
+                }
+                if (chosenCount >= maxPerSeed) {
+                        deferred.push(item);
+                        continue;
+                }
+                used.set(chosen, chosenCount + 1);
+                // Put the credited seed first so the card explains itself honestly.
+                const ordered = [chosen, ...item.because.filter((reason) => reason !== chosen)];
+                picked.push({ ...item, because: ordered });
+        }
+
+        // Backfill, recomputing counts each time: picking the least-used seed now
+        // can change which seed is least used next, and a single sorted pass would
+        // stack the tail on one seed.
+        while (picked.length < cap && deferred.length > 0) {
+                let bestIndex = -1;
+                let bestCount = Number.POSITIVE_INFINITY;
+                let bestScore = Number.NEGATIVE_INFINITY;
+                for (let index = 0; index < deferred.length; index++) {
+                        const item = deferred[index];
+                        if (!item) continue;
+                        const reasons = item.because.length > 0 ? item.because : [''];
+                        let count = Number.POSITIVE_INFINITY;
+                        for (const reason of reasons) count = Math.min(count, used.get(reason) ?? 0);
+                        if (count < bestCount || (count === bestCount && item.score > bestScore)) {
+                                bestCount = count;
+                                bestScore = item.score;
+                                bestIndex = index;
+                        }
+                }
+                if (bestIndex < 0) break;
+                const item = deferred.splice(bestIndex, 1)[0];
+                if (!item) break;
+                const reasons = item.because.length > 0 ? item.because : [''];
+                let chosen: string = reasons[0] ?? '';
+                let chosenCount = Number.POSITIVE_INFINITY;
+                for (const reason of reasons) {
+                        const count = used.get(reason) ?? 0;
+                        if (count < chosenCount) {
+                                chosenCount = count;
+                                chosen = reason;
+                        }
+                }
+                used.set(chosen, chosenCount + 1);
+                const ordered = [chosen, ...item.because.filter((reason) => reason !== chosen)];
+                picked.push({ ...item, because: ordered });
+        }
+
+        picked.sort((left, right) => right.score - left.score || left.title.localeCompare(right.title));
+        return picked;
 }
 
 /**

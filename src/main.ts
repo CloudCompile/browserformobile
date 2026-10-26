@@ -16,6 +16,15 @@ import { DetailsModal } from './detailsModal';
 import { applyModelScores, collectRecommendations, deriveSeeds } from './recommendService';
 import { RecommendationsModal, type RecommendationsResult } from './recommendationsModal';
 import { JevRanker, TinyDecideRanker, type DecisionDeps } from './decision';
+import {
+        createAnimeApiTool,
+        createWebSearchTool,
+        curateWithModel,
+        describeCatalogueEntry,
+        LlmClient,
+        type CuratorTool,
+} from './llm';
+import { loadPreview, searchSeries } from './animeApi';
 import type { Recommendation, TasteSeed } from './recommend';
 import { requestUrl } from 'obsidian';
 import { DownloadManagerView, VIEW_TYPE_DOWNLOADS } from './downloadManagerView';
@@ -289,9 +298,122 @@ export default class AnimePlugin extends Plugin {
 		});
 		if (result.items.length === 0) return result;
 
-		const scores = await this.scoreWithModel(this.modelProfile(result.usedSeeds.join(', ')), result.items);
-		if (scores.size === 0) return result;
-		return { ...result, items: applyModelScores(result.items, scores) };
+		// Two optional passes, in increasing cost. The decision model is a single
+		// fast pass; the curator is a whole generation and only runs when the user
+		// has asked for it. Either one failing leaves the catalogue ranking, which
+		// is always computed.
+		const curated = await this.curateRecommendations(result.items, result.usedSeeds);
+		const scores = await this.scoreWithModel(
+			this.modelProfile(result.usedSeeds.join(', ')),
+			curated.items,
+		);
+		if (scores.size === 0) return { ...result, items: curated.items };
+		return { ...result, items: applyModelScores(curated.items, scores) };
+	}
+
+	/**
+	 * Let a language model re-order the list, if one is configured.
+	 *
+	 * The model gets the ranked candidates and two tools: a lookup against the
+	 * user's own anime API, and optionally a web search. It is never trusted with
+	 * the list itself — `curateWithModel` discards any title that was not offered,
+	 * so a hallucinated series cannot reach the page, and a failure of any kind
+	 * falls back to the deterministic ranking.
+	 */
+	private async curateRecommendations(
+		items: Recommendation[],
+		usedSeeds: string[],
+	): Promise<{ items: Recommendation[]; curated: boolean }> {
+		if (this.settings.llmProvider === 'off') return { items, curated: false };
+		const tools = this.curatorTools();
+		try {
+			const client = new LlmClient(
+				{ postJson: (url, body, headers) => this.postJson(url, body, headers) },
+				{
+					baseUrl: this.settings.llmBaseUrl,
+					model: this.settings.llmModel,
+					apiKey: this.settings.llmApiKey,
+				},
+			);
+			return await curateWithModel(items, {
+				allowedTitles: items.map((item) => item.title),
+				history: usedSeeds,
+				limit: items.length,
+				tools,
+				complete: (messages, t) => client.complete(messages, t),
+			});
+		} catch {
+			return { items, curated: false };
+		}
+	}
+
+	/** The tools the curator may call. */
+	private curatorTools(): CuratorTool[] {
+		const tools: CuratorTool[] = [createAnimeApiTool((title) => this.lookupForCurator(title))];
+		const search = this.settings.llmWebSearch ? this.settings.llmSearchUrl.trim() : '';
+		if (search) {
+			const webSearch = createWebSearchTool((query) => this.webSearchForCurator(search, query));
+			if (webSearch) tools.push(webSearch);
+		}
+		return tools;
+	}
+
+	/**
+	 * Describe a series for the model using the user's own API.
+	 *
+	 * Search first, then the richer preview for the best match, so the model reads
+	 * a synopsis and genre list rather than just a title it may have
+	 * mis-remembered.
+	 */
+	private async lookupForCurator(title: string): Promise<string | null> {
+		try {
+			const found = await searchSeries(this.settings.animeApiBase, title);
+			const match = found.series[0];
+			if (!match) return null;
+			const preview = await loadPreview(this.settings.animeApiBase, match.id);
+			if (!preview) return describeCatalogueEntry({ title: match.title }) || null;
+			const detail = preview.detail as unknown as Record<string, unknown>;
+			return describeCatalogueEntry({
+				title: match.title,
+				genres: Array.isArray(detail.genres) ? (detail.genres as string[]) : [],
+				score: typeof detail.score === 'number' ? String(detail.score) : null,
+				totalEpisodes: typeof detail.episodes === 'number' ? detail.episodes : null,
+				overview: typeof detail.synopsis === 'string' ? detail.synopsis : null,
+			});
+		} catch {
+			return null;
+		}
+	}
+
+	/** Run the configured search endpoint. Only called when the user enabled it. */
+	private async webSearchForCurator(endpoint: string, query: string): Promise<string | null> {
+		const url = `${endpoint}${encodeURIComponent(query)}`;
+		try {
+			const response = await requestUrl({ url, method: 'GET', throw: false });
+			if (response.status >= 400) return null;
+			const text = response.text ?? '';
+			const cleaned = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+			return cleaned.slice(0, 800) || null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** POST JSON through Obsidian's native client. */
+	private async postJson(
+		url: string,
+		body: unknown,
+		headers: Record<string, string>,
+	): Promise<unknown> {
+		const response = await requestUrl({
+			url,
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', ...headers },
+			body: JSON.stringify(body),
+			throw: false,
+		});
+		if (response.status >= 400) throw new Error(`HTTP ${response.status}`);
+		return response.json as unknown;
 	}
 
 	/** Every series name the plugin knows the user has downloaded. */

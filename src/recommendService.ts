@@ -16,6 +16,7 @@ import {
         buildTasteProfile,
         rankRecommendations,
         blendModelScores,
+        diversify,
         type BlendWeights,
         type Candidate,
         type Recommendation,
@@ -121,9 +122,11 @@ export async function collectRecommendations(
         // of a long history is still being read.
         const publish = (): void => {
                 if (!options.onResults) return;
-                // Sliced to `limit` here too: the final list is capped, so publishing
-                // more would make the grid shrink at the end.
-                const partial = rankRecommendations(chosen, candidates, alreadyHave, BLEND).slice(0, limit);
+                // Diversified and sliced here too: the final list is capped, so
+                // publishing more would make the grid shrink at the end.
+                const partial = diversify(rankRecommendations(chosen, candidates, alreadyHave, BLEND), {
+                        limit,
+                });
                 options.onResults(partial, done, chosen.length);
         };
 
@@ -167,7 +170,7 @@ export async function collectRecommendations(
         const workers = Math.min(options.concurrency ?? DEFAULT_CONCURRENCY, chosen.length);
         await Promise.all(Array.from({ length: Math.max(1, workers) }, mine));
 
-        const items = rankRecommendations(chosen, candidates, alreadyHave, BLEND).slice(0, limit);
+        const items = diversify(rankRecommendations(chosen, candidates, alreadyHave, BLEND), { limit });
 
         options.onProgress?.(chosen.length, chosen.length, '');
         options.onResults?.(items, chosen.length, chosen.length);
@@ -189,9 +192,16 @@ export function applyModelScores(
 }
 
 /** A short human phrase for a recommendation's provenance. */
+/**
+ * A short human phrase for a recommendation's provenance.
+ *
+ * The credited seed leads, and the count of the others is given rather than a
+ * couple of names, because a title suggested by nine of your series is better
+ * described by "8 more" than by two arbitrary ones.
+ */
 export function describeBecause(item: Recommendation): string {
         if (item.because.length === 0) return 'Popular now';
         if (item.because.length === 1) return `Because you downloaded ${item.because[0]}`;
-        const first = item.because.slice(0, 2).join(' and ');
-        return `Because you downloaded ${first}${item.because.length > 2 ? ' and more' : ''}`;
+        const rest = item.because.length - 1;
+        return `Because you downloaded ${item.because[0]} and ${rest} more`;
 }

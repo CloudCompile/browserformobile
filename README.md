@@ -290,6 +290,33 @@ in as results arrive rather than staying blank until the last one is read. If a
 seed cannot be read, the list still appears and says it may be missing titles
 rather than quietly looking complete. **Refresh** rebuilds it.
 
+The list is spread across your history rather than dominated by one series. A
+series you watched all the way through still counts for more than one you tried
+once, but only somewhat more, and no single series can fill the page.
+
+### Letting a language model choose
+
+**Curate with a language model** in settings hands the candidate list to a small
+instruction model, which re-orders and prunes it. Off by default; nothing is sent
+anywhere unless you turn it on.
+
+- **Model server on my machine** runs the model yourself, through Ollama, LM
+  Studio or llama.cpp's server. Everything stays on your network, and it works on
+  mobile as long as the server is reachable. Liquid AI's LFM2.5 builds are a good
+  fit — 230M is 149 MB and quick, 1.2B is noticeably better at judgement.
+- **Hosted API** needs no local setup, but your viewing history and the candidate
+  titles are sent to that provider.
+
+The model gets two tools. One looks series up on your own anime API, so it can
+read a synopsis and genre list before deciding rather than guessing from a title.
+The other is web search, off by default because it is the one part that sends a
+query to a third party of your choosing.
+
+The model can re-order and remove, but never add: any title it returns that was
+not in the list is discarded, so a made-up series cannot reach the page. If the
+model is off, unreachable, or answers with something unusable, you get the
+catalogue ranking unchanged.
+
 Three ranking modes, chosen with **Recommendation model** in settings:
 
 - **Catalogue only** (default) uses the upstream site's own related-series votes

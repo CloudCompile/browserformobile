@@ -2,6 +2,8 @@ import { App, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
 import { DEFAULT_API_BASE } from './animeApi';
 import type AnimePlugin from './main';
 
+import { DEFAULT_SERVER_BASE, DEFAULT_SERVER_MODEL } from './llm';
+
 export interface AnimeSettings {
         /** Ask before deleting files or clearing the download log. */
         confirmDestructiveActions: boolean;
@@ -38,6 +40,25 @@ export interface AnimeSettings {
          * `hosted`.
          */
         jevApiKey: string;
+        /**
+         * Whether a language model curates the recommendations, and how it is
+         * reached. `server` is a model on the user's own machine; `api` is a
+         * hosted endpoint. Both are off by default.
+         */
+        llmProvider: 'off' | 'server' | 'api';
+        /** OpenAI-compatible base URL, e.g. `http://localhost:11434/v1`. */
+        llmBaseUrl: string;
+        /** Model name as the server knows it. */
+        llmModel: string;
+        /** Bearer token for a hosted endpoint. Empty for a local server. */
+        llmApiKey: string;
+        /**
+         * Offer the model a web search tool. Off by default because it is the one
+         * part that sends a query to a third party of the user's choosing.
+         */
+        llmWebSearch: boolean;
+        /** Search endpoint that accepts `?q=` and returns JSON or text. */
+        llmSearchUrl: string;
         /** Apply the glass effect to the plugin's panels. Desktop only. */
         glassEffect: boolean;
 }
@@ -66,6 +87,12 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         // their taste profile to a third party.
         recommendationModel: 'off',
         jevApiKey: '',
+        llmProvider: 'off',
+        llmBaseUrl: DEFAULT_SERVER_BASE,
+        llmModel: DEFAULT_SERVER_MODEL,
+        llmApiKey: '',
+        llmWebSearch: false,
+        llmSearchUrl: '',
         glassEffect: false,
 };
 
@@ -157,6 +184,44 @@ export class AnimeSettingTab extends PluginSettingTab {
                                 name: 'Jev API key',
                                 desc: 'Only used when the hosted model is selected. Your download history and the recommended titles are sent to TypeSafe with this key. Leave empty to disable the hosted model.',
                                 control: { type: 'text', key: 'jevApiKey', placeholder: 'TYPESAFE_API_KEY' },
+                        },
+                        {
+                                name: 'Curate with a language model',
+                                desc: 'Let a language model re-order and prune the recommendations, with tools so it can look titles up before choosing. Model server runs a model on your own machine (Ollama, LM Studio, llama.cpp) and keeps everything on your network. Hosted API works with no local setup but sends your history and the candidate titles to that provider. Off leaves the catalogue ranking untouched.',
+                                control: {
+                                        type: 'dropdown',
+                                        key: 'llmProvider',
+                                        options: {
+                                                off: 'Off',
+                                                server: 'Model server on my machine',
+                                                api: 'Hosted API',
+                                        },
+                                },
+                        },
+                        {
+                                name: 'Model server URL',
+                                desc: 'OpenAI-compatible base URL. Ollama uses http://localhost:11434/v1, LM Studio http://localhost:1234/v1.',
+                                control: { type: 'text', key: 'llmBaseUrl', placeholder: DEFAULT_SERVER_BASE },
+                        },
+                        {
+                                name: 'Model name',
+                                desc: 'The model to ask. Any instruction-tuned model works; Liquid AI LFM2.5 230M, 350M and 1.2B are small enough to run alongside Obsidian. Pull it first, e.g. ollama pull hf.co/LiquidAI/LFM2.5-230M-GGUF.',
+                                control: { type: 'text', key: 'llmModel', placeholder: DEFAULT_SERVER_MODEL },
+                        },
+                        {
+                                name: 'Model API key',
+                                desc: 'Only for a hosted API. Left empty for a server on your own machine.',
+                                control: { type: 'text', key: 'llmApiKey', placeholder: 'sk-...' },
+                        },
+                        {
+                                name: 'Let the model search the web',
+                                desc: 'Gives the model a web search tool for titles the catalogue does not know. Off by default: it is the only part that sends a query to a third party, and the catalogue lookup above is usually enough.',
+                                control: { type: 'toggle', key: 'llmWebSearch' },
+                        },
+                        {
+                                name: 'Search endpoint',
+                                desc: 'Used only when web search is on. Any URL that accepts a q parameter and returns text or JSON.',
+                                control: { type: 'text', key: 'llmSearchUrl', placeholder: 'https://example.com/search?q=' },
                         },
                         {
                                 name: 'Glass effect',

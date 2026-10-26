@@ -313,6 +313,14 @@ page and the recommendations.
   so the page fills in while a long history is still being read. `MAX_SEEDS` is a
   200 ceiling against a pathological history, not a policy — do not reintroduce a
   small cap, because a library of thirty series then reports itself as four.
+- `src/llm.ts` — the optional language-model curator: the local model catalogue
+  (LFM2.5 GGUF builds), the OpenAI-compatible `LlmClient` with a bounded tool
+  loop, the native anime-API tool, the opt-in web-search tool, and
+  `curateWithModel`. It mines **every**
+  seed, `DEFAULT_CONCURRENCY` (4) at a time, and calls `onResults` after each one
+  so the page fills in while a long history is still being read. `MAX_SEEDS` is a
+  200 ceiling against a pathological history, not a policy — do not reintroduce a
+  small cap, because a library of thirty series then reports itself as four.
 - `src/stats.ts` / `src/statsModal.ts` — the run log and its summary page.
 - `src/settings.ts` — uses the **declarative settings API**
   (`getSettingDefinitions`). Do not re-add an imperative `display()`; lint flags
@@ -339,6 +347,15 @@ page and the recommendations.
   builds the text; `recommendFor` passes the series being viewed, and
   `buildRecommendations` passes the seeds that actually produced candidates.
   Both then go through `applyModelScores` for the same fallback behaviour.
+- **Seed `weight` is a damped engagement score** (`dampEngagement`), not a raw
+  count. A run is recorded per episode, so a binge-watched series accrues dozens
+  of runs; used linearly one series outweighed a thirty-series library 25:1 and
+  every recommendation traced back to it. Keep the damping and keep `diversify`
+  in the pipeline, or that symptom comes back.
+- **The LLM curator can re-order but never add.** `parseCuratorReply` keeps only
+  titles that were offered, so a hallucinated series cannot reach the page, and
+  every failure path (`off`, unreachable server, unusable reply) returns the
+  deterministic ranking unchanged. Nothing may depend on the curator having run.
 - **The recommendation models are opt-in and the hosted one sends user data.**
   `recommendationModel` defaults to `'off'`. Only the taste profile and candidate
   titles are ever sent, and only for `'hosted'`. Do not widen what is sent, and
