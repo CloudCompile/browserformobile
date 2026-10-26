@@ -14,8 +14,9 @@ import { StatsModal } from './statsModal';
 import { SeriesPickerModal } from './modals';
 import { DetailsModal } from './detailsModal';
 import { applyModelScores, collectRecommendations, deriveSeeds } from './recommendService';
+import { RecommendationsModal, type RecommendationsResult } from './recommendationsModal';
 import { JevRanker, TinyDecideRanker, type DecisionDeps } from './decision';
-import type { Recommendation } from './recommend';
+import type { Recommendation, TasteSeed } from './recommend';
 import { requestUrl } from 'obsidian';
 import { DownloadManagerView, VIEW_TYPE_DOWNLOADS } from './downloadManagerView';
 
@@ -43,6 +44,7 @@ export default class AnimePlugin extends Plugin {
 	private playerModal: PlayerModal | null = null;
 	private statsModal: StatsModal | null = null;
 	private detailsModal: DetailsModal | null = null;
+	private recommendationsModal: RecommendationsModal | null = null;
 	/** Re-ranks recommendations with a decision model, when one is enabled. */
 	private localRanker: TinyDecideRanker | null = null;
 	private hostedRanker: JevRanker | null = null;
@@ -101,6 +103,10 @@ export default class AnimePlugin extends Plugin {
 
 		this.addRibbonIcon('bar-chart-2', 'Download statistics', () => {
 			this.openStats();
+		});
+
+		this.addRibbonIcon('sparkles', 'Recommendations', () => {
+			this.openRecommendations();
 		});
 
 		this.registerCommands();
@@ -228,7 +234,7 @@ export default class AnimePlugin extends Plugin {
 				loadRecommendations: (seed) => this.recommendFor(seed),
 			},
 			{
-				onDownload: () => this.openDownloader(),
+				onDownload: (series) => this.openDownloader(series),
 				onOpenRecommendation: (title) => this.openDetails(title),
 				onClosed: () => {
 					this.detailsModal = null;
@@ -237,6 +243,53 @@ export default class AnimePlugin extends Plugin {
 		);
 		this.detailsModal = modal;
 		modal.open();
+	}
+
+	/**
+	 * Open the recommendations page.
+	 *
+	 * The page drives its own load so it can report progress per seed; all this
+	 * does is supply the taste profile and the two actions a card offers.
+	 */
+	openRecommendations(): void {
+		if (this.recommendationsModal) {
+			this.recommendationsModal.close();
+			this.recommendationsModal = null;
+		}
+		const modal = new RecommendationsModal(this.app, {
+			onLoad: (progress) => this.buildRecommendations(progress),
+			onDetails: (title) => this.openDetails(title),
+			onDownload: (title) => this.openDownloader(title),
+			onClosed: () => {
+				this.recommendationsModal = null;
+			},
+		});
+		this.recommendationsModal = modal;
+		modal.open();
+	}
+
+	/**
+	 * The whole-history recommendation list behind the page.
+	 *
+	 * Unlike `recommendFor`, no series is privileged: the seeds are the history
+	 * itself, so the result is "what to watch next", not "more like this".
+	 */
+	private async buildRecommendations(
+		progress: (done: number, total: number, seed: string) => void,
+	): Promise<RecommendationsResult> {
+		const seeds = this.tasteSeeds();
+		if (seeds.length === 0) return { items: [], usedSeeds: [], failedSeeds: [] };
+
+		const result = await collectRecommendations(this.settings.animeApiBase, seeds, {
+			alreadyHave: this.ownedSeries(),
+			limit: 24,
+			onProgress: progress,
+		});
+		if (result.items.length === 0) return result;
+
+		const scores = await this.scoreWithModel(this.modelProfile(result.usedSeeds.join(', ')), result.items);
+		if (scores.size === 0) return result;
+		return { ...result, items: applyModelScores(result.items, scores) };
 	}
 
 	/** Every series name the plugin knows the user has downloaded. */
@@ -251,6 +304,27 @@ export default class AnimePlugin extends Plugin {
 		return [...names];
 	}
 
+	/** The taste profile: what has been downloaded and watched, and how much. */
+	private tasteSeeds(): TasteSeed[] {
+		return deriveSeeds(
+			this.stats.toJSON(),
+			this.library.items().map((item) => ({
+				series: item.series,
+				watched: item.watched,
+				progress: item.progress?.position ?? 0,
+			})),
+		);
+	}
+
+	/**
+	 * The text a decision model judges candidates against: the seed titles, then
+	 * the strongest of the rest of the history.
+	 */
+	private modelProfile(seedText: string): string {
+		const owned = this.ownedSeries().slice(0, 12).join(', ');
+		return `${seedText}. ${owned}.`;
+	}
+
 	/**
 	 * Recommendations for a series, blended with the whole download history.
 	 *
@@ -259,14 +333,7 @@ export default class AnimePlugin extends Plugin {
 	 * signal that orders the results.
 	 */
 	private async recommendFor(seed: string): Promise<Recommendation[]> {
-		const history = deriveSeeds(
-			this.stats.toJSON(),
-			this.library.items().map((item) => ({
-				series: item.series,
-				watched: item.watched,
-				progress: item.progress?.position ?? 0,
-			})),
-		);
+		const history = this.tasteSeeds();
 		const others = history.filter((entry) => entry.series.toLowerCase() !== seed.toLowerCase());
 		const top = Math.max(1, ...others.map((entry) => entry.weight));
 		const seeds = [{ series: seed, weight: top + 1 }, ...others];
@@ -278,7 +345,7 @@ export default class AnimePlugin extends Plugin {
 		});
 		if (result.items.length === 0) return result.items;
 
-		const scores = await this.scoreWithModel(seed, result.items);
+		const scores = await this.scoreWithModel(this.modelProfile(seed), result.items);
 		if (scores.size === 0) return result.items;
 		return applyModelScores(result.items, scores);
 	}
@@ -289,10 +356,9 @@ export default class AnimePlugin extends Plugin {
 	 * Returns an empty map when no model is enabled or it fails, which leaves the
 	 * vote-based ordering untouched.
 	 */
-	private async scoreWithModel(seed: string, items: Recommendation[]): Promise<Map<string, number>> {
+	private async scoreWithModel(profile: string, items: Recommendation[]): Promise<Map<string, number>> {
 		const titles = items.map((item) => item.title);
 		if (titles.length === 0) return new Map();
-		const profile = `${seed}. ${this.ownedSeries().slice(0, 12).join(', ')}.`;
 
 		if (this.settings.recommendationModel === 'hosted') {
 			if (!this.settings.jevApiKey) return new Map();
@@ -472,7 +538,7 @@ export default class AnimePlugin extends Plugin {
 		};
 	}
 
-	openDownloader(): void {
+	openDownloader(query?: string): void {
 		if (this.downloadModal) {
 			this.downloadModal.close();
 			this.downloadModal = null;
@@ -490,6 +556,7 @@ export default class AnimePlugin extends Plugin {
 				segmentConcurrency: this.settings.downloadSegmentConcurrency,
 				maxConcurrentJobs: this.settings.downloadMaxConcurrentJobs,
 				confirmDestructiveActions: this.settings.confirmDestructiveActions,
+				initialQuery: query,
 			},
 			{
 				onOptionsChanged: (patch) => {
@@ -598,6 +665,14 @@ export default class AnimePlugin extends Plugin {
 			name: 'Open download statistics',
 			callback: () => {
 				this.openStats();
+			},
+		});
+
+		this.addCommand({
+			id: 'open-anime-recommendations',
+			name: 'Anime: open recommendations',
+			callback: () => {
+				this.openRecommendations();
 			},
 		});
 	}

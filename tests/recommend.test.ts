@@ -52,6 +52,29 @@ describe('rankRecommendations', () => {
   });
 });
 
+describe('rankRecommendations images', () => {
+  it('carries the poster through to the ranked output', () => {
+    const r = rankRecommendations([{series:'Naruto',weight:1}], [
+      {id:1,title:'Boruto',image:'https://img/boruto.jpg',votes:5,fromSeed:'Naruto'},
+    ]);
+    expect(r[0].image).toBe('https://img/boruto.jpg');
+  });
+  it('keeps the first poster when several seeds point at one title', () => {
+    const r = rankRecommendations([{series:'Naruto',weight:1},{series:'Bleach',weight:1}], [
+      {id:1,title:'Boruto',image:'https://img/a.jpg',votes:5,fromSeed:'Naruto'},
+      {id:1,title:'Boruto',image:'https://img/b.jpg',votes:5,fromSeed:'Bleach'},
+    ]);
+    expect(r[0].image).toBe('https://img/a.jpg');
+  });
+  it('fills in a poster when the first candidate for a title had none', () => {
+    const r = rankRecommendations([{series:'Naruto',weight:1},{series:'Bleach',weight:1}], [
+      {id:1,title:'Boruto',votes:5,fromSeed:'Naruto'},
+      {id:1,title:'Boruto',image:'https://img/b.jpg',votes:5,fromSeed:'Bleach'},
+    ]);
+    expect(r[0].image).toBe('https://img/b.jpg');
+  });
+});
+
 describe('bm25Scores', () => {
   it('scores all-zero when nothing matches', () => {
     expect(bm25Scores('naruto', [{id:1,title:'Cooking Show'}])).toEqual([0]);

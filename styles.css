@@ -1251,6 +1251,188 @@
         opacity: 1;
 }
 
+/* ------------------------------------------------------- recommendations */
+/*
+ * The recommendations page. A poster grid rather than a list: the catalogue
+ * returns a poster for every entry, and on a phone the grid reads as a shelf of
+ * things to watch, which is what the page is for.
+ */
+.bfm-recs-modal {
+        width: min(880px, 92vw);
+}
+.bfm-recs-modal .modal-content {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+}
+.bfm-recs-body {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-height: 0;
+        overflow-y: auto;
+        padding-right: 4px;
+}
+.bfm-recs-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 0 0 auto;
+}
+.bfm-recs-summary {
+        flex: 1 1 auto;
+        font-size: 0.85em;
+        opacity: 0.7;
+}
+.bfm-recs-refresh {
+        flex: 0 0 auto;
+        background: transparent;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 8px;
+        cursor: pointer;
+        padding: 6px 8px;
+        opacity: 0.8;
+}
+.bfm-recs-refresh:hover:not(:disabled) {
+        opacity: 1;
+        border-color: var(--interactive-accent);
+}
+.bfm-recs-refresh:disabled {
+        cursor: default;
+        opacity: 0.4;
+}
+.bfm-recs-refresh.is-busy {
+        animation: bfm-spin 900ms linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+        .bfm-recs-refresh.is-busy {
+                animation: none;
+        }
+}
+.bfm-recs-progress {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 16px 0;
+}
+.bfm-recs-progress-text {
+        font-size: 0.85em;
+        opacity: 0.75;
+}
+.bfm-recs-progress-seed {
+        font-size: 0.8em;
+        opacity: 0.55;
+        font-style: italic;
+}
+.bfm-recs-progress-track {
+        height: 4px;
+        border-radius: 2px;
+        background: var(--background-modifier-border);
+        overflow: hidden;
+}
+.bfm-recs-progress-fill {
+        height: 100%;
+        background: var(--interactive-accent);
+        transition: width 160ms ease;
+}
+.bfm-recs-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 40px 0;
+        opacity: 0.75;
+}
+.bfm-recs-empty-icon {
+        opacity: 0.5;
+}
+.bfm-recs-empty-text {
+        text-align: center;
+        max-width: 42ch;
+}
+.bfm-recs-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 12px;
+}
+.bfm-recs-card {
+        display: flex;
+        flex-direction: column;
+        background: var(--background-secondary);
+        border: 1px solid transparent;
+        border-radius: 10px;
+        overflow: hidden;
+        cursor: pointer;
+        transition: border-color 120ms ease, transform 120ms ease;
+}
+.bfm-recs-card:hover,
+.bfm-recs-card:focus-visible {
+        border-color: var(--interactive-accent);
+        transform: translateY(-2px);
+}
+@media (prefers-reduced-motion: reduce) {
+        .bfm-recs-card {
+                transition: none;
+        }
+        .bfm-recs-card:hover,
+        .bfm-recs-card:focus-visible {
+                transform: none;
+        }
+}
+.bfm-recs-poster {
+        aspect-ratio: 2 / 3;
+        background: var(--background-modifier-border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+}
+.bfm-recs-poster-image {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+}
+.bfm-recs-poster-placeholder {
+        opacity: 0.4;
+}
+.bfm-recs-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 10px;
+}
+.bfm-recs-card-title {
+        font-weight: 600;
+        line-height: 1.25;
+}
+.bfm-recs-card-why {
+        font-size: 0.78em;
+        opacity: 0.65;
+        line-height: 1.3;
+}
+.bfm-recs-card-actions {
+        display: flex;
+        gap: 6px;
+        margin-top: 4px;
+}
+.bfm-recs-card-action {
+        flex: 1 1 auto;
+        font-size: 0.78em;
+        padding: 4px 6px;
+        cursor: pointer;
+}
+.bfm-recs-note {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.8em;
+        opacity: 0.6;
+}
+.bfm-recs-note-icon {
+        display: inline-flex;
+}
+
 /* ------------------------------------------------------------------- glass */
 /*
  * A backdrop-filter glass surface, enabled by the "Liquid glass effect"
@@ -1263,6 +1445,7 @@
  * Electron at no runtime cost, and degrades to a plain panel where it is
  * unsupported (most mobile webviews).
  */
+body.bfm-glass-on .bfm-recs-modal .modal-content,
 body.bfm-glass-on .bfm-details-modal .modal-content,
 body.bfm-glass-on .bfm-stats-modal .modal-content,
 body.bfm-glass-on .bfm-library-modal .modal-content,
@@ -1274,6 +1457,7 @@ body.bfm-glass-on .bfm-download-modal .modal-content {
         border-radius: 14px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
 }
+body.bfm-glass-on.theme-light .bfm-recs-modal .modal-content,
 body.bfm-glass-on.theme-light .bfm-details-modal .modal-content,
 body.bfm-glass-on.theme-light .bfm-stats-modal .modal-content,
 body.bfm-glass-on.theme-light .bfm-library-modal .modal-content,
@@ -1283,7 +1467,8 @@ body.bfm-glass-on.theme-light .bfm-download-modal .modal-content {
 }
 body.bfm-glass-on .bfm-details-fact,
 body.bfm-glass-on .bfm-details-cast-card,
-body.bfm-glass-on .bfm-details-rec-card {
+body.bfm-glass-on .bfm-details-rec-card,
+body.bfm-glass-on .bfm-recs-card {
         background: rgba(255, 255, 255, 0.06);
         backdrop-filter: blur(6px);
         -webkit-backdrop-filter: blur(6px);

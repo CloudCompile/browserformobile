@@ -23,6 +23,9 @@ which do not need one.
   stopped.
 - **A full details page** for any series: synopsis, genres, studios, cast and
   staff, theme songs, trailer, and airing schedule.
+- **A recommendations page** built from your whole download history, as a
+  poster grid with a "because you downloaded X" line on every entry, and a
+  Details and Download action on each.
 - **Recommendations** based on your download history, ranked either by the
   catalogue's own votes or by a decision model — a small one that runs entirely
   on your device, or a hosted one.
@@ -256,6 +259,10 @@ the download; it keeps running if you close the window.
 Open a series' details page from the info button on any library row, or with the
 **Anime: open details page** command.
 
+Open the recommendations page from the sparkles ribbon icon or the **Anime: open
+recommendations** command. The **Download** button on a card opens the downloader
+with that title already searched for.
+
 ## Details and recommendations
 
 The details page gathers everything the API knows about a series in one place:
@@ -266,6 +273,19 @@ trailer, and the broadcast schedule.
 Below the details are **recommendations**. These are seeded from the series you
 are viewing plus everything else you have downloaded, so a series you have
 watched a lot pulls the list harder than one you tried once.
+
+### The recommendations page
+
+The details page recommends more like the series you are looking at. The
+recommendations page answers the other question — what to watch next — so no
+series is privileged: the seeds are your download history itself.
+
+It shows a poster grid, one card per title, with the reason it is there
+("Because you downloaded Naruto and One Piece"). Mining the seeds takes a moment
+because each one is a separate lookup, so the page appears immediately and shows
+which seed it is working on. If a seed cannot be read, the list still appears and
+says it may be missing titles rather than quietly looking complete. **Refresh**
+rebuilds it.
 
 Three ranking modes, chosen with **Recommendation model** in settings:
 
@@ -322,8 +342,8 @@ device, and only when you switch one on:
 
 All actions are available from the command palette: open the anime downloader,
 open the video library, open the download manager, open download statistics,
-open a series' details page, repair downloaded videos, and clear the anime
-cache.
+open the recommendations page, open a series' details page, repair downloaded
+videos, and clear the anime cache.
 
 ## Development
 

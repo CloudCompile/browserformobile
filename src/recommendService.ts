@@ -99,6 +99,7 @@ export async function collectRecommendations(
                         candidates.push({
                                 id: rec.id,
                                 title: rec.title,
+                                image: rec.image,
                                 votes: rec.votes ?? 0,
                                 fromSeed: seed.series,
                         });

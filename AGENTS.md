@@ -300,6 +300,8 @@ page and the recommendations.
   library: filename parsing, the list, and playback with saved position.
 - `src/detailsModal.ts` — the full details page, including the recommendation
   section.
+- `src/recommendationsModal.ts` — the recommendations page: a poster grid over
+  the whole download history, with per-seed progress while it loads.
 - `src/recommend.ts` — the pure ranking engine: `tokenize`, `buildTasteProfile`,
   `bm25Scores`, `rankRecommendations`, `blendModelScores`. No I/O, so it is
   directly testable.
@@ -327,7 +329,12 @@ page and the recommendations.
   not a bare `saveData`, so a concurrent save cannot drop it.
 - **Recommendations must always render.** `scoreWithModel` returns an empty map
   on any failure (no key, network error, malformed reply) and the caller falls
-  back to the vote ordering. Never surface a model error in the details page.
+  back to the vote ordering. Never surface a model error in the details page or
+  the recommendations page.
+- **`scoreWithModel` takes the model profile, not a seed.** `modelProfile()`
+  builds the text; `recommendFor` passes the series being viewed, and
+  `buildRecommendations` passes the seeds that actually produced candidates.
+  Both then go through `applyModelScores` for the same fallback behaviour.
 - **The recommendation models are opt-in and the hosted one sends user data.**
   `recommendationModel` defaults to `'off'`. Only the taste profile and candidate
   titles are ever sent, and only for `'hosted'`. Do not widen what is sent, and

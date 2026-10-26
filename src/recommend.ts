@@ -31,6 +31,8 @@ export interface Candidate {
         tags?: string[];
         /** Synopsis, when the caller has it. */
         synopsis?: string;
+        /** Poster URL, when the catalogue supplied one. */
+        image?: string | null;
         /** Votes from the catalogue's recommendation list, when it came from one. */
         votes?: number;
 }
@@ -230,6 +232,7 @@ export function rankRecommendations(
                         if (candidate.fromSeed) existing.because.add(candidate.fromSeed);
                         existing.tags = existing.tags?.length ? existing.tags : candidate.tags;
                         existing.synopsis = existing.synopsis ?? candidate.synopsis;
+                        existing.image = existing.image ?? candidate.image;
                         continue;
                 }
                 merged.set(key, {
@@ -251,6 +254,7 @@ export function rankRecommendations(
                 title: entry.title,
                 tags: entry.tags,
                 synopsis: entry.synopsis,
+                image: entry.image,
                 votes: entry.votes,
                 because: [...entry.because],
                 score: (voteScores[index] ?? 0) * weights.votes + (textScores[index] ?? 0) * weights.text,

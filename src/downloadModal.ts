@@ -25,6 +25,8 @@ export interface DownloadModalOptions {
         maxConcurrentJobs: number;
         /** Ask before a destructive action (cancel/discard losing progress). */
         confirmDestructiveActions: boolean;
+        /** Pre-filled search text, so a caller can open the downloader on a title. */
+        initialQuery?: string;
 }
 
 export interface DownloadModalCallbacks {
@@ -89,6 +91,11 @@ export class DownloadModal extends Modal {
                 this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-dl-body' });
                 this.statusEl = this.contentEl.createDiv({ cls: 'bfm-dl-status' });
                 this.render();
+                if (this.options.initialQuery) {
+                        this.searchValue = this.options.initialQuery;
+                        this.render();
+                        void this.doSearch();
+                }
                 // Recover downloads left behind by a previous session. On mobile the
                 // app is killed in the background constantly, so this is the normal
                 // way a queue comes back, not an edge case.
