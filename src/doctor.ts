@@ -1,3 +1,4 @@
+import { convertFragmented } from './mp4';
 import { patchDuration } from './transmux';
 import { collectFiles } from './utils';
 
@@ -9,6 +10,12 @@ import { collectFiles } from './utils';
  * — Samsung Gallery, notably — show every file as the same length (47721s,
  * clamped to 1:35:15). The true length is still in `mvhd` and `mehd`, so the
  * file can be repaired in place without re-downloading it.
+ *
+ * Files written before the progressive writer are also *fragmented*: empty
+ * sample tables and `moof`/`mdat` fragments, which a browser's `<video>` reads
+ * and a phone gallery, a TV, QuickTime or Windows does not. Those are converted
+ * to progressive MP4 here, for the same reason — the media is already on disk,
+ * so a repair beats asking the user to re-download every episode.
  */
 
 const SENTINEL = 0xffffffff;
@@ -108,64 +115,97 @@ export function inspectDuration(data: Uint8Array): DurationPatch {
         return { durationSeconds, staleTrackHeaders };
 }
 
-/** True when the file looks like an MP4 whose track headers still need fixing.
+export interface FileInspection extends DurationPatch {
+        /** Track headers whose duration does not match the recovered one. */
+        mismatchedTrackHeaders: number;
+        /** The movie is fragmented (`moov` carries `mvex`), so most players
+         *  outside a browser cannot read it. */
+        fragmented: boolean;
+}
+
+/** True when the file is a fragmented MP4 — the shape every download written
+ *  before the progressive writer has. */
+export function isFragmented(data: Uint8Array): boolean {
+        if (data.byteLength < 16) return false;
+        const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        const moov = boxes(view, 0, data.byteLength).find((entry) => entry.type === 'moov');
+        return Boolean(moov && boxes(view, moov.box.start + 8, moov.box.end).some((entry) => entry.type === 'mvex'));
+}
+
+/** True when the file looks like an MP4 this plugin should rewrite.
  *
- *  Covers the original 1.1.0 sentinel case (`0xffffffff`) and the "wrong
- *  scaling" case where the track duration was written in milliseconds even
- *  though the movie runs on its 90 kHz clock: those files play at the right
- *  length in header-aware players (VLC, browsers) but show up as a few
- *  seconds in Google Photos / Samsung Gallery. The true duration is still
- *  recoverable from the movie header.
+ *  Covers the original 1.1.0 sentinel case (`0xffffffff`), the "wrong scaling"
+ *  case where the track duration was written in milliseconds even though the
+ *  movie runs on its 90 kHz clock, and every fragmented movie. The first two
+ *  play at the right length in header-aware players (VLC, browsers) but show up
+ *  as a few seconds in Google Photos / Samsung Gallery; a fragmented file plays
+ *  only in those header-aware players at all.
  */
 export function needsRepair(data: Uint8Array): boolean {
         if (data.byteLength < 16 || readType(new DataView(data.buffer, data.byteOffset, data.byteLength), 4) !== 'ftyp') {
                 return false;
         }
         const patch = inspectDurationEnhanced(data);
-        return patch.durationSeconds !== null && (patch.staleTrackHeaders > 0 || patch.mismatchedTrackHeaders > 0);
+        return patch.fragmented || (patch.durationSeconds !== null && (patch.staleTrackHeaders > 0 || patch.mismatchedTrackHeaders > 0));
 }
 
-/** Inspect an MP4 and also count track headers whose duration is not the
- *  recovered (correctly scaled) one. */
-export function inspectDurationEnhanced(data: Uint8Array): DurationPatch & { mismatchedTrackHeaders: number } {
+/** Inspect an MP4, count track headers whose duration is not the recovered
+ *  (correctly scaled) one, and report whether it is fragmented.
+ *
+ *  The header comparison only applies to a *fragmented* movie. Those are the
+ *  files mux.js wrote with empty sample tables, where a header is the only
+ *  place a duration appears — and the only shape the bug ever produced. A
+ *  progressive file's headers are computed from its own sample tables, so its
+ *  tracks legitimately end at slightly different times (the audio track is
+ *  generally a frame short of the video one) and every healthy download would
+ *  be flagged. */
+export function inspectDurationEnhanced(data: Uint8Array): FileInspection {
         const base = inspectDuration(data);
+        const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        const moov = boxes(view, 0, data.byteLength).find((entry) => entry.type === 'moov');
+        const children = moov ? boxes(view, moov.box.start + 8, moov.box.end) : [];
+        const fragmented = children.some((entry) => entry.type === 'mvex');
         let mismatchedTrackHeaders = 0;
-        if (base.durationSeconds !== null) {
-                const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-                const top = boxes(view, 0, data.byteLength);
-                const moov = top.find((entry) => entry.type === 'moov');
-                if (moov) {
-                        const mvhd = boxes(view, moov.box.start + 8, moov.box.end).find((e) => e.type === 'mvhd');
-                        if (mvhd) {
-                                const mvTimescale = readTimescale(view, mvhd.box) || 90000;
-                                const movieTicks = Math.round(base.durationSeconds * mvTimescale);
-                                for (const entry of boxes(view, moov.box.start + 8, moov.box.end)) {
-                                        if (entry.type !== 'trak') continue;
-                                        const parts = boxes(view, entry.box.start + 8, entry.box.end);
-                                        const tkhd = parts.find((p) => p.type === 'tkhd');
-                                        if (tkhd) {
-                                                const actual = readDuration(view, tkhd.box);
-                                                if (Math.abs(actual - movieTicks) > 2) mismatchedTrackHeaders++;
-                                        }
-                                        const mdia = parts.find((p) => p.type === 'mdia');
-                                        if (mdia) {
-                                                const mdhd = boxes(view, mdia.box.start + 8, mdia.box.end).find((m) => m.type === 'mdhd');
-                                                if (mdhd) {
-                                                        const mdTimescale = readTimescale(view, mdhd.box) || 1000;
-                                                        const expected = Math.round(base.durationSeconds * mdTimescale);
-                                                        const actual = readDuration(view, mdhd.box);
-                                                        if (Math.abs(actual - expected) > 2) mismatchedTrackHeaders++;
-                                                }
+        if (fragmented && base.durationSeconds !== null) {
+                const mvhd = children.find((e) => e.type === 'mvhd');
+                if (mvhd) {
+                        const mvTimescale = readTimescale(view, mvhd.box) || 90000;
+                        const movieTicks = Math.round(base.durationSeconds * mvTimescale);
+                        for (const entry of children) {
+                                if (entry.type !== 'trak') continue;
+                                const parts = boxes(view, entry.box.start + 8, entry.box.end);
+                                const tkhd = parts.find((p) => p.type === 'tkhd');
+                                if (tkhd) {
+                                        const actual = readDuration(view, tkhd.box);
+                                        if (Math.abs(actual - movieTicks) > 2) mismatchedTrackHeaders++;
+                                }
+                                const mdia = parts.find((p) => p.type === 'mdia');
+                                if (mdia) {
+                                        const mdhd = boxes(view, mdia.box.start + 8, mdia.box.end).find((m) => m.type === 'mdhd');
+                                        if (mdhd) {
+                                                const mdTimescale = readTimescale(view, mdhd.box) || 1000;
+                                                const expected = Math.round(base.durationSeconds * mdTimescale);
+                                                const actual = readDuration(view, mdhd.box);
+                                                if (Math.abs(actual - expected) > 2) mismatchedTrackHeaders++;
                                         }
                                 }
                         }
                 }
         }
-        return { ...base, mismatchedTrackHeaders };
+        return { ...base, mismatchedTrackHeaders, fragmented };
 }
 
-/** Return a repaired copy, or null when nothing can be done. */
+/** Return a repaired copy, or null when nothing can be done.
+ *
+ *  A fragmented movie is rebuilt as progressive; the builder derives the real
+ *  durations from the samples, so the old header patch is not applied first. A
+ *  progressive movie only ever needed that patch, and is copied through it. */
 export function repairDuration(data: Uint8Array): { data: Uint8Array; durationSeconds: number } | null {
+        if (isFragmented(data)) {
+                const converted = convertFragmented(data);
+                if (!converted) return null;
+                return { data: converted, durationSeconds: inspectDuration(converted).durationSeconds ?? 0 };
+        }
         const patch = inspectDuration(data);
         if (patch.durationSeconds === null) return null;
         return { data: patchDuration(data, patch.durationSeconds), durationSeconds: patch.durationSeconds };

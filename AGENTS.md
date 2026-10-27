@@ -292,7 +292,9 @@ page and the recommendations.
   `setAnimeCache`. See the caching notes further down.
 - `src/downloader.ts` — the `DownloadManager`: queue, staging, resume, rate
   limiting, and the wake lock.
-- `src/hls.ts` / `src/transmux.ts` — playlist parsing and MP4 conversion.
+- `src/hls.ts` / `src/transmux.ts` — playlist parsing and MPEG-TS demuxing.
+- `src/mp4.ts` — the progressive MP4 writer: `ProgressiveMp4Builder` (sample
+  tables), the resume index, and `convertFragmented` for legacy files.
 - `src/downloadModal.ts` — the downloader window (search, episode picker, queue).
 - `src/downloadManagerView.ts` — an `ItemView` that scans the download folder and
   offers per-file repair.
@@ -402,7 +404,9 @@ npm run lint    # eslint, must be clean (0 errors, 0 warnings)
 **Vitest is now the committed test runner** (`npm test`), with
 `tests/obsidian-stub.ts` aliased for the `obsidian` module. Current suites:
 `utils`, `destination`, `library`, `perf`, `animeApi`, `animeCache`,
-`recommend`, and `decision`. Earlier ad-hoc harnesses under `/tmp/bfmtest` and
+`recommend`, `decision`, and `mp4`. `tests/mp4.test.ts` covers the progressive
+writer, the resume index, and the doctor's conversion, including the real mux.js
+fixture. Earlier ad-hoc harnesses under `/tmp/bfmtest` and
 `/tmp/bfmh` (built with esbuild `--alias:obsidian=...` plus jsdom) covered the
 removed browser view and the downloader internals; the downloader ones are
 still the reference for staging, resume, rate limiting, and MP4 conversion.
@@ -438,13 +442,88 @@ Added in 1.1.0. Now the core of the plugin rather than a side feature.
   fails). `downloadSegments` buffers; `downloadSegmentsStreaming` hands segments
   to a callback in playlist order for low-memory `.ts` writes. Retry with
   exponential backoff; 408/425/429/5xx are transient.
-- `src/transmux.ts` — MPEG-TS to fragmented MP4 via mux.js, plus `patchDuration`.
+- `src/transmux.ts` — MPEG-TS to *fragmented* MP4 via mux.js (`TransmuxStream`,
+  flushed a window at a time), plus `patchDuration` for the legacy header patch.
+- `src/mp4.ts` — turns those fragments into a progressive MP4. No Obsidian, no
+  DOM, no mux.js: box parsing, `ProgressiveMp4Builder`, the `.part.idx` resume
+  index, and `convertFragmented`. Keep it dependency-free; the unit suite imports
+  it directly.
+- `src/doctor.ts` — inspects and rewrites already-downloaded MP4s (see
+  **Repairing old downloads** below).
 - `src/destination.ts` — `VaultDestination` and `ExternalDestination`, filename
   sanitising, and `externalStorageAvailable()`.
 - `src/downloader.ts` — `DownloadManager`: job queue, concurrency, cancel,
   progress, filename template, and resume (staging `.part` file + sidecar).
 - `src/downloadModal.ts` — the three-stage modal (search, episodes, queue).
 - `src/mux.d.ts` — hand-written types for mux.js, which ships none.
+
+### Progressive MP4
+
+Downloads are written as **progressive** MP4: `ftyp`, then one `mdat` per
+flushed batch, then a `moov` appended last carrying the real sample tables.
+mux.js only ever emits a *fragmented* movie (`moov` + `mvex`, then
+`moof`/`mdat` pairs, with empty `stbl` tables). Obsidian's `<video>` reads both,
+which is why the old output "worked" there — but a phone gallery, a TV,
+QuickTime and Windows read the sample tables, so a fragmented file is a black
+rectangle or "unsupported format". Same media, wrong container.
+
+- **Layout.** `ftyp` + `mdat`… + `moov`. The `.part` staging file is the same
+  `ftyp` + `mdat`s while it downloads, so finalising means appending the movie.
+- **`src/mp4.ts` owns the tables.** `ProgressiveMp4Builder.addFragment` records
+  one chunk per fragment (so `stco` offsets stay valid) and derives
+  `stts`/`ctts`/`stss`/`stsz`/`stsc` from the samples mux.js reported.
+  `buildMoov` computes the movie and track durations from those tables, so they
+  are real and `patchDuration` must not run on the result.
+- **Dedupe by span, not by timestamp.** mux.js re-emits the samples from the
+  last IDR after a mid-stream flush and truncates the frame in flight. A sample
+  is dropped only when `start + duration <= track.endTime`; an overlap is
+  absorbed into the preceding sample's duration (subtracted) and a gap is added
+  to it. `stts` can express neither, so this is the only place to reconcile
+  them. Audio can land a tick (44100 vs 90000) past the previous sample at a
+  seam; the span rule absorbs that too.
+- **The resume index is `<final>.part.idx`, append-only.** One record per
+  fragment: a mirror of the fragment's `moof` plus its payload offset and the
+  segment count, so a resume rebuilds the tables without re-reading the media.
+  Commit order is media → index → sidecar: the index is the authority for the
+  resume point, and a record is only replayed if the media it points at is
+  really on disk (`readIndex(data, mediaLimit)`), so a torn append or a torn
+  batch can never produce a table pointing past the file.
+- **`PARTIAL_VERSION = 4`.** v3 staging files come from the fragmented writer
+  and are discarded rather than spliced.
+- **A run killed between its last batch and the movie header** resumes with
+  every segment already on disk; `writeMp4` skips the fetch and the `finish()`
+  call that would otherwise reject an empty transmux, then appends the `moov`.
+- **Memory is one window at a time.** The transmux window is bounded by the same
+  batch size as the write (16–64 MB by device memory). Building the `moov` costs
+  the sample tables only, roughly 20 bytes per sample.
+- Verify container changes with a box dump plus `ffmpeg -f null -` (zero decode
+  errors) and a `framecrc` diff against the fragmented source. A player proves
+  nothing about the tables.
+
+### Repairing old downloads
+
+`src/doctor.ts` rewrites what earlier versions wrote, in place — the media is
+already on disk, and re-downloading a whole library is not an acceptable fix.
+
+- **Fragmented files are converted, not patched.** `needsRepair` returns true for
+  any movie whose `moov` carries `mvex`, and `repairDuration` runs it through
+  `convertFragmented`. The builder recomputes every duration from the samples,
+  so the old header patch is skipped. The converted file's video stream is
+  packet-for-packet identical to the source; audio is normalised to start at
+  zero, which is all a progressive track without an `elst` can express and what
+  every new download already does. A fragmented file written by mux.js also has
+  the sentinel duration and no `mehd`, so `repairDuration` may recover no
+  duration at all — conversion does not need one.
+- **`patchDuration` only touches fragmented movies.** It is the 1.1.1 header
+  patch; it returns the input untouched for a progressive file, whose headers
+  come from its own sample tables. `inspectDurationEnhanced` only compares track
+  headers on a fragmented movie, or every healthy download would be flagged (its
+  tracks legitimately end at slightly different times).
+- **Conversion holds the whole file twice** — the input read plus the output
+  written — the same class of allocation the old repair already made. That is
+  why it runs per file, on an explicit command or button, never during a scan.
+- Idempotent: a second pass repairs nothing. The scan cache is keyed on
+  `modified|size`, so a converted file is re-inspected exactly once.
 
 ### Video library
 
@@ -536,10 +615,10 @@ path.
   just `mvhd` but each `tkhd` and `mdhd` — and emits no `mehd`. Players that read
   the movie header cope, but ones that read the track headers (Samsung Gallery)
   show the sentinel: at 90 kHz it is 47721s, which clamps to 1:35:15, so *every*
-  file looks the same length. `patchDuration` writes the real duration into all
-  four, scaling per box (`mvhd`/`mehd` use the movie timescale, each `mdhd` its
-  own, `tkhd` 1000). It is idempotent: a file that already has a `mehd` is
-  updated rather than gaining a second. Verify with a box dump, not a player.
+  file looks the same length. New downloads are progressive, so their durations
+  come from the sample tables and the sentinel no longer reaches a file;
+  `patchDuration` remains the header patch for a legacy fragmented file.
+  Verify with a box dump, not a player.
 - **Writes must be serialized, in order.** Segments finish out of order and
   several workers run at once, so awaiting a write inside the worker let a later
   segment land before an earlier one — reordering the file and, on the first
@@ -590,9 +669,11 @@ path.
   the address bar and downloader inputs are 16px under `@media (pointer: coarse)`,
   which also grows the sub-44px touch targets. All of it is scoped to coarse
   pointers so the desktop layout is untouched.
-- **`src/doctor.ts` repairs files written before 1.1.1** by recovering the length
-  from `mvhd`/`mehd` and re-running `patchDuration`. Surfaced as a command and a
-  button; it only rewrites files that still hold the sentinel.
+- **`src/doctor.ts` repairs old files in place**: legacy *fragmented* movies are
+  converted to progressive, and a pre-1.1.1 sentinel duration is recovered from
+  `mvhd`/`mehd`. Surfaced as a command, a button, and the download manager's
+  per-file **Repair**; it only rewrites a file `needsRepair` flags. See
+  **Repairing old downloads**.
 - **A failed download is resumable; a cancelled one is not.** The stream is
   staged to `<final>.part` with a `<final>.part.json` sidecar recording the last
   contiguous segment and byte count, so a re-enqueue continues from there
@@ -705,7 +786,9 @@ Two gotchas, both hit when cutting 1.8.5:
 
 ### Verification
 
-No committed test runner. Ad-hoc harnesses live in `/tmp/bfmdl/harness/`:
+`npm test` is the committed gate (`tests/`, vitest). The downloader still has
+older harnesses under `/tmp/bfmdl/harness/` and `/tmp/bfmh/` for the paths that
+need a fake vault or a live CDN:
 `e2e.ts` exercises the API client, playlist parsing, template rendering, ordered
 streaming, and transmux against the live API; `manager.ts` runs the real
 `DownloadManager` against a filesystem-backed fake vault adapter and checks file
@@ -783,3 +866,21 @@ fix strips a leading slash from the folder and the child, and — for a
 device-absolute listing — keeps everything from the folder segment onward.
 `childPath` is the single join for both the repair scan and the video library, so
 the two share the bug and the fix.
+
+The progressive-MP4 work added `/tmp/bfmmp4/harness/`: `e2e.ts` drives the real
+`DownloadManager.writeMp4` against an in-memory vault and a stub `requestUrl`
+serving four genuinely continuous segments (ffmpeg's raw-TS *demuxer* segfaults
+in this environment, so build them by encoding straight into the segment muxer
+with `-f segment -segment_format mpegts`). It checks the output layout
+(`ftyp mdat… moov`, no `mvex`), the decoded frames against the fragmented
+original, and a killed-run resume whose result matches a single run byte for
+byte. Two traps: compare media bytes against a *single-flush* mux.js reference
+(per-segment flushes interleave the V/A `mdat`s differently), and drop the
+dts/pts columns when diffing `framecrc` — mux.js shifts PTS by a tick at a flush
+seam. `/tmp/bfmmp4/harness/doctor.ts` runs the real `repairFolder` over an
+in-memory adapter holding a real 1.18 MB fragmented episode plus a progressive
+one: the fragmented file is converted (duration `null` → 15 s, `fragmented`
+false), the progressive file is not rewritten, and a second pass repairs nothing.
+Converting `/tmp/bfmmp4/out/fragmented.mp4` directly reproduced the source's
+video packets exactly and left 645/645 audio packets with identical sizes and
+checksums, only re-based to start at zero.

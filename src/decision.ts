@@ -54,19 +54,54 @@ export interface DecisionDeps {
         postJson?(url: string, body: unknown, headers: Record<string, string>): Promise<unknown>;
 }
 
-/** Rough token count: WordPiece splits words and CJK, so characters over-split. */
+const CJK = /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/;
+
+/**
+ * Rough token count.
+ *
+ * WordPiece does not map a word to a token: an English word averages about four
+ * characters per token, proper nouns split more, and CJK is closer to one token
+ * per character. Counting whitespace words (the first version of this) badly
+ * undercounts a profile made of anime titles, so the candidate list was cut
+ * from the state while the model was still asked about all of them.
+ */
 function approximateTokens(text: string): number {
-        return text.trim().split(/\s+/).filter(Boolean).length;
+        let total = 0;
+        for (const word of text.trim().split(/\s+/)) {
+                if (!word) continue;
+                total += CJK.test(word) ? [...word].length : Math.max(1, Math.ceil(word.length / 4));
+        }
+        return total;
+}
+
+/** Keep the profile inside `budget` tokens without cutting a word in half. */
+function trimProfile(profile: string, budget: number): string {
+        const kept: string[] = [];
+        let used = 0;
+        for (const word of profile.trim().split(/\s+/)) {
+                if (!word) continue;
+                const cost = approximateTokens(word);
+                if (used + cost > budget) break;
+                used += cost;
+                kept.push(word);
+        }
+        return kept.join(' ');
 }
 
 /**
- * Build the `state` the model reads: the taste profile, then the candidate
- * titles. Kept within the token budget so nothing is truncated.
+ * The `state` the model reads, plus the titles that actually fit in it.
+ *
+ * The profile is trimmed rather than allowed to consume the window: a state
+ * that ends inside the profile scored every candidate blind. Callers must ask
+ * only about the returned titles — the model answering about a title it never
+ * saw is noise, not a signal.
  */
-export function buildDecisionState(profile: string, titles: string[]): string {
-        const trimmed = profile.trim();
+export function planDecisionState(profile: string, titles: string[]): { state: string; titles: string[] } {
+        // Room for "Candidates: " and the closing full stop, plus a margin for
+        // the approximation being an approximation.
+        const trimmed = trimProfile(profile, MAX_STATE_TOKENS - 16);
         const parts: string[] = [];
-        let budget = MAX_STATE_TOKENS - approximateTokens(trimmed) - 4;
+        let budget = MAX_STATE_TOKENS - approximateTokens(trimmed) - 8;
         for (const title of titles) {
                 const cost = approximateTokens(title) + 1;
                 if (cost > budget) break;
@@ -74,7 +109,12 @@ export function buildDecisionState(profile: string, titles: string[]): string {
                 parts.push(title);
         }
         const list = parts.join(', ');
-        return list ? `${trimmed} Candidates: ${list}.` : trimmed;
+        return { state: list ? `${trimmed} Candidates: ${list}.` : trimmed, titles: parts };
+}
+
+/** Build the `state` the model reads: the taste profile, then the candidates. */
+export function buildDecisionState(profile: string, titles: string[]): string {
+        return planDecisionState(profile, titles).state;
 }
 
 /**
@@ -177,16 +217,21 @@ export class TinyDecideRanker {
                 const model = this.model;
                 if (!model || titles.length === 0) return scores;
                 const capped = titles.slice(0, MAX_MODEL_CANDIDATES);
-                const state = buildDecisionState(profile, capped);
+                // Ask only about the titles the state actually names. Asking
+                // about one that was cut out costs a question and yields an
+                // answer with nothing to base it on, which then re-orders the
+                // list by noise.
+                const { state, titles: asked } = planDecisionState(profile, capped);
+                if (asked.length === 0) return scores;
                 try {
                         const { answers } = model.answer({
                                 state,
-                                questions: capped.map((title) => ({
+                                questions: asked.map((title) => ({
                                         type: 'noul' as const,
                                         text: `The user would want to watch ${title}.`,
                                 })),
                         });
-                        capped.forEach((title, index) => {
+                        asked.forEach((title, index) => {
                                 const answer = answers[index];
                                 if (answer && 'p' in answer) scores.set(title, answer.p);
                         });

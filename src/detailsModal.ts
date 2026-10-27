@@ -336,12 +336,37 @@ export class DetailsModal extends Modal {
                 const grid = host.createDiv({ cls: 'bfm-details-rec-grid' });
                 for (const item of this.recommendations) {
                         const card = grid.createDiv({ cls: 'bfm-details-rec-card' });
-                        card.createDiv({ cls: 'bfm-details-rec-title', text: item.title });
-                        card.createDiv({ cls: 'bfm-details-rec-why', text: describeBecause(item) });
-                        card.addEventListener('click', () => {
+                        card.setAttribute('role', 'button');
+                        card.setAttribute('tabindex', '0');
+                        card.setAttribute('aria-label', `${item.title} — ${describeBecause(item)}`);
+
+                        // The poster is what makes the section scannable: a column
+                        // of titles with a reason each reads as a list of claims,
+                        // while a card with artwork reads as a shelf.
+                        const poster = card.createDiv({ cls: 'bfm-details-rec-poster' });
+                        if (item.image) {
+                                poster.createEl('img', {
+                                        cls: 'bfm-details-rec-poster-image',
+                                        attr: { src: item.image, alt: '', loading: 'lazy' },
+                                });
+                        } else {
+                                setIcon(poster.createDiv({ cls: 'bfm-details-rec-poster-placeholder' }), 'film');
+                        }
+
+                        const body = card.createDiv({ cls: 'bfm-details-rec-body' });
+                        body.createDiv({ cls: 'bfm-details-rec-title', text: item.title });
+                        body.createDiv({ cls: 'bfm-details-rec-why', text: describeBecause(item) });
+
+                        const open = (): void => {
                                 this.callbacks.onOpenRecommendation?.(item.title);
-                                new Notice(`Searching for ${item.title}…`);
+                                new Notice(`Searching for ${item.title}...`);
                                 this.close();
+                        };
+                        card.addEventListener('click', open);
+                        card.addEventListener('keydown', (event) => {
+                                if (event.key !== 'Enter' && event.key !== ' ') return;
+                                event.preventDefault();
+                                open();
                         });
                 }
         }

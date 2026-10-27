@@ -141,6 +141,14 @@ export function patchDuration(input: Uint8Array, durationSeconds: number): Uint8
         }
         if (!mvhd) return input;
 
+        // Only a fragmented movie is patched, and it is patched before the
+        // writes below rather than after them: those writes go into the caller's
+        // buffer in place, so an early return past them would still edit a file
+        // it then claims to have left alone. A progressive file's durations are
+        // computed from its own sample tables, so overwriting them with the
+        // movie length would contradict the media.
+        if (!mvex) return input;
+
         // The movie header runs on a fixed 90 kHz clock.
         const movieTicks = Math.round(durationSeconds * (readTimescale(view, mvhd) || 90000));
         writeDuration(view, mvhd, movieTicks);
@@ -156,8 +164,6 @@ export function patchDuration(input: Uint8Array, durationSeconds: number): Uint8
                         writeDuration(view, mdhd, Math.round(durationSeconds * (readTimescale(view, mdhd) || 1000)));
                 }
         }
-
-        if (!mvex) return input;
 
         // A file that has already been patched (a repair pass over an existing
         // download) carries a `mehd`; update it rather than adding a second.

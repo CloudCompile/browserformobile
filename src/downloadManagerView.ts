@@ -211,11 +211,14 @@ export class DownloadManagerView extends ItemView {
 						const buffer = readResult.buffer;
 						const data = new Uint8Array(buffer);
 						const patch = inspectDurationEnhanced(data);
-						const healthy =
-							patch.durationSeconds !== null
-							&& ((patch.staleTrackHeaders ?? 0) + (patch.mismatchedTrackHeaders ?? 0)) > 0;
+						// A fragmented file needs rebuilding even when its headers are
+						// consistent: browsers read it, nothing else does.
+						const needsFix =
+							patch.fragmented
+							|| (patch.durationSeconds !== null
+								&& ((patch.staleTrackHeaders ?? 0) + (patch.mismatchedTrackHeaders ?? 0)) > 0);
 						status = {
-							needsRepair: healthy,
+							needsRepair: needsFix,
 							durationSeconds: patch.durationSeconds,
 						};
 						this.scanCache.set(entry.path, { key: cacheKey, status });
@@ -355,8 +358,9 @@ export class DownloadManagerView extends ItemView {
 			const buffer = await adapter.readBinary(item.path);
 			const data = new Uint8Array(buffer);
 			const patch = inspectDurationEnhanced(data);
-			const isUnhealthy = patch.durationSeconds !== null
-				&& ((patch.staleTrackHeaders ?? 0) + (patch.mismatchedTrackHeaders ?? 0)) > 0;
+			const isUnhealthy = patch.fragmented
+				|| (patch.durationSeconds !== null
+					&& ((patch.staleTrackHeaders ?? 0) + (patch.mismatchedTrackHeaders ?? 0)) > 0);
 			if (!isUnhealthy) {
 				notice.hide();
 				new Notice(`${item.name}: nothing to repair.`);
@@ -369,7 +373,7 @@ export class DownloadManagerView extends ItemView {
 			}
 			const repaired = repairDuration(data);
 			if (!repaired) {
-				this.statuses.set(item.path, { needsRepair: true, durationSeconds: null, failed: 'Could not recover duration.' });
+				this.statuses.set(item.path, { needsRepair: true, durationSeconds: null, failed: 'Could not rebuild this file.' });
 				notice.hide();
 				new Notice(`${item.name}: repair failed.`);
 				this.render();

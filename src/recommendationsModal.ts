@@ -2,6 +2,15 @@ import { App, Modal, Notice, setIcon } from 'obsidian';
 import type { Recommendation } from './recommend';
 import { describeBecause } from './recommendService';
 
+/** Whether two lists would render the same cards, in the same order. */
+function sameTitles(left: Recommendation[], right: Recommendation[]): boolean {
+        if (left.length !== right.length) return false;
+        return left.every((item, index) => {
+                const other = right[index];
+                return other !== undefined && item.title === other.title && (item.because[0] ?? '') === (other.because[0] ?? '');
+        });
+}
+
 /** What the page's loader hands back once the seeds have been mined. */
 export interface RecommendationsResult {
         items: Recommendation[];
@@ -93,11 +102,15 @@ export class RecommendationsModal extends Modal {
                                 },
                                 (items, done, total) => {
                                         if (id !== this.requestId) return;
-                                        // The list is only ever added to, so repainting on
-                                        // each pass shows progress without losing the grid.
+                                        // Only repaint when the grid actually changed. A
+                                        // rebuild replaces every poster element, and a seed
+                                        // that adds nothing to the top `limit` is the common
+                                        // case — repainting anyway reloaded the whole grid of
+                                        // images on the phone for every seed.
+                                        const changed = !sameTitles(this.items, items);
                                         this.items = items;
                                         this.progress = { ...this.progress, done, total };
-                                        if (items.length > 0) this.render();
+                                        if (changed && items.length > 0) this.render();
                                         else this.renderProgress();
                                 },
                         );

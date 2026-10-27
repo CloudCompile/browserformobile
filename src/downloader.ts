@@ -830,7 +830,7 @@ export class DownloadManager {
                                         // sidecar is written last, so a crash can
                                         // leave the index covering a batch the sidecar
                                         // does not mention.
-                                        const index = await this.mp4Resume(destination, path);
+                                        const index = await this.mp4Resume(destination, path, onDisk);
                                         if (!index) {
                                                 resumeFrom = 0;
                                                 resumeBytes = 0;
@@ -1099,29 +1099,36 @@ export class DownloadManager {
                         builder = ProgressiveMp4Builder.fromIndex(raw);
                 }
                 try {
-                        await downloadSegmentsStreaming(
-                                playlist,
-                                {
-                                        concurrency: this.options.segmentConcurrency,
-                                        signal,
-                                        onProgress,
-                                        batchBytes: this.batchBytesFor(playlist),
-                                        resumeFrom,
-                                        resumeBytes,
-                                },
-                                async (_index, chunk, writtenThrough) => {
-                                        segments = writtenThrough;
-                                        stream.push(chunk);
-                                        await stream.flush();
-                                        const batch = records;
-                                        records = [];
-                                        for (const record of batch) await indexWriter.write(record);
-                                        state.segments = writtenThrough;
-                                        state.bytes = bytes;
-                                        await writePartial(destination, path, state);
-                                },
-                        );
-                        await stream.finish();
+                        // A run killed between its last batch and the movie header
+                        // resumes with every segment already on disk. There is
+                        // nothing to fetch, and `finish` — which insists the
+                        // transmuxer produced something — would reject an empty run
+                        // and leave a complete episode that can never be closed.
+                        if (resumeFrom < playlist.segments.length) {
+                                await downloadSegmentsStreaming(
+                                        playlist,
+                                        {
+                                                concurrency: this.options.segmentConcurrency,
+                                                signal,
+                                                onProgress,
+                                                batchBytes: this.batchBytesFor(playlist),
+                                                resumeFrom,
+                                                resumeBytes,
+                                        },
+                                        async (_index, chunk, writtenThrough) => {
+                                                segments = writtenThrough;
+                                                stream.push(chunk);
+                                                await stream.flush();
+                                                const batch = records;
+                                                records = [];
+                                                for (const record of batch) await indexWriter.write(record);
+                                                state.segments = writtenThrough;
+                                                state.bytes = bytes;
+                                                await writePartial(destination, path, state);
+                                        },
+                                );
+                                await stream.finish();
+                        }
                 } catch (error) {
                         // Let the writes already queued finish so the file and its
                         // sidecar agree before the failure is reported.
@@ -1149,12 +1156,22 @@ export class DownloadManager {
          * fragment, a few hundred bytes against the media's tens of megabytes —
          * and a partial whose index is missing, foreign, or unreadable is
          * discarded rather than guessed at.
+         *
+         * `onDisk` bounds the read: records are appended after the media they
+         * describe, so an index claiming bytes the staging file does not have is
+         * cut back to the last fragment that is really there. A resume taken from
+         * the index alone would otherwise write the rest of the episode past a
+         * hole and produce a file whose offsets point at nothing.
          */
-        private async mp4Resume(destination: Destination, path: string): Promise<IndexState | null> {
+        private async mp4Resume(
+                destination: Destination,
+                path: string,
+                onDisk: number | null,
+        ): Promise<IndexState | null> {
                 try {
                         const raw = await destination.read(partialIndexPath(path));
                         if (!raw) return null;
-                        const index = readIndex(raw);
+                        const index = readIndex(raw, onDisk ?? Number.POSITIVE_INFINITY);
                         return index.segments > 0 ? index : null;
                 } catch {
                         return null;

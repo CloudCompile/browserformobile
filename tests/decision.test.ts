@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  buildDecisionState, JevRanker, MAX_STATE_TOKENS, TinyDecideRanker, type DecisionDeps,
+  buildDecisionState, JevRanker, MAX_STATE_TOKENS, planDecisionState, TinyDecideRanker, type DecisionDeps,
 } from '../src/decision';
 
 // The real weights, when they are present locally. CI has no copy, so the
@@ -36,6 +36,28 @@ describe('buildDecisionState', () => {
   it('never truncates the profile away entirely', () => {
     const state = buildDecisionState('Likes Naruto and Bleach.', []);
     expect(state).toBe('Likes Naruto and Bleach.');
+  });
+  it('reports exactly the titles the state names', () => {
+    const many = Array.from({ length: 200 }, (_, i) => `Some Very Long Candidate Title Number ${i}`);
+    const plan = planDecisionState('Likes Naruto.', many);
+    expect(plan.titles.length).toBeGreaterThan(0);
+    expect(plan.titles.length).toBeLessThan(many.length);
+    // Only these may be asked about: an answer about a title the model never
+    // saw is noise that re-orders the list.
+    for (const title of plan.titles) expect(plan.state).toContain(title);
+    for (const title of many.slice(plan.titles.length)) expect(plan.state).not.toContain(title);
+  });
+  it('shortens a long profile instead of dropping every candidate', () => {
+    const profile = Array.from({ length: 400 }, (_, i) => `Series${i}`).join(' ');
+    const plan = planDecisionState(profile, ['Boruto']);
+    expect(plan.titles).toEqual(['Boruto']);
+    expect(plan.state).toContain('Candidates: Boruto.');
+    expect(plan.state.split(/\s+/).length).toBeLessThan(MAX_STATE_TOKENS);
+  });
+  it('asks about nothing when a title cannot fit', () => {
+    const plan = planDecisionState('Likes Naruto.', ['A '.repeat(400).trim()]);
+    expect(plan.titles).toEqual([]);
+    expect(plan.state).toBe('Likes Naruto.');
   });
 });
 

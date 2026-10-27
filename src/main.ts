@@ -310,7 +310,7 @@ export default class AnimePlugin extends Plugin {
 		// is always computed.
 		const curated = await this.curateRecommendations(result.items, result.usedSeeds);
 		const scores = await this.scoreWithModel(
-			this.modelProfile(result.usedSeeds.join(', ')),
+			this.modelProfile(result.usedSeeds.join(', '), result.usedSeeds),
 			curated.items,
 		);
 		if (scores.size === 0) return { ...result, items: curated.items };
@@ -522,12 +522,22 @@ export default class AnimePlugin extends Plugin {
 	}
 
 	/**
-	 * The text a decision model judges candidates against: the seed titles, then
-	 * the strongest of the rest of the history.
+	 * The text a decision model judges candidates against: the seeds already
+	 * chosen, then the strongest of the rest of the history.
+	 *
+	 * `exclude` is what the caller has already put in `seedText`. Repeating it in
+	 * the tail is not harmless — the model reads a fixed token window, so a
+	 * duplicated name takes the place of a series the user also likes, and the
+	 * profile it judges against is narrower than the history it claims.
 	 */
-	private modelProfile(seedText: string): string {
-		const owned = this.ownedSeries().slice(0, 12).join(', ');
-		return `${seedText}. ${owned}.`;
+	private modelProfile(seedText: string, exclude: string[] = []): string {
+		const skip = new Set(exclude.map((name) => name.trim().toLowerCase()));
+		const rest = this.tasteSeeds()
+			.filter((seed) => !skip.has(seed.series.trim().toLowerCase()))
+			.slice(0, 12)
+			.map((seed) => seed.series);
+		if (rest.length === 0) return seedText;
+		return `${seedText}. Also: ${rest.join(', ')}.`;
 	}
 
 	/**
@@ -550,7 +560,7 @@ export default class AnimePlugin extends Plugin {
 		});
 		if (result.items.length === 0) return result.items;
 
-		const scores = await this.scoreWithModel(this.modelProfile(seed), result.items);
+		const scores = await this.scoreWithModel(this.modelProfile(seed, [seed]), result.items);
 		if (scores.size === 0) return result.items;
 		return applyModelScores(result.items, scores);
 	}
@@ -883,10 +893,12 @@ export default class AnimePlugin extends Plugin {
 	}
 
 	/**
-	 * Rewrite the duration of previously downloaded MP4s. Files made before
-	 * 1.1.1 report the same length in players that read the track headers
-	 * (Samsung Gallery), because mux.js left the duration at its sentinel.
-	 * The real length is still in the file, so it can be repaired in place.
+	 * Rewrite previously downloaded MP4s into the container other players read.
+	 * Files made before 1.1.1 also report the same length everywhere, because
+	 * mux.js left the duration at its sentinel; files made before the
+	 * progressive writer are fragmented, so only Obsidian's own player opens
+	 * them at all. The media is already on disk, so both are repaired in place
+	 * rather than re-downloaded.
 	 */
 	private async repairDownloads(): Promise<void> {
 		const folder = this.settings.downloadExternal ? '' : this.settings.downloadFolder;

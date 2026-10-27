@@ -232,7 +232,7 @@ export function parseFragments(segment: Uint8Array): ParsedFragment[] {
 	const parsed: ParsedFragment[] = [];
 	for (let index = 0; index < top.length; index++) {
 		const moof = top[index];
-		if (moof.type !== 'moof') continue;
+		if (!moof || moof.type !== 'moof') continue;
 		const mdat = top.slice(index + 1).find((item) => item.type === 'mdat');
 		if (!mdat) throw new Mp4Error('The converted stream has no media data.');
 		const mediaOffset = mdat.content - moof.start;
@@ -267,6 +267,62 @@ export function mdatHeader(payloadLength: number): Uint8Array {
 	view.setUint32(0, 8 + payloadLength);
 	header.set([0x6d, 0x64, 0x61, 0x74], 4); // 'mdat'
 	return header;
+}
+
+/**
+ * Rewrite a fragmented MP4 — what this plugin wrote before the builder existed —
+ * as a progressive one. Returns null when the input is not a fragmented MP4 this
+ * module understands, or when it already is progressive.
+ *
+ * The whole file is in memory: the caller has read it to inspect it anyway, and
+ * that is what the repair path already costs. The media is copied through
+ * untouched; only the container is rebuilt.
+ */
+export function convertFragmented(input: Uint8Array): Uint8Array | null {
+	try {
+		const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+		const top = boxesIn(view, input.byteLength);
+		const ftyp = findBox(top, 'ftyp');
+		const moov = findBox(top, 'moov');
+		if (!ftyp || !moov) return null;
+		// A progressive file is already what this produces.
+		if (!findBox(boxesIn(view, moov.end, moov.content), 'mvex')) return null;
+
+		const init = new Uint8Array(ftyp.end - ftyp.start + moov.end - moov.start);
+		init.set(input.subarray(ftyp.start, ftyp.end), 0);
+		init.set(input.subarray(moov.start, moov.end), ftyp.end - ftyp.start);
+		const builder = new ProgressiveMp4Builder(init);
+
+		const parts: Uint8Array[] = [builder.ftyp];
+		let bytes = builder.ftyp.byteLength;
+		for (let index = 0; index < top.length; index++) {
+			const moof = top[index];
+			if (!moof || moof.type !== 'moof') continue;
+			const mdat = top.slice(index + 1).find((item) => item.type === 'mdat');
+			if (!mdat) return null;
+			// Parse through the shared entry point so the same bounds checks that
+			// guard a live download guard the conversion.
+			for (const parsed of parseFragments(input.subarray(moof.start, mdat.end))) {
+				const payloadOffset = bytes + 8;
+				parts.push(mdatHeader(parsed.media.byteLength), parsed.media);
+				bytes += 8 + parsed.media.byteLength;
+				builder.addFragment(parsed, payloadOffset);
+			}
+		}
+		if (parts.length === 1) return null;
+
+		const movie = builder.buildMoov();
+		const out = new Uint8Array(bytes + movie.byteLength);
+		let at = 0;
+		for (const part of parts) {
+			out.set(part, at);
+			at += part.byteLength;
+		}
+		out.set(movie, at);
+		return out;
+	} catch {
+		return null;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -579,7 +635,8 @@ function buildCtts(samples: SampleRecord[]): Uint8Array | null {
 function buildStss(samples: SampleRecord[]): Uint8Array | null {
 	const sync: number[] = [];
 	for (let index = 0; index < samples.length; index++) {
-		if (!(samples[index].flags & NON_SYNC_SAMPLE)) sync.push(index + 1);
+		const sample = samples[index];
+		if (sample && !(sample.flags & NON_SYNC_SAMPLE)) sync.push(index + 1);
 	}
 	if (sync.length === samples.length || sync.length === 0) return null;
 	const { bytes, view } = table(sync.length, 4);
@@ -591,7 +648,7 @@ function buildStss(samples: SampleRecord[]): Uint8Array | null {
 function buildStsc(chunks: ChunkRecord[]): Uint8Array {
 	const runs: { first: number; count: number }[] = [];
 	for (let index = 0; index < chunks.length; index++) {
-		const count = chunks[index].count;
+		const count = chunks[index]?.count ?? 0;
 		const last = runs[runs.length - 1];
 		if (last && last.count === count) continue;
 		runs.push({ first: index + 1, count });
@@ -690,11 +747,14 @@ export interface IndexState {
 	segments: number;
 	/** Length of the intact part of the index, in bytes. */
 	length: number;
-	/** True when the file stops part-way through a record (a torn append). */
+	/**
+	 * True when the index stops before its last record — either a torn append or
+	 * `mediaLimit` cutting it short. `length` is where the usable part ends.
+	 */
 	torn: boolean;
 }
 
-export function readIndex(data: Uint8Array): IndexState {
+export function readIndex(data: Uint8Array, mediaLimit = Number.POSITIVE_INFINITY): IndexState {
 	const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
 	if (data.byteLength < INDEX_HEADER || view.getUint32(0) !== INDEX_MAGIC) {
 		throw new Mp4Error('The interrupted download has no usable index.');
@@ -723,6 +783,14 @@ export function readIndex(data: Uint8Array): IndexState {
 		const mediaOffset = view.getUint32(at + 8);
 		const payloadOffset = Number(view.getBigUint64(at + 12));
 		if (at + RECORD_HEADER + moofLength > data.byteLength) {
+			torn = true;
+			break;
+		}
+		// A record is only worth replaying if the media it points at is really
+		// there. Records are appended in order, so a record past the limit means
+		// the rest are too: the index stops here, and the caller trims the file
+		// back to what this record covers.
+		if (payloadOffset + mediaLength > mediaLimit) {
 			torn = true;
 			break;
 		}
