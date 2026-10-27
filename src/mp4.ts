@@ -423,14 +423,25 @@ export class ProgressiveMp4Builder {
 				decodeTime = start + sample.duration;
 				const offset = dataStart + bytes;
 				bytes += sample.size;
-				if (start < track.endTime) continue;
-
-				if (start > track.endTime) {
-					// `stts` has no way to express a gap — a sample's decode
-					// time is the sum of the durations before it — so the gap is
-					// absorbed into the sample preceding it.
-					const previous = track.samples[track.samples.length - 1];
-					if (previous) previous.duration += start - track.endTime;
+				// Whether this is a re-emission is decided by the sample's whole
+				// span, not its start. mux.js re-derives a segment's base decode
+				// time at every flush, and audio drifts by a tick each time (44.1
+				// kHz samples do not divide 90 kHz evenly), so a fragment
+				// routinely begins a tick *before* the end of what is already
+				// written. A re-emitted sample lies wholly inside that, and is
+				// dropped; one that merely starts early is real media, and
+				// dropping it would leave an audible hole.
+				if (start + sample.duration <= track.endTime) continue;
+				const previous = track.samples[track.samples.length - 1];
+				if (start < track.endTime) {
+					// `stts` has no way to express an overlap or a gap — a
+					// sample's decode time is the sum of the durations before it
+					// — so both are absorbed into the sample preceding them.
+					const overlap = track.endTime - start;
+					if (!previous || previous.duration <= overlap) continue;
+					previous.duration -= overlap;
+				} else if (previous && start > track.endTime) {
+					previous.duration += start - track.endTime;
 				}
 				track.samples.push(sample);
 				track.endTime = decodeTime;
@@ -618,9 +629,9 @@ function buildStco(chunks: ChunkRecord[]): Uint8Array {
 // ---------------------------------------------------------------------------
 
 const INDEX_MAGIC = 0x42464d49; // 'BFMI'
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 const INDEX_HEADER = 16;
-const RECORD_HEADER = 20;
+const RECORD_HEADER = 24;
 
 /**
  * The index header: magic, version, the `ftyp` length, the init segment, and
@@ -640,14 +651,25 @@ export function encodeIndexHeader(init: Uint8Array): Uint8Array {
 	return out;
 }
 
-/** One fragment's `moof` plus the position its media was written at. */
-export function encodeIndexRecord(fragment: ParsedFragment, payloadOffset: number): Uint8Array {
+/**
+ * One fragment's `moof`, the position its media was written at, and how many
+ * playlist segments had been downloaded when it was emitted. The record carries
+ * the resume point as well as the sample metadata so the index alone describes
+ * the staging file: a resume that trusts only the index cannot end up with a
+ * file and a resume point that disagree.
+ */
+export function encodeIndexRecord(
+	fragment: ParsedFragment,
+	payloadOffset: number,
+	segments: number,
+): Uint8Array {
 	const out = new Uint8Array(RECORD_HEADER + fragment.moof.byteLength);
 	const view = new DataView(out.buffer);
 	view.setUint32(0, fragment.moof.byteLength);
 	view.setUint32(4, fragment.media.byteLength);
 	view.setUint32(8, fragment.mediaOffset);
 	view.setBigUint64(12, BigInt(Math.round(payloadOffset)));
+	view.setUint32(20, segments);
 	out.set(fragment.moof, RECORD_HEADER);
 	return out;
 }
@@ -655,6 +677,8 @@ export function encodeIndexRecord(fragment: ParsedFragment, payloadOffset: numbe
 export interface IndexRecord {
 	samples: FragmentSamples;
 	payloadOffset: number;
+	/** Segments downloaded when this fragment was written. */
+	segments: number;
 }
 
 export interface IndexState {
@@ -662,6 +686,10 @@ export interface IndexState {
 	fragments: IndexRecord[];
 	/** The end of the media the index covers, in absolute file bytes. */
 	mediaEnd: number;
+	/** How many playlist segments the media covers. */
+	segments: number;
+	/** Length of the intact part of the index, in bytes. */
+	length: number;
 	/** True when the file stops part-way through a record (a torn append). */
 	torn: boolean;
 }
@@ -681,8 +709,10 @@ export function readIndex(data: Uint8Array): IndexState {
 
 	const fragments: IndexRecord[] = [];
 	let mediaEnd = ftypLength;
+	let segments = 0;
 	let torn = false;
 	let at = INDEX_HEADER + initLength;
+	let length = at;
 	while (at < data.byteLength) {
 		if (at + RECORD_HEADER > data.byteLength) {
 			torn = true;
@@ -698,9 +728,11 @@ export function readIndex(data: Uint8Array): IndexState {
 		}
 		const moof = data.subarray(at + RECORD_HEADER, at + RECORD_HEADER + moofLength);
 		const samples = parseMoof(moof, mediaOffset, mediaLength);
-		fragments.push({ samples, payloadOffset });
+		fragments.push({ samples, payloadOffset, segments: view.getUint32(at + 20) });
 		mediaEnd = payloadOffset + mediaLength;
+		segments = view.getUint32(at + 20);
 		at += RECORD_HEADER + moofLength;
+		length = at;
 	}
-	return { init, fragments, mediaEnd, torn };
+	return { init, fragments, mediaEnd, segments, length, torn };
 }

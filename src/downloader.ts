@@ -11,9 +11,18 @@ import {
         RateLimitError,
         type MediaPlaylist,
 } from './hls';
+import {
+	encodeIndexHeader,
+	encodeIndexRecord,
+	mdatHeader,
+	parseFragments,
+	ProgressiveMp4Builder,
+	readIndex,
+	type IndexState,
+} from './mp4';
 import { elapsedSeconds, remainingBytesFromBitrate, SpeedTracker } from './perf';
 import type { DownloadRun } from './stats';
-import { patchDuration, TransmuxStream } from './transmux';
+import { TransmuxStream } from './transmux';
 import { generateId } from './utils';
 import { ScreenWakeLock } from './wakelock';
 
@@ -55,6 +64,12 @@ const MP4_TIMESCALE = 90000;
 const PART_SUFFIX = '.part';
 /** Suffix of the JSON sidecar describing that staging file. */
 const PART_META_SUFFIX = '.part.json';
+/**
+ * Suffix of the resume index for a staged MP4. It mirrors each fragment's
+ * `moof`, which is what lets a resumed run rebuild the sample tables for the
+ * media already on disk.
+ */
+const PART_INDEX_SUFFIX = '.part.idx';
 /** How far a resumed stream may differ in total length before it is discarded. */
 const DURATION_TOLERANCE_SECONDS = 1;
 /**
@@ -69,18 +84,17 @@ const RATE_LIMIT_MAX_WAIT_MS = 15 * 60_000;
 const MAX_RATE_LIMIT_RETRIES = 12;
 /**
  * Sidecar layout version. Bumped when the staging file's contents change shape:
- * v1 held the raw MPEG-TS stream for every format, v2 holds the converted MP4
- * for the MP4 format. v3 adds the episode number and title so a queue restored
- * after a restart can name a job without calling the API.
- *
- * The staging file's shape is unchanged from v2 to v3, so a v2 sidecar is still
- * readable and is accepted rather than discarded — the only thing missing is the
- * episode label, which falls back to the id. A v1 sidecar must be discarded:
- * appending to it would corrupt the file.
+ * v1 held the raw MPEG-TS stream for every format, v2 holds a converted MP4 for
+ * the MP4 format, v3 adds the episode number and title so a queue restored after
+ * a restart can name a job without calling the API. v4 is the progressive MP4:
+ * the same version number covers TS, whose staging file has not changed, so a
+ * v2 or v3 sidecar is still read — a TS partial continues from its bytes, and an
+ * MP4 one is discarded by the missing index rather than appended to. A v1
+ * sidecar must be discarded: appending to it would corrupt the file.
  */
-const PARTIAL_VERSION = 3;
+const PARTIAL_VERSION = 4;
 /** Sidecar versions whose staging file this build can still append to. */
-const COMPATIBLE_PARTIAL_VERSIONS = new Set([2, 3]);
+const COMPATIBLE_PARTIAL_VERSIONS = new Set([2, 3, 4]);
 /**
  * How many times a job is retried automatically after a non-rate-limit failure
  * before it is surfaced as failed. Mobile connectivity drops constantly and a
@@ -190,6 +204,10 @@ function partialMetaPath(finalPath: string): string {
         return `${finalPath}${PART_META_SUFFIX}`;
 }
 
+function partialIndexPath(finalPath: string): string {
+        return `${finalPath}${PART_INDEX_SUFFIX}`;
+}
+
 /** Read a job's sidecar, or null when it is missing, unreadable, or too old. */
 async function readPartial(
         destination: Destination,
@@ -215,9 +233,10 @@ async function writePartial(
         await destination.write(partialMetaPath(finalPath), new TextEncoder().encode(JSON.stringify(state)));
 }
 
-/** Delete a job's staging file and sidecar. */
+/** Delete a job's staging file, sidecar and resume index. */
 async function discardPartial(destination: Destination, finalPath: string): Promise<void> {
         await destination.remove(partialMetaPath(finalPath));
+        await destination.remove(partialIndexPath(finalPath));
         await destination.remove(partialStatePath(finalPath));
 }
 
@@ -800,20 +819,42 @@ export class DownloadManager {
                                 Math.abs(partial.durationSeconds - playlist.duration) <=
                                         DURATION_TOLERANCE_SECONDS;
                         const onDisk = await destination.size(partialStatePath(path));
-                        // The sidecar is written after each batch, so a crash
-                        // between the append and that write leaves the staging
-                        // file longer than the recorded byte count. Those extra
-                        // bytes are a torn batch: cut them off rather than
-                        // discarding a download that may be almost complete. A
-                        // file *shorter* than recorded is not recoverable, so
-                        // that is still thrown away.
                         if (matches && partial.segments > 0 && onDisk !== null && onDisk >= partial.bytes) {
-                                if (onDisk > partial.bytes) {
-                                        await destination.truncate(partialStatePath(path), partial.bytes);
-                                }
                                 resumeFrom = Math.min(partial.segments, playlist.segments.length);
                                 resumeBytes = partial.bytes;
-                                job.partialFound = true;
+                                if (this.options.format === 'mp4') {
+                                        // A progressive MP4 can only be finished from
+                                        // its index, which is what rebuilds the sample
+                                        // tables for the media already on disk, and it
+                                        // — not the sidecar — is the resume point: the
+                                        // sidecar is written last, so a crash can
+                                        // leave the index covering a batch the sidecar
+                                        // does not mention.
+                                        const index = await this.mp4Resume(destination, path);
+                                        if (!index) {
+                                                resumeFrom = 0;
+                                                resumeBytes = 0;
+                                                await discardPartial(destination, path);
+                                        } else {
+                                                resumeFrom = Math.min(index.segments, playlist.segments.length);
+                                                resumeBytes = index.mediaEnd;
+                                                await this.trimToIndex(destination, path, index, onDisk);
+                                                job.partialFound = true;
+                                        }
+                                } else {
+                                        // The sidecar is written after each batch, so
+                                        // a crash between the append and that write
+                                        // leaves the staging file longer than the
+                                        // recorded byte count. Those extra bytes are a
+                                        // torn batch: cut them off rather than
+                                        // discarding a download that may be almost
+                                        // complete. A file *shorter* than recorded is
+                                        // not recoverable, so that is still discarded.
+                                        if (onDisk > partial.bytes) {
+                                                await destination.truncate(partialStatePath(path), partial.bytes);
+                                        }
+                                        job.partialFound = true;
+                                }
                         } else {
                                 await discardPartial(destination, path);
                         }
@@ -967,16 +1008,39 @@ export class DownloadManager {
         }
 
         /**
-         * MP4 is transmuxed as the stream arrives, not from a whole-file
-         * read-back.
+         * MP4 is transmuxed as the stream arrives and written as a *progressive*
+         * file: `ftyp`, one `mdat` per fragment, then a `moov` carrying real
+         * sample tables.
+         *
+         * mux.js emits a fragmented MP4 — an init segment plus `moof`/`mdat`
+         * pairs — which a player that reads the sample tables refuses, because
+         * the `moov` it writes has empty `stts`/`stsz`/`stco` tables and the
+         * timing lives in fragments those players never look at. Obsidian's own
+         * video element reads the fragments, which is why these files played
+         * there and nowhere else. `ProgressiveMp4Builder` keeps mux.js as the
+         * demuxer and rebuilds the container around it: the media bytes are
+         * written through unchanged and the tables describing them are appended
+         * once the stream ends.
+         *
+         * The tables need every sample, which is too much to hold for an episode,
+         * so each fragment's `moof` — which already carries every per-sample
+         * field — is mirrored into a `.part.idx` sidecar as its media is written.
+         * A resume rebuilds the builder by replaying that index, and the index is
+         * also what the resume point is taken from.
          *
          * mux.js emits nothing from `push()`; output only appears at `flush()`,
          * and flushing once at the end materialises the entire episode — measured
          * at ~4 GB for a 726 MB stream, which restarts a phone. Each downloaded
          * batch is pushed and flushed in turn instead, so the transmuxer holds one
-         * batch rather than the whole movie, and every fragment is written and
-         * dropped. The staging file is the partial MP4 itself, so a failure leaves
-         * a resumable file and a resume appends to it.
+         * batch rather than the whole movie.
+         *
+         * A flush that lands mid-frame makes mux.js emit that frame truncated —
+         * measured: one 860-byte frame came back as 722 bytes when the window was
+         * cut at 64 KB — so the flush points matter. They fall at batch
+         * boundaries, and a batch is a whole number of playlist segments, so
+         * every flush sits on a segment boundary, which is a keyframe and a frame
+         * boundary. Flushing at keyframes was verified frame-for-frame against a
+         * single whole-stream flush.
          */
         private async writeMp4(
                 job: DownloadJob,
@@ -989,26 +1053,39 @@ export class DownloadManager {
                 resumeBytes: number,
         ): Promise<number> {
                 const part = partialStatePath(path);
+                const index = partialIndexPath(path);
                 const resuming = resumeFrom > 0;
                 const writer = await destination.open(part, { append: resuming });
+                const indexWriter = await destination.open(index, { append: resuming });
                 const state = this.partialState(job, playlist, resumeFrom, resumeBytes);
                 let bytes = resumeBytes;
-                let init: Uint8Array | null = null;
+                let segments = resumeFrom;
+                let builder: ProgressiveMp4Builder | null = null;
+                // Records for the batch in hand, appended only once all of its
+                // media is on disk so the index never describes bytes that are
+                // not there.
+                let records: Uint8Array[] = [];
                 const stream = new TransmuxStream(
-                        (segment) => {
-                                init = patchDuration(segment, playlist.duration);
+                        async (init) => {
+                                builder = new ProgressiveMp4Builder(init);
+                                await writer.write(builder.ftyp);
+                                bytes += builder.ftyp.byteLength;
+                                await indexWriter.write(encodeIndexHeader(init));
                         },
                         async (fragment) => {
-                                if (init) {
-                                        await writer.write(init);
-                                        bytes += init.byteLength;
-                                        init = null;
+                                if (!builder) throw new DownloadError('The stream could not be converted to MP4.');
+                                for (const parsed of parseFragments(fragment)) {
+                                        const payloadOffset = bytes + 8;
+                                        await writer.write(mdatHeader(parsed.media.byteLength));
+                                        await writer.write(parsed.media);
+                                        bytes += 8 + parsed.media.byteLength;
+                                        builder.addFragment(parsed, payloadOffset);
+                                        records.push(encodeIndexRecord(parsed, payloadOffset, segments));
                                 }
-                                await writer.write(fragment);
-                                bytes += fragment.byteLength;
                         },
-                        // A resumed file already begins with an init segment;
-                        // writing a second one mid-file would corrupt it.
+                        // A resumed file already begins with `ftyp` and its index
+                        // header; writing a second of either mid-file would
+                        // corrupt it.
                         { skipInit: resuming },
                 );
                 if (resuming) {
@@ -1017,6 +1094,9 @@ export class DownloadManager {
                         // what is already written.
                         const base = Math.round(elapsedSeconds(playlist.durations, resumeFrom) * MP4_TIMESCALE);
                         if (base > 0) stream.setBaseMediaDecodeTime(base);
+                        const raw = await destination.read(index);
+                        if (!raw) throw new DownloadError('The interrupted download lost its index.');
+                        builder = ProgressiveMp4Builder.fromIndex(raw);
                 }
                 try {
                         await downloadSegmentsStreaming(
@@ -1030,8 +1110,12 @@ export class DownloadManager {
                                         resumeBytes,
                                 },
                                 async (_index, chunk, writtenThrough) => {
+                                        segments = writtenThrough;
                                         stream.push(chunk);
                                         await stream.flush();
+                                        const batch = records;
+                                        records = [];
+                                        for (const record of batch) await indexWriter.write(record);
                                         state.segments = writtenThrough;
                                         state.bytes = bytes;
                                         await writePartial(destination, path, state);
@@ -1042,12 +1126,60 @@ export class DownloadManager {
                         // Let the writes already queued finish so the file and its
                         // sidecar agree before the failure is reported.
                         await writer.settle();
+                        await indexWriter.settle();
                         throw error;
                 }
+                // The movie header goes last: it is the one box whose size depends
+                // on how much media there turned out to be.
+                if (!builder) throw new DownloadError('The stream could not be converted to MP4.');
+                const moov = builder.buildMoov();
+                await writer.write(moov);
+                bytes += moov.byteLength;
                 await writer.close();
+                await indexWriter.close();
                 await destination.rename(part, path);
                 await destination.remove(partialMetaPath(path));
+                await destination.remove(index);
                 return bytes;
+        }
+
+        /**
+         * The resume point a staged progressive MP4 describes, or null when it
+         * cannot be continued. The index is read whole — it holds one `moof` per
+         * fragment, a few hundred bytes against the media's tens of megabytes —
+         * and a partial whose index is missing, foreign, or unreadable is
+         * discarded rather than guessed at.
+         */
+        private async mp4Resume(destination: Destination, path: string): Promise<IndexState | null> {
+                try {
+                        const raw = await destination.read(partialIndexPath(path));
+                        if (!raw) return null;
+                        const index = readIndex(raw);
+                        return index.segments > 0 ? index : null;
+                } catch {
+                        return null;
+                }
+        }
+
+        /**
+         * Cut a staged MP4 back to what its index describes. A batch is written
+         * media-first, so a run killed part-way leaves either media no record
+         * points at, a half-written record, or both; the index is the record of
+         * what is really there, so both ends are trimmed to match it.
+         */
+        private async trimToIndex(
+                destination: Destination,
+                path: string,
+                index: IndexState,
+                onDisk: number | null,
+        ): Promise<void> {
+                if (onDisk !== null && onDisk > index.mediaEnd) {
+                        await destination.truncate(partialStatePath(path), index.mediaEnd);
+                }
+                const indexSize = await destination.size(partialIndexPath(path));
+                if (index.torn && indexSize !== null && indexSize > index.length) {
+                        await destination.truncate(partialIndexPath(path), index.length);
+                }
         }
 
         /** True when a partial file with recorded progress exists for this job. */
@@ -1147,6 +1279,13 @@ export class DownloadManager {
                         // Only a partial this build could append to is worth
                         // restoring; a format change makes the bytes meaningless.
                         if (partial.format !== this.options.format) continue;
+                        // An MP4 partial without an index cannot be finished — the
+                        // sample tables for the media already on disk are rebuilt
+                        // from it — so it is not offered as resumable.
+                        if (partial.format === 'mp4') {
+                                const indexSize = await destination.size(partialIndexPath(finalPath));
+                                if (indexSize === null || indexSize <= 0) continue;
+                        }
                         const onDisk = await destination.size(partialStatePath(finalPath));
                         if (onDisk === null || onDisk < partial.bytes) continue;
                         if (this.jobs.some((job) => job.episode.id === partial.episodeId)) continue;
