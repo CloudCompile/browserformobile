@@ -346,6 +346,8 @@ interface TrackTemplate {
 interface ChunkRecord {
 	offset: number;
 	count: number;
+	/** Byte position just past the chunk's last sample. */
+	end: number;
 }
 
 interface TrackState {
@@ -395,17 +397,52 @@ export class ProgressiveMp4Builder {
 		return builder;
 	}
 
-	/** Record one fragment's samples. The media bytes must already be placed at `payloadOffset`. */
+	/**
+	 * Record one fragment's samples. The media bytes must already be placed at
+	 * `payloadOffset`.
+	 *
+	 * mux.js re-emits the frames it is still holding when a flush lands
+	 * mid-frame, so a fragment's `tfdt` can sit *before* the track's decode end
+	 * and its first samples are ones an earlier flush already handed over. Those
+	 * are dropped: the sample tables are what a player reads, and a sample
+	 * listed twice plays twice. The bytes stay in the `mdat` — the payload is
+	 * written through untouched — so a drop leaves a hole no table points at,
+	 * and the chunk is split around it.
+	 */
 	addFragment(fragment: FragmentSamples, payloadOffset: number): void {
 		for (const traf of fragment.trafs) {
 			const track = this.tracks.get(traf.trackId);
 			if (!track) throw new Mp4Error(`The stream uses an unknown track (${traf.trackId}).`);
 			if (traf.samples.length === 0) continue;
-			track.chunks.push({
-				offset: payloadOffset + (traf.dataOffset - fragment.mediaOffset),
-				count: traf.samples.length,
-			});
-			for (const sample of traf.samples) track.samples.push(sample);
+
+			const dataStart = payloadOffset + (traf.dataOffset - fragment.mediaOffset);
+			let bytes = 0;
+			let decodeTime = traf.baseDecodeTime;
+			for (const sample of traf.samples) {
+				const start = decodeTime;
+				decodeTime = start + sample.duration;
+				const offset = dataStart + bytes;
+				bytes += sample.size;
+				if (start < track.endTime) continue;
+
+				if (start > track.endTime) {
+					// `stts` has no way to express a gap — a sample's decode
+					// time is the sum of the durations before it — so the gap is
+					// absorbed into the sample preceding it.
+					const previous = track.samples[track.samples.length - 1];
+					if (previous) previous.duration += start - track.endTime;
+				}
+				track.samples.push(sample);
+				track.endTime = decodeTime;
+
+				const last = track.chunks[track.chunks.length - 1];
+				if (last && last.end === offset) {
+					last.count++;
+					last.end = offset + sample.size;
+				} else {
+					track.chunks.push({ offset, count: 1, end: offset + sample.size });
+				}
+			}
 		}
 	}
 
