@@ -34,6 +34,12 @@ export interface SeriesSummary {
         eps: number;
         /** Present when the API surfaces an adult-content flag (search/filter may). */
         adultContent?: boolean;
+        /**
+         * Streaming source this entry came from. Undefined is the native
+         * (aniwaves) catalogue; `hentaimama` is the opt-in 18+ source whose ids
+         * are slugs and which is reached through `/api/providers/...`.
+         */
+        provider?: string;
 }
 
 export interface EpisodeSummary {
@@ -44,6 +50,8 @@ export interface EpisodeSummary {
         filler: boolean;
         subbed: boolean;
         dubbed: boolean;
+        /** Streaming source, so a download routes back to the right provider. */
+        provider?: string;
 }
 
 export interface SeriesDetail {
@@ -79,6 +87,10 @@ export interface AnimeInfo {
         recommended: SeriesSummary[];
         related: Record<string, SeriesSummary[]>;
         popular: SeriesSummary[];
+        /** Streaming source this detail belongs to; undefined is the native one. */
+        provider?: string;
+        /** Episode count for sources whose detail page reports it directly. */
+        episodeCount?: number | null;
 }
 
 export interface SearchResult {
@@ -182,6 +194,45 @@ async function fetchJson(base: string, path: string): Promise<unknown> {
         }
 }
 
+/**
+ * The opt-in 18+ streaming source. Its ids are slugs and it is reached through
+ * `/api/providers/hentaimama/...` rather than the native `/api/*` routes.
+ */
+export const ADULT_PROVIDER = 'hentaimama';
+
+/**
+ * Pull the adult source's hits out of an aggregate search's `sources` array and
+ * flatten them into the native `SeriesSummary` shape, tagging each with its
+ * provider so later requests route to the right endpoint.
+ */
+function collectAdultSources(sources: unknown): SeriesSummary[] {
+        if (!Array.isArray(sources)) return [];
+        const out: SeriesSummary[] = [];
+        for (const source of sources) {
+                const record = (source ?? {}) as Record<string, unknown>;
+                if (record.provider !== ADULT_PROVIDER) continue;
+                if (record.ok !== true || !Array.isArray(record.results)) continue;
+                for (const row of record.results as unknown[]) {
+                        const entry = (row ?? {}) as Record<string, unknown>;
+                        const id = asString(entry.slug) || asString(entry.id);
+                        if (!id) continue;
+                        out.push({
+                                id,
+                                title: asString(entry.title),
+                                japaneseTitle: asString(entry.japaneseTitle) || null,
+                                poster: asString(entry.poster) || null,
+                                showType: asString(entry.type) || 'TV',
+                                sub: 0,
+                                dub: 0,
+                                eps: asNumber(entry.episodes),
+                                adultContent: true,
+                                provider: ADULT_PROVIDER,
+                        });
+                }
+        }
+        return out;
+}
+
 export async function searchSeries(
         base: string,
         keyword: string,
@@ -206,7 +257,7 @@ export async function searchSeries(
         // response has no `data` array and no totalPage, so we flag it as overPage
         // instead of silently faking \"Page 1 of 1\".
         const parsePayload = (payload: unknown): { series: SeriesSummary[]; totalPages: number; overPage: boolean } => {
-                const raw = (payload ?? {}) as { results?: { data?: unknown; totalPage?: unknown; message?: unknown } };
+                const raw = (payload ?? {}) as { results?: { data?: unknown; totalPage?: unknown; message?: unknown; sources?: unknown } };
                 const rows = raw?.results?.data;
                 const series = Array.isArray(rows)
                         ? rows
@@ -234,10 +285,13 @@ export async function searchSeries(
                                 })
                                 .filter((seriesItem) => seriesItem.id)
                         : [];
+                // Adult sources (hentaimama) are opt-in and never appear in `data`;
+                // they arrive in `sources` when the caller asked for 18+ results.
+                const extra = includeAdult ? collectAdultSources(raw?.results?.sources) : [];
                 const totalPageNumber = asNumber(raw?.results?.totalPage);
                 const overPage = !Array.isArray(rows) && totalPageNumber === 0 && page > 1;
                 const totalPages = Math.max(1, totalPageNumber);
-                return { series, totalPages, overPage };
+                return { series: [...series, ...extra], totalPages, overPage };
         };
 
         const firstResponse = await getJson(base, buildUrl(page));
@@ -256,7 +310,39 @@ export async function searchSeries(
         return { series: last.series, totalPages: last.totalPages };
 }
 
-export async function loadEpisodes(base: string, seriesId: string): Promise<SeriesDetail> {
+export async function loadEpisodes(base: string, seriesId: string, provider?: string): Promise<SeriesDetail> {
+        // The 18+ source is addressed by slug through its own provider route and
+        // returns a flat episode list rather than the native nested shape.
+        if (provider === ADULT_PROVIDER) {
+                const payload = (await getJson(
+                        base,
+                        `/api/providers/${ADULT_PROVIDER}/episodes?id=${encodeURIComponent(seriesId)}`,
+                )) as { results?: { data?: unknown } };
+                const rows = payload?.results?.data;
+                if (!Array.isArray(rows)) {
+                        throw new AnimeApiError('The anime API returned no episode list for this series.');
+                }
+                const episodes = rows
+                        .map((row) => {
+                                const record = row as Record<string, unknown>;
+                                const id = asString(record.slug) || asString(record.id);
+                                return {
+                                        id,
+                                        number: asNumber(record.number),
+                                        title: asString(record.title),
+                                        filler: false,
+                                        subbed: true,
+                                        dubbed: false,
+                                        provider: ADULT_PROVIDER,
+                                };
+                        })
+                        .filter((episode) => episode.id);
+                if (episodes.length === 0) {
+                        throw new AnimeApiError('The anime API returned no episodes for this series.');
+                }
+                return { totalEpisodes: episodes.length, episodes };
+        }
+
         const payload = (await getJson(
                 base,
                 `/api/episodes/${encodeURIComponent(seriesId)}`,
@@ -285,7 +371,43 @@ export async function loadEpisodes(base: string, seriesId: string): Promise<Seri
         };
 }
 
-export async function loadAnimeInfo(base: string, seriesId: string): Promise<AnimeInfo> {
+export async function loadAnimeInfo(base: string, seriesId: string, provider?: string): Promise<AnimeInfo> {
+        // The 18+ source has no native info/preview endpoint; its provider detail
+        // is mapped into the same shape with no related/season blocks.
+        if (provider === ADULT_PROVIDER) {
+                const payload = (await getJson(
+                        base,
+                        `/api/providers/${ADULT_PROVIDER}/anime?id=${encodeURIComponent(seriesId)}`,
+                )) as { results?: { data?: unknown } };
+                const data = (payload?.results?.data ?? null) as Record<string, unknown> | null;
+                if (!data) {
+                        throw new AnimeApiError('The anime API returned no details for this series.');
+                }
+                const episodes = asNumber(data.episodes);
+                return {
+                        adultContent: true,
+                        id: asString(data.slug) || seriesId,
+                        dataId: asString(data.id) || null,
+                        title: asString(data.title) || null,
+                        japaneseTitle: asString(data.japaneseTitle) || null,
+                        poster: asString(data.poster) || null,
+                        showType: asString(data.type) || 'TV',
+                        duration: null,
+                        status: asString(data.status) || null,
+                        score: null,
+                        genres: Array.isArray(data.genres) ? data.genres.map((g) => String(g)).filter(Boolean) : [],
+                        studios: Array.isArray(data.studios) ? data.studios.map((s) => String(s)).filter(Boolean) : [],
+                        overview: asString(data.description) || null,
+                        metadata: {},
+                        seasons: [],
+                        recommended: [],
+                        related: {},
+                        popular: [],
+                        provider: ADULT_PROVIDER,
+                        episodeCount: episodes > 0 ? episodes : null,
+                };
+        }
+
         const payload = (await getJson(
                 base,
                 `/api/info?id=${encodeURIComponent(seriesId)}`,
@@ -431,7 +553,38 @@ export function resolveUrl(uri: string, baseUrl: string): string {
         }
 }
 
-export async function loadStream(base: string, episodeId: string): Promise<StreamSource> {
+export async function loadStream(base: string, episodeId: string, provider?: string): Promise<StreamSource> {
+        // The 18+ source resolves a single direct file through its own route: the
+        // provider picks the first playable mirror (HLS preferred) itself, so
+        // there is no native server-fallback dance to run here.
+        if (provider === ADULT_PROVIDER) {
+                const payload = (await getJson(
+                        base,
+                        `/api/providers/${ADULT_PROVIDER}/stream?id=${encodeURIComponent(episodeId)}`,
+                )) as { results?: { data?: Record<string, unknown> } };
+                const data = payload?.results?.data;
+                const link = (data?.link ?? {}) as Record<string, unknown>;
+                const url = asString(link.file) || null;
+                if (!data || !url) {
+                        return { url: null, iframe: asString(data?.embed) || null, server: asString(data?.server), variants: [] };
+                }
+                // HLS resolves to quality variants; a progressive MP4 is a single
+                // variant whose height is unknown until it is probed.
+                if (!/\.m3u8($|\?)/i.test(url)) {
+                        return { url, iframe: null, server: asString(data?.server), variants: [{ height: 0, width: 0, bandwidth: 0, url }] };
+                }
+                const response = await requestUrl({ url, method: 'GET', headers: {}, throw: false });
+                if (response.status >= 400) {
+                        throw new AnimeApiError(`The stream CDN returned HTTP ${response.status}.`);
+                }
+                return {
+                        url,
+                        iframe: null,
+                        server: asString(data?.server),
+                        variants: parseMasterPlaylist(response.text, url),
+                };
+        }
+
         const payload = (await getJson(
                 base,
                 `/api/stream?id=${encodeURIComponent(episodeId)}`,

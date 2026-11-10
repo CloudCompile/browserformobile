@@ -775,7 +775,7 @@ export class DownloadManager {
                 signal: AbortSignal,
                 onTick: () => void,
         ): Promise<void> {
-                const source = await loadStream(this.options.apiBase, job.episode.id);
+                const source = await loadStream(this.options.apiBase, job.episode.id, job.episode.provider);
                 if (signal.aborted) throw new DownloadError('Download cancelled.');
                 if (!source.url || source.variants.length === 0) {
                         throw new DownloadError(

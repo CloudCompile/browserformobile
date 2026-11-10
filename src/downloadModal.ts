@@ -430,7 +430,7 @@ export class DownloadModal extends Modal {
                 this.animeInfo = null;
                 this.render();
                 try {
-                        const info = await loadAnimeInfo(this.options.apiBase, series.id);
+                        const info = await loadAnimeInfo(this.options.apiBase, series.id, series.provider);
                         this.animeInfo = info;
                         // Prefer API's canonical title/poster where available.
                         this.selected = {
@@ -458,7 +458,7 @@ export class DownloadModal extends Modal {
                 this.busy = true;
                 this.render();
                 try {
-                        const detail = await loadEpisodes(this.options.apiBase, series.id);
+                        const detail = await loadEpisodes(this.options.apiBase, series.id, series.provider);
                         this.episodes = detail.episodes;
                         this.chosen = new Set(detail.episodes.map((episode) => episode.id));
                         this.stage = 'episodes';
