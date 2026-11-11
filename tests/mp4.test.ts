@@ -800,6 +800,77 @@ describe('doctor', () => {
 			view[0] = 0;
 			expect(new Uint8Array(buffer)[0]).toBe(9);
 		});
+
+		// A batch of one-per-episode files is read and converted several at a time so
+		// the disk is not waited on serially, but never so many at once that the batch
+		// outgrows the memory budget. `maxInFlight` is the ceiling under test here.
+		it('repairs several files at once, up to the in-flight ceiling', async () => {
+			const files: Record<string, Uint8Array> = {};
+			for (let i = 0; i < 8; i++) files[`anime/ep${i}.mp4`] = file();
+			let active = 0;
+			let peak = 0;
+			const store = vault(files);
+			store.stat = async (path: string) => ({ size: files[path]!.byteLength });
+			const reading = store.readBinary.bind(store);
+			store.readBinary = async (path: string) => {
+				active++;
+				peak = Math.max(peak, active);
+				await new Promise((resolve) => setTimeout(resolve, 1));
+				active--;
+				return reading(path);
+			};
+			const result = await repairFolder(store as never, '', undefined, { maxInFlight: 3 });
+			expect(result.repaired).toBe(8);
+			expect(peak).toBeGreaterThan(1);
+			expect(peak).toBeLessThanOrEqual(3);
+		});
+
+		// Without a size the adapter cannot be trusted to bound anything, so each file
+		// runs on its own rather than piling an unbounded number of whole episodes into
+		// memory. The stubbed adapter reports no `stat`.
+		it('runs one file at a time when the adapter reports no sizes', async () => {
+			const files: Record<string, Uint8Array> = {};
+			for (let i = 0; i < 4; i++) files[`anime/ep${i}.mp4`] = file();
+			let active = 0;
+			let peak = 0;
+			const store = vault(files);
+			const reading = store.readBinary.bind(store);
+			store.readBinary = async (path: string) => {
+				active++;
+				peak = Math.max(peak, active);
+				await new Promise((resolve) => setTimeout(resolve, 1));
+				active--;
+				return reading(path);
+			};
+			const result = await repairFolder(store as never, '');
+			expect(result.repaired).toBe(4);
+			expect(peak).toBe(1);
+		});
+
+		// A size-aware adapter lets the scheduler pack more than one file in flight
+		// while still holding the batch under the byte budget.
+		it('keeps the batch inside the byte budget when sizes are known', async () => {
+			const files: Record<string, Uint8Array> = {};
+			for (let i = 0; i < 6; i++) files[`anime/ep${i}.mp4`] = file();
+			let active = 0;
+			let peak = 0;
+			const store = vault(files);
+			store.stat = async (path: string) => ({ size: files[path]!.byteLength });
+			const reading = store.readBinary.bind(store);
+			store.readBinary = async (path: string) => {
+				active++;
+				peak = Math.max(peak, active);
+				await new Promise((resolve) => setTimeout(resolve, 1));
+				active--;
+				return reading(path);
+			};
+			// Two bytes of working set per byte of file; a budget of two files' worth
+			// admits at most two at a time.
+			const perFile = files['anime/ep0.mp4']!.byteLength;
+			const result = await repairFolder(store as never, '', undefined, { byteBudget: 4 * perFile });
+			expect(result.repaired).toBe(6);
+			expect(peak).toBe(2);
+		});
 });
 
 // ---------------------------------------------------------------------------

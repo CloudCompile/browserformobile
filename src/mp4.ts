@@ -295,10 +295,17 @@ export function convertFragmented(input: Uint8Array): Uint8Array | null {
 
 		const parts: Uint8Array[] = [builder.ftyp];
 		let bytes = builder.ftyp.byteLength;
+		// The `mdat` that belongs to a `moof` follows it, and the fragments are
+		// visited in order, so one forward-only cursor finds every match in a single
+		// pass. Searching afresh per fragment — `top.slice(index + 1).find(...)` — is
+		// quadratic in the fragment count, and a long episode carries thousands.
+		let mdatAt = 0;
 		for (let index = 0; index < top.length; index++) {
 			const moof = top[index];
 			if (!moof || moof.type !== 'moof') continue;
-			const mdat = top.slice(index + 1).find((item) => item.type === 'mdat');
+			if (mdatAt <= index) mdatAt = index + 1;
+			while (mdatAt < top.length && top[mdatAt]!.type !== 'mdat') mdatAt++;
+			const mdat = mdatAt < top.length ? top[mdatAt] : undefined;
 			if (!mdat) return null;
 			// Parse through the shared entry point so the same bounds checks that
 			// guard a live download guard the conversion.

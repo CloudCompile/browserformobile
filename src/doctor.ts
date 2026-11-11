@@ -1,6 +1,6 @@
 import { convertFragmented } from './mp4';
 import { patchDuration } from './transmux';
-import { collectFiles } from './utils';
+import { collectFiles, mapWithConcurrency } from './utils';
 
 /**
  * Repairs already-downloaded MP4s.
@@ -241,6 +241,8 @@ export interface VaultAdapter extends AtomicWriter {
         readBinary(path: string): Promise<ArrayBuffer>;
         list(path: string): Promise<{ files: string[]; folders: string[] }>;
         exists(path: string): Promise<boolean>;
+        /** File size, when the adapter can report it. Used to bound the batch. */
+        stat?(path: string): Promise<{ size: number } | null>;
 }
 
 /** The write surface an atomic replace needs, and nothing more. */
@@ -281,28 +283,83 @@ export async function writeAtomically(adapter: AtomicWriter, path: string, data:
         }
 }
 
+/** How many files may be repaired at once. */
+const REPAIR_IN_FLIGHT = 4;
+
+/**
+ * Bytes of video the batch may hold at once.
+ *
+ * A file is repaired with its own bytes and the rebuilt copy in memory together,
+ * so the working set is about twice the file. The whole batch is kept inside a
+ * quarter of the device's RAM: Obsidian, the vault index and the rest of the app
+ * need the remainder, and a phone that runs out kills the process outright rather
+ * than paging. `navigator.deviceMemory` reports an approximate RAM size in GB on
+ * the platforms Obsidian mobile uses; when it is absent a modest 2 GB is assumed.
+ */
+export function repairByteBudget(): number {
+        const memory = typeof navigator !== 'undefined'
+                ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+                : undefined;
+        const gb = typeof memory === 'number' && Number.isFinite(memory) && memory > 0 ? memory : 2;
+        return Math.max(64 * 1024 * 1024, Math.min((gb * 1024 ** 3) / 4, 384 * 1024 * 1024));
+}
+
+/**
+ * The sizes of `files`, where the adapter can report them. A file that cannot be
+ * stat-ed is left out, and is then treated as taking the whole budget.
+ */
+async function fileSizes(adapter: VaultAdapter, files: string[]): Promise<Map<string, number>> {
+        const sizes = new Map<string, number>();
+        const stat = adapter.stat?.bind(adapter);
+        if (!stat) return sizes;
+        await mapWithConcurrency(files, 8, async (path) => {
+                try {
+                        const info = await stat(path);
+                        if (info) sizes.set(path, info.size);
+                } catch {
+                        /* A file that vanished mid-scan is reported by the repair itself. */
+                }
+        });
+        return sizes;
+}
+
 /**
  * Walk the download folder and repair every MP4 whose track durations are
  * still at the sentinel. Only files that need it are rewritten, and each is
  * replaced through a temp file so a failed write cannot lose the original.
+ *
+ * Files are repaired several at a time so one file's read overlaps the next
+ * file's conversion instead of the disk being waited on serially. The batch is
+ * bounded by `repairByteBudget` — and a file whose size is unknown runs on its
+ * own — so a run on a phone stays inside its memory rather than being killed
+ * partway through.
  */
 export async function repairFolder(
         adapter: VaultAdapter,
         folder: string,
         onProgress?: (path: string, done: number, total: number) => void,
+        options: { byteBudget?: number; maxInFlight?: number } = {},
 ): Promise<RepairResult> {
         const result: RepairResult = { scanned: 0, repaired: 0, fixed: [], failed: [] };
         const files = await collectMp4(adapter, folder);
-        let done = 0;
-        for (const path of files) {
-                onProgress?.(path, done++, files.length);
+        const budget = options.byteBudget ?? repairByteBudget();
+        const maxInFlight = Math.max(1, options.maxInFlight ?? REPAIR_IN_FLIGHT);
+        const sizes = await fileSizes(adapter, files);
+        const known = sizes.size > 0;
+
+        let started = 0;
+        let inFlightBytes = 0;
+        const pending = new Set<Promise<void>>();
+
+        const repairOne = async (path: string): Promise<void> => {
+                onProgress?.(path, started++, files.length);
                 result.scanned++;
                 try {
                         const buffer = await adapter.readBinary(path);
                         const data = new Uint8Array(buffer);
-                        if (!needsRepair(data)) continue;
+                        if (!needsRepair(data)) return;
                         const repaired = repairDuration(data);
-                        if (!repaired) continue;
+                        if (!repaired) return;
                         await writeAtomically(adapter, path, repaired.data);
                         result.repaired++;
                         result.fixed.push({ path, durationSeconds: repaired.durationSeconds });
@@ -312,7 +369,24 @@ export async function repairFolder(
                                 message: error instanceof Error ? error.message : String(error),
                         });
                 }
+        };
+
+        for (const path of files) {
+                // An unknown size is assumed to fill the budget so that file runs alone;
+                // without a size there is no way to know what it costs.
+                const weight = known ? 2 * (sizes.get(path) ?? budget) : 2 * budget;
+                while (pending.size >= maxInFlight || (pending.size > 0 && inFlightBytes + weight > budget)) {
+                        await Promise.race(pending);
+                }
+                inFlightBytes += weight;
+                let task!: Promise<void>;
+                task = repairOne(path).finally(() => {
+                        inFlightBytes -= weight;
+                        pending.delete(task);
+                });
+                pending.add(task);
         }
+        await Promise.all(pending);
         return result;
 }
 
