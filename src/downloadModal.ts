@@ -11,7 +11,7 @@ import {
 import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat } from './downloader';
 import { formatSpeed } from './hls';
 import { externalStorageAvailable } from './destination';
-import { repairFolder, type RepairLedger } from './doctor';
+import { repairByteBudget, repairFolder, type RepairLedger } from './doctor';
 import { ConfirmModal } from './modals';
 
 export interface DownloadModalOptions {
@@ -945,7 +945,11 @@ export class DownloadModal extends Modal {
                 const folder = this.options.external ? '' : this.options.folder;
                 const notice = new Notice('Checking downloaded videos…', 0);
                 try {
-                        const result = await repairFolder(adapter, folder, undefined, { ledger: this.options.repairLedger });
+                        const result = await repairFolder(adapter, folder, undefined, {
+                                ledger: this.options.repairLedger,
+                                maxFileBytes: Platform.isMobile ? repairByteBudget() / 2 : undefined,
+                                maxInFlight: Platform.isMobile ? 1 : undefined,
+                        });
                         notice.hide();
                         if (result.scanned === 0) {
                                 new Notice('No downloaded videos were found in this folder.');

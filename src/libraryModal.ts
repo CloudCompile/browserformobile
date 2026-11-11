@@ -23,6 +23,7 @@ export interface LibraryCallbacks {
 }
 
 type Filter = 'all' | 'unwatched' | 'in-progress';
+type Sort = 'added' | 'title' | 'episode';
 
 /**
  * Browse the downloaded episodes.
@@ -34,6 +35,7 @@ type Filter = 'all' | 'unwatched' | 'in-progress';
 export class LibraryModal extends Modal {
 	private query = '';
 	private filter: Filter = 'all';
+	private sort: Sort = 'added';
 	private busy = false;
 	private bodyEl!: HTMLElement;
 
@@ -86,7 +88,7 @@ export class LibraryModal extends Modal {
 		search.value = this.query;
 		search.addEventListener('input', () => {
 			this.query = search.value;
-			this.renderList(this.library.items().filter((item) => this.matches(item)));
+			this.renderList(this.sorted(this.library.items().filter((item) => this.matches(item))));
 		});
 
 		const filters = bar.createDiv({ cls: 'bfm-library-filters' });
@@ -107,7 +109,30 @@ export class LibraryModal extends Modal {
 			});
 		}
 
-		this.renderList(visible);
+		const sort = bar.createEl('select', { cls: 'bfm-library-sort', attr: { 'aria-label': 'Sort videos' } });
+		const sorts: { value: Sort; label: string }[] = [
+			{ value: 'added', label: 'Recently added' },
+			{ value: 'title', label: 'Title' },
+			{ value: 'episode', label: 'Episode' },
+		];
+		for (const choice of sorts) {
+			const option = sort.createEl('option', { text: choice.label, value: choice.value });
+			option.selected = choice.value === this.sort;
+		}
+		sort.addEventListener('change', () => {
+			this.sort = sort.value as Sort;
+			this.render();
+		});
+
+		this.renderList(this.sorted(visible));
+	}
+
+	private sorted(items: LibraryItem[]): LibraryItem[] {
+		return [...items].sort((a, b) => {
+			if (this.sort === 'title') return `${a.series} ${a.title}`.localeCompare(`${b.series} ${b.title}`);
+			if (this.sort === 'episode') return a.episode - b.episode || a.series.localeCompare(b.series);
+			return 0;
+		});
 	}
 
 	private renderList(items: LibraryItem[]): void {

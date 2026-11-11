@@ -1,5 +1,5 @@
-import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
-import { repairDuration, inspectDurationEnhanced, repairFolder, writeAtomically } from './doctor';
+import { ItemView, Notice, Platform, WorkspaceLeaf } from 'obsidian';
+import { repairByteBudget, repairDuration, inspectDurationEnhanced, repairFolder, writeAtomically } from './doctor';
 import { type LibraryItem, type LibraryEntry } from './library';
 import { ConfirmModal } from './modals';
 import { formatBytes, formatDuration } from './hls';
@@ -394,9 +394,18 @@ export class DownloadManagerView extends ItemView {
 		deleteBtn.addEventListener('click', () => this.confirmDelete(item));
 	}
 
-	private async repairOne(item: LibraryItem): Promise<void> {
-		if (this.busy) return;
-		this.busy = true;
+	private async repairOne(item: LibraryItem, manageBusy = true): Promise<void> {
+		if (this.busy && manageBusy) return;
+		if (manageBusy) this.busy = true;
+		const maxFileBytes = Platform.isMobile ? repairByteBudget() / 2 : undefined;
+		if (maxFileBytes !== undefined && item.size > maxFileBytes) {
+			const message = `Repair is limited to ${Math.round(maxFileBytes / (1024 * 1024))} MB on this device to prevent an out-of-memory restart.`;
+			this.statuses.set(item.path, { needsRepair: true, durationSeconds: null, failed: message });
+			new Notice(`${item.name}: ${message}`);
+			this.render();
+			if (manageBusy) this.busy = false;
+			return;
+		}
 		const notice = new Notice(`Repairing ${item.name}…`, 0);
 		this.setProgress(true, 0, `Repairing ${item.name}…`);
 		try {
@@ -449,7 +458,7 @@ export class DownloadManagerView extends ItemView {
 			new Notice(`${item.name}: ${msg}`);
 			this.render();
 		} finally {
-			this.busy = false;
+			if (manageBusy) this.busy = false;
 			window.setTimeout(() => this.setProgress(false, 0, ''), 800);
 		}
 	}
@@ -468,7 +477,7 @@ export class DownloadManagerView extends ItemView {
 		try {
 			for (const item of targets) {
 				if (this.cancelled) break;
-				await this.repairOne(item);
+				await this.repairOne(item, false);
 			}
 		} finally {
 			this.busy = false;
@@ -492,7 +501,11 @@ export class DownloadManagerView extends ItemView {
 		try {
 			const result = await repairFolder(adapter, folder, (path, done, total) => {
 				this.setProgress(true, (done / Math.max(1, total)) * 100, `${done + 1}/${total} · ${path.split('/').pop() ?? path}`);
-			}, { ledger: this.plugin.repairLedger });
+			}, {
+				ledger: this.plugin.repairLedger,
+				maxFileBytes: Platform.isMobile ? repairByteBudget() / 2 : undefined,
+				maxInFlight: Platform.isMobile ? 1 : undefined,
+			});
 			await this.plugin.saveSettings();
 			this.setProgress(true, 100, `Done · ${result.scanned} checked.`);
 			const seconds = result.fixed.reduce((sum, entry) => sum + entry.durationSeconds, 0);
@@ -505,6 +518,7 @@ export class DownloadManagerView extends ItemView {
 			if (result.failed.length > 0) parts.push(`${result.failed.length} failed`);
 			new Notice(parts.join(' · '));
 			window.setTimeout(() => this.setProgress(false, 0, ''), 1500);
+			this.busy = false;
 			await this.scan();
 		} catch (error) {
 			this.setProgress(false, 0, '');
