@@ -47,6 +47,17 @@ export interface LibraryItem extends LibraryEntry {
 	watched: boolean;
 }
 
+/** Recover a season number from common series/file naming styles. */
+export function inferSeason(text: string): number | null {
+	const match =
+		text.match(/\bseason\s*(\d+)\b/i) ??
+		text.match(/\bs(\d+)\b/i) ??
+		text.match(/\b(\d+)(?:st|nd|rd|th)\s+season\b/i);
+	if (!match) return null;
+	const season = Number.parseInt(match[1] ?? '', 10);
+	return Number.isFinite(season) && season > 0 ? season : null;
+}
+
 /**
  * How close to the end counts as finished. A file is rarely played to the last
  * frame — credits are skipped — so the threshold is deliberately loose.
@@ -145,7 +156,8 @@ export interface ParsedName {
  * library just because the template changed.
  */
 export function parseEntryName(name: string, template: string): ParsedName {
-	const regex = buildNameRegex(template);
+	const filenameTemplate = template.slice(Math.max(0, template.lastIndexOf('/') + 1));
+	const regex = buildNameRegex(filenameTemplate);
 	// Match the whole name, extension included: the template's `{ext}` token is
 	// what consumes it, and a template without one still matches a bare name.
 	const match = regex?.exec(name);

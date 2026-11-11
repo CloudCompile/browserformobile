@@ -1,6 +1,6 @@
 import type { EpisodeSummary } from './animeApi';
 import { loadStream, selectVariant } from './animeApi';
-import { createDestination, sanitizeName, type Destination, type DestinationRequest } from './destination';
+import { createDestination, sanitizePath, type Destination, type DestinationRequest } from './destination';
 import {
         DownloadError,
         downloadSegmentsStreaming,
@@ -1479,11 +1479,12 @@ export class DownloadManager {
 
 export function renderTemplate(
         template: string,
-        values: { series: string; episode: number; title: string; ext: string },
+        values: { series: string; seriesFolder?: string; episode: number; title: string; ext: string },
 ): string {
         const padded = String(values.episode).padStart(2, '0');
         const text = template
                 .replace(/\{series\}/g, values.series)
+                .replace(/\{seriesFolder\}/g, values.seriesFolder ?? values.series)
                 .replace(/\{ep:02\}/g, padded)
                 .replace(/\{ep\}/g, String(values.episode))
                 .replace(/\{title\}/g, values.title)
@@ -1494,15 +1495,26 @@ export function renderTemplate(
         return /\.[a-z0-9]{2,4}$/i.test(trimmed) ? trimmed : `${trimmed}.${values.ext}`;
 }
 
+/** Keep common season suffixes in one series folder while retaining the full
+ * series title in the episode filename. */
+export function seriesFolderName(series: string): string {
+	const normalized = series.trim().replace(/\s*[-:|]\s*$/, '');
+	return normalized
+		.replace(/\s+(?:season|s)\s*[-.]?\s*\d+\s*$/i, '')
+		.replace(/\s+\d+(?:st|nd|rd|th)\s+season\s*$/i, '')
+		.trim() || series.trim();
+}
+
 /** The sanitized file name for an episode, given the current template. */
 function buildFileName(
         template: string,
         job: { episode: EpisodeSummary; seriesTitle: string },
         extension: string,
 ): string {
-        return sanitizeName(
+        return sanitizePath(
                 renderTemplate(template, {
                         series: job.seriesTitle,
+                        seriesFolder: seriesFolderName(job.seriesTitle),
                         episode: job.episode.number,
                         title: job.episode.title,
                         ext: extension,

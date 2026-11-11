@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import { VideoLibrary, buildNameRegex, parseEntryName } from '../src/library';
+import { VideoLibrary, buildNameRegex, inferSeason, parseEntryName } from '../src/library';
 
 /** A fake vault adapter backed by a plain path -> size map. */
 function fakeAdapter(files: Record<string, number>, options?: { listThrows?: boolean; missingRoot?: boolean }) {
@@ -29,6 +29,22 @@ function fakeAdapter(files: Record<string, number>, options?: { listThrows?: boo
 }
 
 const TEMPLATE = '{series} - {ep:02} - {title}.{ext}';
+
+describe('episode preview metadata', () => {
+        it('infers common season labels', () => {
+                expect(inferSeason('Show Season 2')).toBe(2);
+                expect(inferSeason('Show S3')).toBe(3);
+                expect(inferSeason('Show')).toBeNull();
+        });
+
+        it('parses a filename from a folder template', () => {
+                expect(parseEntryName('Show - 04 - Pilot.mp4', '{seriesFolder}/{series} - {ep:02} - {title}.{ext}')).toEqual({
+                        series: 'Show',
+                        episode: 4,
+                        title: 'Pilot',
+                });
+        });
+});
 
 describe('library prune safety', () => {
         it('keeps watch progress when the download folder has gone missing', async () => {

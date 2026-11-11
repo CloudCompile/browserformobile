@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ExternalDestination, DownloadWriteError, VaultDestination } from '../src/destination';
+import { ExternalDestination, DownloadWriteError, VaultDestination, sanitizePath } from '../src/destination';
+
+describe('template paths', () => {
+        it('preserves safe folder separators while sanitizing each segment', () => {
+                expect(sanitizePath('Show: Season 2/Show - 01.mp4')).toBe('Show_ Season 2/Show - 01.mp4');
+        });
+});
 
 function makeFs() {
         const files = new Map<string, Uint8Array>();

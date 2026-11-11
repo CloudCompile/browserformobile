@@ -122,6 +122,15 @@ export function sanitizeName(name: string): string {
         return cleaned || 'untitled';
 }
 
+/** Sanitize a relative template path while preserving its folder separators. */
+export function sanitizePath(path: string): string {
+        return path
+                .split(/[\\/]+/)
+                .map((part) => sanitizeName(part))
+                .filter((part) => part.length > 0)
+                .join('/');
+}
+
 class VaultWriter implements FileWriter {
         private created: boolean;
         /** Serialises writes so an append can never land before the create. */

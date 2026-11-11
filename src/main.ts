@@ -8,7 +8,7 @@ import { externalStorageAvailable } from './destination';
 import { VideoLibrary, type LibraryItem, type WatchRecord } from './library';
 import { LibraryModal } from './libraryModal';
 import { PlayerModal } from './playerModal';
-import { DEFAULT_SETTINGS, AnimeSettingTab, type AnimeSettings } from './settings';
+import { DEFAULT_FILENAME_TEMPLATE, DEFAULT_SETTINGS, AnimeSettingTab, type AnimeSettings } from './settings';
 import { StatsStore, type DownloadRun } from './stats';
 import { StatsModal } from './statsModal';
 import { SeriesPickerModal } from './modals';
@@ -1030,6 +1030,9 @@ export default class AnimePlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const raw = (await this.loadData()) as PersistedShape | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, raw?.settings ?? {});
+		if (this.settings.downloadFilenameTemplate === '{series} - {ep:02} - {title}.{ext}') {
+			this.settings.downloadFilenameTemplate = DEFAULT_FILENAME_TEMPLATE;
+		}
 		this.statsRuns = Array.isArray(raw?.stats) ? raw.stats : [];
 		this.watchRecords = raw?.watch ?? {};
 		this.animeCacheRecords = raw?.animeCache ?? null;

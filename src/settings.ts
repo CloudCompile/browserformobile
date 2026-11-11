@@ -4,6 +4,8 @@ import type AnimePlugin from './main';
 
 import { DEFAULT_SERVER_BASE, DEFAULT_SERVER_MODEL, LOCAL_MODELS } from './llm';
 
+export const DEFAULT_FILENAME_TEMPLATE = '{seriesFolder}/{series} - {ep:02} - {title}.{ext}';
+
 export interface AnimeSettings {
         /** Ask before deleting files or clearing the download log. */
         confirmDestructiveActions: boolean;
@@ -79,7 +81,7 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         downloadFormat: 'mp4',
         downloadFolder: 'Anime',
         downloadExternal: false,
-        downloadFilenameTemplate: '{series} - {ep:02} - {title}.{ext}',
+        downloadFilenameTemplate: DEFAULT_FILENAME_TEMPLATE,
         // Benchmarked against the live CDN: throughput plateaus around four to six
         // parallel segments and does not improve above that — the CDN starts
         // answering 429 above roughly four in flight. The pool halves on a 429 and
@@ -156,11 +158,11 @@ export class AnimeSettingTab extends PluginSettingTab {
                         },
                         {
                                 name: 'Filename template',
-                                desc: 'Use {series}, {ep}, {ep:02}, {title}, and {ext} as placeholders. Invalid filename characters are replaced with underscores.',
+                                desc: 'Use {series}, {seriesFolder}, {ep}, {ep:02}, {title}, and {ext}. The default puts every episode in a folder named after its series; seasons stay together.',
                                 control: {
                                         type: 'text',
                                         key: 'downloadFilenameTemplate',
-                                        placeholder: '{series} - {ep:02} - {title}.{ext}',
+                                        placeholder: DEFAULT_FILENAME_TEMPLATE,
                                 },
                         },
                         {
