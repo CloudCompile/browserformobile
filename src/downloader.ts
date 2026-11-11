@@ -179,6 +179,12 @@ export interface EnqueueRequest {
         episodes: EpisodeSummary[];
 }
 
+export interface PersistedDownloadJob {
+        seriesTitle: string;
+        episode: EpisodeSummary;
+        status: 'queued' | 'paused';
+}
+
 /** A partial found on disk, with the identity a resume can be checked against. */
 interface PartialState {
         version: number;
@@ -269,8 +275,72 @@ export class DownloadManager {
                  * without a stats sink.
                  */
                 private readonly onRunFinished?: (run: DownloadRun) => void,
+                private readonly onQueueChanged?: (jobs: PersistedDownloadJob[]) => void,
         ) {
                 this.options = options;
+        }
+
+        /** Return the queue states worth restoring after Obsidian restarts. */
+        serializeQueue(): PersistedDownloadJob[] {
+                return this.jobs
+                        .filter((job): job is DownloadJob & { status: 'queued' | 'paused' } =>
+                                job.status === 'queued' || job.status === 'paused',
+                        )
+                        .map((job) => ({
+                                seriesTitle: job.seriesTitle,
+                                episode: job.episode,
+                                status: job.status,
+                        }));
+        }
+
+        /** Restore queued and paused rows before the modal is opened. */
+        restoreQueue(records: unknown): number {
+                if (!Array.isArray(records)) return 0;
+                let restored = 0;
+                for (const record of records) {
+                        if (!record || typeof record !== 'object') continue;
+                        const value = record as Partial<PersistedDownloadJob>;
+                        if (
+                                typeof value.seriesTitle !== 'string' ||
+                                !value.episode ||
+                                typeof value.episode !== 'object' ||
+                                (value.status !== 'queued' && value.status !== 'paused')
+                        ) continue;
+                        const episode = value.episode;
+                        if (typeof episode.id !== 'string' || this.jobs.some((job) => job.episode.id === episode.id)) {
+                                continue;
+                        }
+                        this.jobs.push({
+                                id: generateId(),
+                                seriesTitle: value.seriesTitle,
+                                episode,
+                                status: value.status,
+                                completed: null,
+                                total: null,
+                                bytes: 0,
+                                fileSize: null,
+                                filePath: null,
+                                error: null,
+                                startedAt: null,
+                                finishedAt: null,
+                                resumed: false,
+                                resumeSegments: 0,
+                                resumeBytes: 0,
+                                partialFound: false,
+                                writtenSegments: 0,
+                                writtenBytes: 0,
+                                speed: null,
+                                averageSpeed: null,
+                                peakSpeed: null,
+                                eta: null,
+                                retryAt: null,
+                                rateLimitRetries: 0,
+                                autoRetries: 0,
+                        });
+                        restored++;
+                }
+                if (restored > 0) this.scheduleUpdate();
+                return restored;
         }
 
         setOptions(options: DownloaderOptions): void {
@@ -347,6 +417,7 @@ export class DownloadManager {
                         created.push(job);
                 }
                 this.scheduleUpdate();
+                this.queueChanged();
                 this.pump();
                 return created;
         }
@@ -371,6 +442,7 @@ export class DownloadManager {
                 job.resumeSegments = 0;
                 job.resumeBytes = 0;
                 this.scheduleUpdate();
+                this.queueChanged();
         }
 
         cancel(jobId: string): void {
@@ -385,6 +457,7 @@ export class DownloadManager {
                         job.retryAt = null;
                         job.finishedAt = Date.now();
                         this.scheduleUpdate();
+                        this.queueChanged();
                         return;
                 }
                 this.controllers.get(jobId)?.abort();
@@ -411,6 +484,7 @@ export class DownloadManager {
                 job.speed = null;
                 job.eta = null;
                 this.scheduleUpdate();
+                this.queueChanged();
                 this.controllers.get(jobId)?.abort();
         }
 
@@ -431,6 +505,7 @@ export class DownloadManager {
                 job.autoRetries = 0;
                 job.rateLimitRetries = 0;
                 this.scheduleUpdate();
+                this.queueChanged();
                 this.pump();
         }
 
@@ -459,6 +534,7 @@ export class DownloadManager {
                         }
                 }
                 this.scheduleUpdate();
+                this.queueChanged();
         }
 
         /**
@@ -542,6 +618,7 @@ export class DownloadManager {
                 if (index !== -1) this.jobs.splice(index, 1);
                 this.jobs.push(job);
                 this.scheduleUpdate();
+                this.queueChanged();
                 const timer = window.setTimeout(() => {
                         this.retryTimers.delete(timer);
                         if (job.status !== 'waiting') return;
@@ -1382,6 +1459,10 @@ export class DownloadManager {
                         this.updateTimer = null;
                         this.onUpdate();
                 }, 150);
+        }
+
+        private queueChanged(): void {
+                this.onQueueChanged?.(this.serializeQueue());
         }
 
         dispose(): void {
