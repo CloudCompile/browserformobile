@@ -23,8 +23,11 @@ interface CacheEntry {
 	status: FileStatus;
 }
 
-const CONCURRENCY = 2;
-const SCAN_FILE_BUDGET_MS = 1000;
+// `readBinary` loads the complete video into memory. Mobile vault adapters can
+// legitimately take several seconds for a large episode, so a wall-clock
+// timeout would turn a slow read into a false failure. Keep one whole-file
+// read in flight to avoid doubling the peak allocation on phones.
+const CONCURRENCY = 1;
 
 export class DownloadManagerView extends ItemView {
 	private readonly plugin: AnimePlugin;
@@ -202,16 +205,7 @@ export class DownloadManagerView extends ItemView {
 							this.scanCache.set(entry.path, { key: cacheKey, status });
 							return;
 						}
-						const readResult: { kind: 'data'; buffer: ArrayBuffer } | { kind: 'timeout' } = await Promise.race([
-							adapter.readBinary(entry.path).then((buffer) => ({ kind: 'data' as const, buffer })),
-							new Promise<{ kind: 'timeout' }>((resolve) => {
-								window.setTimeout(() => resolve({ kind: 'timeout' }), SCAN_FILE_BUDGET_MS);
-							}),
-						]);
-						if (readResult.kind === 'timeout') {
-							throw new Error(`scan budget exceeded (${SCAN_FILE_BUDGET_MS}ms)`);
-						}
-						const buffer = readResult.buffer;
+						const buffer = await adapter.readBinary(entry.path);
 						const data = new Uint8Array(buffer);
 						const patch = inspectDurationEnhanced(data);
 						// A fragmented file needs rebuilding even when its headers are
