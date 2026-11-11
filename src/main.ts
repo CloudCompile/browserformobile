@@ -1,7 +1,7 @@
 import { Notice, Platform, Plugin, WorkspaceLeaf } from 'obsidian';
 import { AnimeCache, type CachePersistence } from './animeCache';
 import { setAnimeCache } from './animeApi';
-import { DownloadManager, type DownloaderOptions } from './downloader';
+import { DownloadManager, type DownloaderOptions, type PersistedDownloadJob } from './downloader';
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
 import { repairByteBudget, repairFolder, RepairLedger } from './doctor';
 import { externalStorageAvailable } from './destination';
@@ -46,6 +46,8 @@ interface PersistedShape {
 	downloadScanCache?: Record<string, unknown>;
 	/** Files a repair pass already cleared, keyed by path. */
 	repairLedger?: Record<string, string>;
+	/** Queued and paused downloads to restore after a restart. */
+	downloadQueue?: PersistedDownloadJob[];
 }
 
 export default class AnimePlugin extends Plugin {
@@ -72,6 +74,8 @@ export default class AnimePlugin extends Plugin {
 	private statsRuns: DownloadRun[] = [];
 	/** Cached API responses as loaded, handed to the anime cache in onload. */
 	private animeCacheRecords: unknown = null;
+	private downloadQueue: PersistedDownloadJob[] = [];
+	private queueSaveTimer: number | null = null;
 	/**
 	 * Last-seen state of every downloaded file, keyed by path.
 	 *
@@ -113,7 +117,16 @@ export default class AnimePlugin extends Plugin {
 			(run) => {
 				void this.recordRun(run);
 			},
+			(jobs) => {
+				this.downloadQueue = jobs;
+				if (this.queueSaveTimer !== null) window.clearTimeout(this.queueSaveTimer);
+				this.queueSaveTimer = window.setTimeout(() => {
+					this.queueSaveTimer = null;
+					void this.saveSettings();
+				}, 500);
+			},
 		);
+		this.downloader.restoreQueue(this.downloadQueue);
 
 		this.registerView(VIEW_TYPE_DOWNLOADS, (leaf: WorkspaceLeaf) => new DownloadManagerView(leaf, this));
 
@@ -172,6 +185,7 @@ export default class AnimePlugin extends Plugin {
 	}
 
 	onunload(): void {
+		if (this.queueSaveTimer !== null) window.clearTimeout(this.queueSaveTimer);
 		this.animeCache.dispose();
 		this.downloader.dispose();
 		this.playerModal?.close();
@@ -743,6 +757,19 @@ export default class AnimePlugin extends Plugin {
 				this.library.clearProgress(path);
 				void this.saveWatchRecords();
 			},
+			onNavigate: (direction) => {
+				const candidates = this.library
+					.items()
+					.filter((entry) => entry.series === item.series && entry.ext === 'mp4')
+					.sort((left, right) => left.episode - right.episode || left.name.localeCompare(right.name));
+				const index = candidates.findIndex((entry) => entry.path === item.path);
+				const target = candidates[index + (direction === 'next' ? 1 : -1)];
+				if (!target) {
+					new Notice(direction === 'next' ? 'This is the last episode.' : 'This is the first episode.');
+					return;
+				}
+				this.playItem(target);
+			},
 			onClosed: () => {
 				this.playerModal = null;
 			},
@@ -1006,6 +1033,7 @@ export default class AnimePlugin extends Plugin {
 		this.statsRuns = Array.isArray(raw?.stats) ? raw.stats : [];
 		this.watchRecords = raw?.watch ?? {};
 		this.animeCacheRecords = raw?.animeCache ?? null;
+		this.downloadQueue = Array.isArray(raw?.downloadQueue) ? raw.downloadQueue : [];
 		this.downloadScanCache = raw?.downloadScanCache ?? {};
 		this.repairLedger = new RepairLedger(raw?.repairLedger);
 		// A scan from an earlier session already read every file it covered. Adopt
@@ -1021,6 +1049,7 @@ export default class AnimePlugin extends Plugin {
 			watch: this.watchRecords,
 			stats: this.stats.toJSON(),
 			animeCache: this.animeCacheRecords,
+			downloadQueue: this.downloader?.serializeQueue?.() ?? this.downloadQueue,
 		});
 	}
 

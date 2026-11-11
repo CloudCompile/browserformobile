@@ -7,6 +7,8 @@ export interface PlayerCallbacks {
 	onProgress(path: string, position: number, duration: number): void;
 	/** Drop the saved position, so the next open starts at the beginning. */
 	onReset(path: string): void;
+	/** Open the adjacent episode, when one exists. */
+	onNavigate?(direction: 'previous' | 'next'): void;
 	onClosed?(): void;
 }
 
@@ -75,6 +77,11 @@ export class PlayerModal extends Modal {
 		this.saveTimer = window.setInterval(() => this.flush(false), SAVE_INTERVAL_MS);
 
 		const bar = this.contentEl.createDiv({ cls: 'bfm-player-bar' });
+		const previous = bar.createEl('button', { cls: 'bfm-player-nav' });
+		setIcon(previous, 'chevron-left');
+		previous.createSpan({ text: 'Previous' });
+		previous.disabled = !this.callbacks.onNavigate;
+		previous.addEventListener('click', () => this.callbacks.onNavigate?.('previous'));
 		const speed = bar.createEl('select', { cls: 'bfm-player-speed', attr: { 'aria-label': 'Playback speed' } });
 		for (const rate of [0.75, 1, 1.25, 1.5, 2]) {
 			const option = speed.createEl('option', { text: `${rate}×`, value: String(rate) });
@@ -84,6 +91,11 @@ export class PlayerModal extends Modal {
 			const rate = Number(speed.value);
 			if (Number.isFinite(rate) && rate > 0) this.videoEl.playbackRate = rate;
 		});
+		const next = bar.createEl('button', { cls: 'bfm-player-nav' });
+		setIcon(next, 'chevron-right');
+		next.createSpan({ text: 'Next' });
+		next.disabled = !this.callbacks.onNavigate;
+		next.addEventListener('click', () => this.callbacks.onNavigate?.('next'));
 		const restart = bar.createEl('button', { cls: 'bfm-player-restart' });
 		setIcon(restart, 'rotate-ccw');
 		restart.createSpan({ text: 'Start over' });
