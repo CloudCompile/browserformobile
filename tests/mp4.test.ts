@@ -12,7 +12,7 @@ import {
 	readIndex,
 	type ParsedFragment,
 } from '../src/mp4';
-import { inspectDurationEnhanced, needsRepair, repairDuration, repairFolder } from '../src/doctor';
+import { inspectDurationEnhanced, needsRepair, repairDuration, repairFolder, toArrayBuffer } from '../src/doctor';
 import { TransmuxStream } from '../src/transmux';
 
 /**
@@ -780,6 +780,25 @@ describe('doctor', () => {
 			expect(result.repaired).toBe(0);
 			expect(result.failed).toHaveLength(1);
 			expect(Object.keys(store.files)).toEqual(['anime/ep.mp4.bfm-repair']);
+		});
+
+		// A whole-file view is handed to the writer as-is. Slicing it would put a
+		// second copy of an episode in memory, which is what pushes a large repair
+		// over a phone's limit.
+		it('passes a whole-buffer view through without copying', () => {
+			const bytes = new Uint8Array(1024).fill(7);
+			expect(toArrayBuffer(bytes)).toBe(bytes.buffer);
+		});
+
+		it('copies a view that does not span its buffer', () => {
+			const backing = new Uint8Array(64).fill(9);
+			const view = backing.subarray(8, 24);
+			const buffer = toArrayBuffer(view);
+			expect(buffer.byteLength).toBe(16);
+			expect(buffer).not.toBe(backing.buffer);
+			// The copy is independent: mutating the view afterwards must not reach it.
+			view[0] = 0;
+			expect(new Uint8Array(buffer)[0]).toBe(9);
 		});
 });
 

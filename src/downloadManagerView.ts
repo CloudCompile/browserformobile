@@ -1,5 +1,5 @@
 import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
-import { repairDuration, inspectDurationEnhanced, repairFolder } from './doctor';
+import { repairDuration, inspectDurationEnhanced, repairFolder, writeAtomically } from './doctor';
 import { type LibraryItem, type LibraryEntry } from './library';
 import { ConfirmModal } from './modals';
 import { formatBytes, formatDuration } from './hls';
@@ -354,6 +354,8 @@ export class DownloadManagerView extends ItemView {
 			const adapter = this.app.vault.adapter as unknown as {
 				readBinary(path: string): Promise<ArrayBuffer>;
 				writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+				rename(from: string, to: string): Promise<void>;
+				remove(path: string): Promise<void>;
 			};
 			const buffer = await adapter.readBinary(item.path);
 			const data = new Uint8Array(buffer);
@@ -379,7 +381,7 @@ export class DownloadManagerView extends ItemView {
 				this.render();
 				return;
 			}
-			await adapter.writeBinary(item.path, repaired.data.buffer.slice(repaired.data.byteOffset, repaired.data.byteOffset + repaired.data.byteLength) as ArrayBuffer);
+			await writeAtomically(adapter, item.path, repaired.data);
 			const status: FileStatus = {
 				needsRepair: false,
 				durationSeconds: repaired.durationSeconds,

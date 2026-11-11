@@ -211,8 +211,18 @@ export function repairDuration(data: Uint8Array): { data: Uint8Array; durationSe
         return { data: patchDuration(data, patch.durationSeconds), durationSeconds: patch.durationSeconds };
 }
 
-/** A copy with no shared backing buffer, for handing to an ArrayBuffer API. */
+/**
+ * An `ArrayBuffer` holding exactly this view's bytes, for an API that wants one.
+ *
+ * A view that already spans its whole buffer is handed over as-is. Slicing it
+ * would allocate a second copy of the file — for a full episode that is another
+ * hundred-odd megabytes on top of the input and the repaired output, which is
+ * the difference between a repair finishing and the phone killing the app.
+ */
 export function toArrayBuffer(data: Uint8Array): ArrayBuffer {
+        if (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength) {
+                return data.buffer as ArrayBuffer;
+        }
         return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
 }
 
@@ -227,11 +237,15 @@ export interface RepairResult {
         failed: { path: string; message: string }[];
 }
 
-interface VaultAdapter {
+export interface VaultAdapter extends AtomicWriter {
         readBinary(path: string): Promise<ArrayBuffer>;
-        writeBinary(path: string, data: ArrayBuffer): Promise<void>;
         list(path: string): Promise<{ files: string[]; folders: string[] }>;
         exists(path: string): Promise<boolean>;
+}
+
+/** The write surface an atomic replace needs, and nothing more. */
+export interface AtomicWriter {
+        writeBinary(path: string, data: ArrayBuffer): Promise<void>;
         rename(from: string, to: string): Promise<void>;
         remove(path: string): Promise<void>;
 }
@@ -247,7 +261,7 @@ interface VaultAdapter {
  * only once it is fully on disk. A failure before the rename leaves the original
  * untouched.
  */
-async function writeAtomically(adapter: VaultAdapter, path: string, data: Uint8Array): Promise<void> {
+export async function writeAtomically(adapter: AtomicWriter, path: string, data: Uint8Array): Promise<void> {
         const temp = `${path}.bfm-repair`;
         let originalRemoved = false;
         try {
