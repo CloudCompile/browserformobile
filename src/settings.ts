@@ -4,6 +4,8 @@ import type AnimePlugin from './main';
 
 import { DEFAULT_SERVER_BASE, DEFAULT_SERVER_MODEL, LOCAL_MODELS } from './llm';
 
+export const DEFAULT_FILENAME_TEMPLATE = '{seriesFolder}/{series} - {ep:02} - {title}.{ext}';
+
 export interface AnimeSettings {
         /** Ask before deleting files or clearing the download log. */
         confirmDestructiveActions: boolean;
@@ -66,6 +68,8 @@ export interface AnimeSettings {
         llmLocalModel: string;
         /** Apply the glass effect to the plugin's panels. Desktop only. */
         glassEffect: boolean;
+        /** Write a detailed diagnostic log while downloads and repairs run. */
+        debugMode: boolean;
 }
 
 export const DEFAULT_SETTINGS: AnimeSettings = {
@@ -79,7 +83,7 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         downloadFormat: 'mp4',
         downloadFolder: 'Anime',
         downloadExternal: false,
-        downloadFilenameTemplate: '{series} - {ep:02} - {title}.{ext}',
+        downloadFilenameTemplate: DEFAULT_FILENAME_TEMPLATE,
         // Benchmarked against the live CDN: throughput plateaus around four to six
         // parallel segments and does not improve above that — the CDN starts
         // answering 429 above roughly four in flight. The pool halves on a 429 and
@@ -100,6 +104,7 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         llmSearchUrl: '',
         llmLocalModel: 'lfm2.5-230m',
         glassEffect: false,
+        debugMode: false,
 };
 
 export class AnimeSettingTab extends PluginSettingTab {
@@ -156,11 +161,11 @@ export class AnimeSettingTab extends PluginSettingTab {
                         },
                         {
                                 name: 'Filename template',
-                                desc: 'Use {series}, {ep}, {ep:02}, {title}, and {ext} as placeholders. Invalid filename characters are replaced with underscores.',
+                                desc: 'Use {series}, {seriesFolder}, {ep}, {ep:02}, {title}, and {ext}. The default puts every episode in a folder named after its series; seasons stay together.',
                                 control: {
                                         type: 'text',
                                         key: 'downloadFilenameTemplate',
-                                        placeholder: '{series} - {ep:02} - {title}.{ext}',
+                                        placeholder: DEFAULT_FILENAME_TEMPLATE,
                                 },
                         },
                         {
@@ -245,6 +250,11 @@ export class AnimeSettingTab extends PluginSettingTab {
                                 control: { type: 'toggle', key: 'glassEffect' },
                         },
                         {
+                                name: 'Debug mode',
+                                desc: 'Write a detailed diagnostic log for downloads, scans, and repairs to the plugin data folder. Turn this off when finished testing.',
+                                control: { type: 'toggle', key: 'debugMode' },
+                        },
+                        {
                                 name: 'Confirm destructive actions',
                                 desc: 'Ask before deleting a downloaded file or clearing the download log.',
                                 control: { type: 'toggle', key: 'confirmDestructiveActions' },
@@ -268,6 +278,10 @@ export class AnimeSettingTab extends PluginSettingTab {
                 }
                 if (key === 'glassEffect') {
                         this.plugin.applyGlassSetting();
+                }
+                if (key === 'debugMode' && Boolean(value)) {
+                        this.plugin.debugMachineInfo();
+                        this.plugin.debug('debug.enabled');
                 }
                 await this.plugin.saveSettings();
         }

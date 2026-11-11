@@ -3,6 +3,7 @@ import {
 	describeEntry,
 	describeEntryMeta,
 	watchFraction,
+	inferSeason,
 	type LibraryItem,
 	type VideoLibrary,
 } from './library';
@@ -157,6 +158,14 @@ export class LibraryModal extends Modal {
 		for (const item of items) {
 			const row = list.createDiv({ cls: 'bfm-library-item' });
 			if (item.watched) row.addClass('is-watched');
+
+			const preview = row.createDiv({ cls: 'bfm-library-item-preview' });
+			const season = inferSeason(`${item.series} ${item.name}`);
+			preview.createDiv({
+				cls: 'bfm-library-item-episode-badge',
+				text: season ? `S${season} E${item.episode || '?'}` : `E${item.episode || '?'}`,
+			});
+			preview.createDiv({ cls: 'bfm-library-item-preview-label', text: 'Episode' });
 
 			const main = row.createDiv({ cls: 'bfm-library-item-main' });
 			main.createDiv({ cls: 'bfm-library-item-title', text: describeEntry(item) });

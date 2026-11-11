@@ -77,8 +77,12 @@ export class DownloadManagerView extends ItemView {
 		});
 		const fixNeededBtn = toolbar.createEl('button', { text: 'Fix needs-repair' });
 		fixNeededBtn.addEventListener('click', () => void this.repairNeedsRepair());
+		const repairSelectedBtn = toolbar.createEl('button', { text: 'Repair selected' });
+		repairSelectedBtn.addEventListener('click', () => void this.repairSelected());
 		const repairAllBtn = toolbar.createEl('button', { cls: 'mod-cta', text: 'Fix all' });
 		repairAllBtn.addEventListener('click', () => void this.repairAll());
+		const organizeBtn = toolbar.createEl('button', { text: 'Organize folders' });
+		organizeBtn.addEventListener('click', () => void this.plugin.migrateDownloads());
 
 		const filters = toolbar.createDiv({ cls: 'bfm-dm-filters' });
 		const choices: { value: Filter; label: string }[] = [
@@ -114,6 +118,14 @@ export class DownloadManagerView extends ItemView {
 		this.listEl = this.bodyEl.createDiv({ cls: 'bfm-dm-list' });
 
 		await this.loadScanCache();
+		try {
+			// Populate the list as soon as the view opens. A scan is still
+			// explicit because it reads every file, but discovering filenames
+			// only needs the lightweight folder walk used by the library.
+			await this.plugin.refreshLibrary();
+		} catch (error) {
+			new Notice(error instanceof Error ? `Could not load downloaded videos: ${error.message}` : 'Could not load downloaded videos.');
+		}
 		this.hydrateStatusesFromCache();
 		this.updateSelectionControls();
 		this.render();
@@ -193,6 +205,7 @@ export class DownloadManagerView extends ItemView {
 		}
 		this.busy = true;
 		this.cancelled = false;
+		this.plugin.debug('scan.start', { selectedOnly, selected: [...selected] });
 		try {
 			const { complete } = await this.plugin.refreshLibrary();
 			const library = this.plugin.library;
@@ -234,6 +247,7 @@ export class DownloadManagerView extends ItemView {
 			let done = 0;
 			const handleOne = async (entry: LibraryEntry): Promise<void> => {
 				if (this.cancelled) return;
+				this.plugin.debug('scan.file.start', { path: entry.path, size: entry.size });
 				try {
 					const cacheKey = `${entry.modified}|${entry.size}`;
 					const cached = this.scanCache.get(entry.path);
@@ -263,6 +277,7 @@ export class DownloadManagerView extends ItemView {
 						this.scanCache.set(entry.path, { key: cacheKey, status });
 					}
 					this.statuses.set(entry.path, status);
+					this.plugin.debug('scan.file.done', { path: entry.path, status });
 				} catch (error) {
 					if (entry.size > 0) {
 						console.debug('[bfm scan] failed file', entry.path, entry.size, error instanceof Error ? error.message : String(error));
@@ -271,6 +286,10 @@ export class DownloadManagerView extends ItemView {
 						needsRepair: false,
 						durationSeconds: null,
 						failed: error instanceof Error ? error.message : String(error),
+					});
+					this.plugin.debug('scan.file.failed', {
+						path: entry.path,
+						error: error instanceof Error ? error.message : String(error),
 					});
 				} finally {
 					done++;
@@ -297,6 +316,7 @@ export class DownloadManagerView extends ItemView {
 				})());
 			}
 			await Promise.all(active);
+			this.plugin.debug('scan.done', { selectedOnly, total });
 
 			this.setProgress(true, 100, `Done · ${total} selected file${total === 1 ? '' : 's'} scanned.`);
 			window.setTimeout(() => this.setProgress(false, 0, ''), 1200);
@@ -407,6 +427,7 @@ export class DownloadManagerView extends ItemView {
 			return;
 		}
 		const notice = new Notice(`Repairing ${item.name}…`, 0);
+		this.plugin.debug('repair.start', { path: item.path, size: item.size });
 		this.setProgress(true, 0, `Repairing ${item.name}…`);
 		try {
 			const adapter = this.app.vault.adapter as unknown as {
@@ -422,6 +443,7 @@ export class DownloadManagerView extends ItemView {
 				|| (patch.durationSeconds !== null
 					&& ((patch.staleTrackHeaders ?? 0) + (patch.mismatchedTrackHeaders ?? 0)) > 0);
 			if (!isUnhealthy) {
+				this.plugin.debug('repair.not-needed', { path: item.path });
 				notice.hide();
 				new Notice(`${item.name}: nothing to repair.`);
 				const status: FileStatus = { needsRepair: false, durationSeconds: patch.durationSeconds };
@@ -440,6 +462,12 @@ export class DownloadManagerView extends ItemView {
 				return;
 			}
 			await writeAtomically(adapter, item.path, repaired.data);
+			this.plugin.debug('repair.done', {
+				path: item.path,
+				beforeBytes: data.byteLength,
+				afterBytes: repaired.data.byteLength,
+				duration: repaired.durationSeconds,
+			});
 			const status: FileStatus = {
 				needsRepair: false,
 				durationSeconds: repaired.durationSeconds,
@@ -452,6 +480,10 @@ export class DownloadManagerView extends ItemView {
 			new Notice(`Repaired ${item.name} (${formatDuration(repaired.durationSeconds)}).`);
 			this.render();
 		} catch (error) {
+			this.plugin.debug('repair.failed', {
+				path: item.path,
+				error: error instanceof Error ? error.message : String(error),
+			});
 			notice.hide();
 			const msg = error instanceof Error ? error.message : String(error);
 			this.statuses.set(item.path, { needsRepair: false, durationSeconds: null, failed: msg });
@@ -462,6 +494,29 @@ export class DownloadManagerView extends ItemView {
 			window.setTimeout(() => this.setProgress(false, 0, ''), 800);
 		}
 	}
+
+		private async repairSelected(): Promise<void> {
+			if (this.busy) return;
+			const selected = new Set(this.selectedPaths);
+			const targets = this.plugin.library.items().filter((item) => selected.has(item.path));
+			if (targets.length === 0) {
+				new Notice('Select at least one video to repair.');
+				return;
+			}
+			this.busy = true;
+			this.cancelled = false;
+			this.plugin.debug('repair-selected.start', { paths: targets.map((item) => item.path) });
+			try {
+				for (const item of targets) {
+					if (this.cancelled) break;
+					await this.repairOne(item, false);
+				}
+				this.plugin.debug('repair-selected.done', { count: targets.length });
+			} finally {
+				this.busy = false;
+				this.render();
+			}
+		}
 
 	private async repairNeedsRepair(): Promise<void> {
 		if (this.busy) return;
