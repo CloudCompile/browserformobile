@@ -114,6 +114,14 @@ export class DownloadManagerView extends ItemView {
 		this.listEl = this.bodyEl.createDiv({ cls: 'bfm-dm-list' });
 
 		await this.loadScanCache();
+		try {
+			// Populate the list as soon as the view opens. A scan is still
+			// explicit because it reads every file, but discovering filenames
+			// only needs the lightweight folder walk used by the library.
+			await this.plugin.refreshLibrary();
+		} catch (error) {
+			new Notice(error instanceof Error ? `Could not load downloaded videos: ${error.message}` : 'Could not load downloaded videos.');
+		}
 		this.hydrateStatusesFromCache();
 		this.updateSelectionControls();
 		this.render();
