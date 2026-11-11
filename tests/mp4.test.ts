@@ -12,7 +12,7 @@ import {
 	readIndex,
 	type ParsedFragment,
 } from '../src/mp4';
-import { inspectDurationEnhanced, needsRepair, repairDuration } from '../src/doctor';
+import { inspectDurationEnhanced, needsRepair, repairDuration, repairFolder } from '../src/doctor';
 import { TransmuxStream } from '../src/transmux';
 
 /**
@@ -669,6 +669,60 @@ describe('convertFragmented', () => {
 });
 
 describe('doctor', () => {
+
+	// An in-memory vault adapter for the repair walk. `failWrite` emulates a write
+	// that dies partway (a full disk, the app being killed mid-repair).
+	function vault(
+		files: Record<string, Uint8Array>,
+		failWrite?: () => boolean,
+		failRename?: boolean,
+	) {
+		return {
+			files,
+			async readBinary(path: string) {
+				const data = files[path];
+				if (!data) throw new Error(`no such file: ${path}`);
+				return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+			},
+			async writeBinary(path: string, data: ArrayBuffer) {
+				if (failWrite?.()) {
+					// Obsidian truncates the target before it writes, so a failed
+					// write leaves a short file where the video was.
+					files[path] = new Uint8Array(data).subarray(0, 8).slice();
+					throw new Error('write interrupted');
+				}
+				files[path] = new Uint8Array(data).slice();
+			},
+			async list(path: string) {
+				const prefix = path ? `${path}/` : '';
+				const names = Object.keys(files).filter((key) => key.startsWith(prefix));
+				const folders = new Set<string>();
+				for (const name of names) {
+					const rest = name.slice(prefix.length);
+					const slash = rest.indexOf('/');
+					if (slash >= 0) folders.add(rest.slice(0, slash));
+				}
+				return {
+					files: names
+						.filter((name) => !name.slice(prefix.length).includes('/'))
+						.map((name) => name.slice(prefix.length)),
+					folders: [...folders],
+				};
+			},
+			async exists(path: string) {
+				return path in files || Object.keys(files).some((key) => key.startsWith(`${path}/`));
+			},
+			async remove(path: string) {
+				delete files[path];
+			},
+			async rename(from: string, to: string) {
+				if (failRename) throw new Error('rename refused');
+				if (!(from in files)) throw new Error(`no such file: ${from}`);
+				files[to] = files[from] as Uint8Array;
+				delete files[from];
+			},
+		};
+	}
 	const file = (): Uint8Array =>
 		fragmentedFile([VIDEO, AUDIO], [
 			makeFragment(1, 0, [{ duration: 30000, size: 10 }]),
@@ -695,6 +749,38 @@ describe('doctor', () => {
 		expect(needsRepair(repaired.data)).toBe(false);
 		expect(repairDuration(repaired.data)?.data).toBe(repaired.data);
 	});
+		it('repairs through a temp file and leaves no clutter', async () => {
+			const store = vault({ 'anime/ep.mp4': file() });
+			const result = await repairFolder(store as never, '');
+			expect(result.repaired).toBe(1);
+			expect(result.failed).toEqual([]);
+			expect(Object.keys(store.files)).toEqual(['anime/ep.mp4']);
+			expect(needsRepair(store.files['anime/ep.mp4'] as Uint8Array)).toBe(false);
+		});
+
+		// Writing straight over the original means an interruption (the Android app
+		// is reclaimed in the background) leaves a truncated file where a playable
+		// video was. The repaired bytes go to a sibling temp file swapped in only
+		// once complete, so a failed write must leave the original untouched.
+		it('leaves the original intact when the repair write fails', async () => {
+			const original = file();
+			const store = vault({ 'anime/ep.mp4': original }, () => true);
+			const result = await repairFolder(store as never, '');
+			expect(result.repaired).toBe(0);
+			expect(result.failed).toHaveLength(1);
+			expect(store.files['anime/ep.mp4']).toBe(original);
+			expect(Object.keys(store.files)).toEqual(['anime/ep.mp4']);
+		});
+
+		// Once the original has been cleared the temp file is the only copy of the
+		// video, so a failed swap must leave it in place rather than clean it up.
+		it('keeps the repaired copy when the swap fails', async () => {
+			const store = vault({ 'anime/ep.mp4': file() }, undefined, true);
+			const result = await repairFolder(store as never, '');
+			expect(result.repaired).toBe(0);
+			expect(result.failed).toHaveLength(1);
+			expect(Object.keys(store.files)).toEqual(['anime/ep.mp4.bfm-repair']);
+		});
 });
 
 // ---------------------------------------------------------------------------

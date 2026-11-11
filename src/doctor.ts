@@ -232,12 +232,45 @@ interface VaultAdapter {
         writeBinary(path: string, data: ArrayBuffer): Promise<void>;
         list(path: string): Promise<{ files: string[]; folders: string[] }>;
         exists(path: string): Promise<boolean>;
+        rename(from: string, to: string): Promise<void>;
+        remove(path: string): Promise<void>;
+}
+
+/**
+ * Replace a file's contents without a window where a failure loses it.
+ *
+ * Writing the repaired bytes straight back over the original is unsafe: Obsidian
+ * truncates the target first, so an interruption (the Android app is reclaimed in
+ * the background, the disk fills) leaves a half-written file where a playable
+ * video used to be — the repair destroys exactly what it set out to fix. The
+ * repaired bytes go to a sibling temp file, which is swapped in with a rename
+ * only once it is fully on disk. A failure before the rename leaves the original
+ * untouched.
+ */
+async function writeAtomically(adapter: VaultAdapter, path: string, data: Uint8Array): Promise<void> {
+        const temp = `${path}.bfm-repair`;
+        let originalRemoved = false;
+        try {
+                await adapter.writeBinary(temp, toArrayBuffer(data));
+                // Obsidian's rename refuses an existing target, so the original is
+                // cleared immediately before the swap. The repaired copy is already
+                // fully written at this point.
+                await adapter.remove(path);
+                originalRemoved = true;
+                await adapter.rename(temp, path);
+        } catch (error) {
+                // Only discard the temp while the original is still in place. Once
+                // the original has been removed the temp holds the only copy, so
+                // losing it would lose the video.
+                if (!originalRemoved) await adapter.remove(temp).catch(() => undefined);
+                throw error;
+        }
 }
 
 /**
  * Walk the download folder and repair every MP4 whose track durations are
  * still at the sentinel. Only files that need it are rewritten, and each is
- * rewritten in place.
+ * replaced through a temp file so a failed write cannot lose the original.
  */
 export async function repairFolder(
         adapter: VaultAdapter,
@@ -256,7 +289,7 @@ export async function repairFolder(
                         if (!needsRepair(data)) continue;
                         const repaired = repairDuration(data);
                         if (!repaired) continue;
-                        await adapter.writeBinary(path, toArrayBuffer(repaired.data));
+                        await writeAtomically(adapter, path, repaired.data);
                         result.repaired++;
                         result.fixed.push({ path, durationSeconds: repaired.durationSeconds });
                 } catch (error) {

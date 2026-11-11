@@ -939,6 +939,8 @@ export default class AnimePlugin extends Plugin {
 			writeBinary(path: string, data: ArrayBuffer): Promise<void>;
 			list(path: string): Promise<{ files: string[]; folders: string[] }>;
 			exists(path: string): Promise<boolean>;
+			rename(from: string, to: string): Promise<void>;
+			remove(path: string): Promise<void>;
 		};
 		const notice = new Notice('Checking downloaded videos…', 0);
 		try {

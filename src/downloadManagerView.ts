@@ -433,6 +433,8 @@ export class DownloadManagerView extends ItemView {
 			writeBinary(path: string, data: ArrayBuffer): Promise<void>;
 			list(path: string): Promise<{ files: string[]; folders: string[] }>;
 			exists(path: string): Promise<boolean>;
+			rename(from: string, to: string): Promise<void>;
+			remove(path: string): Promise<void>;
 		};
 		this.setProgress(true, 0, 'Checking downloaded videos…');
 		try {
