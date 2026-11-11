@@ -705,8 +705,14 @@
         color: var(--text-muted);
 }
 
+/* Bordered buttons: pagers, the downloader's action rows, resume rows and the
+   shared confirm dialog. Styled explicitly so they never depend on whatever
+   ambient button look the host supplies. */
 .bfm-dl-pager button,
-.bfm-find-pager button {
+.bfm-find-pager button,
+.bfm-dl-actions button,
+.bfm-dl-resume button,
+.bfm-modal-actions button {
         min-height: 34px;
         padding: 0 var(--bfm-space-4);
         border: 1px solid var(--bfm-border);
@@ -714,13 +720,63 @@
         background: var(--background-primary);
         color: var(--text-normal);
         cursor: pointer;
+        transition: border-color var(--bfm-transition), background var(--bfm-transition);
 }
 
 .bfm-dl-pager button:hover:not(:disabled),
-.bfm-find-pager button:hover:not(:disabled) { border-color: var(--bfm-accent); }
+.bfm-find-pager button:hover:not(:disabled),
+.bfm-dl-actions button:hover:not(:disabled),
+.bfm-dl-resume button:hover:not(:disabled),
+.bfm-modal-actions button:hover:not(:disabled) {
+        border-color: var(--bfm-accent);
+        background: var(--bfm-hover);
+}
 
 .bfm-dl-pager button:disabled,
-.bfm-find-pager button:disabled { opacity: 0.4; cursor: default; }
+.bfm-find-pager button:disabled,
+.bfm-dl-actions button:disabled,
+.bfm-dl-resume button:disabled { opacity: 0.4; cursor: default; }
+
+/* Primary and destructive buttons. Obsidian's own `.mod-cta` / `.mod-warning`
+   set these, but stating them inside the plugin scopes keeps the colours right
+   on hosts (and themes) that style those classes differently. */
+.bfm-download-modal button.mod-cta,
+.bfm-library-modal button.mod-cta,
+.bfm-stats-modal button.mod-cta,
+.bfm-recs-modal button.mod-cta,
+.bfm-details-modal button.mod-cta,
+.bfm-player-modal button.mod-cta,
+.bfm-find-modal button.mod-cta,
+.bfm-download-manager button.mod-cta {
+        background: var(--bfm-accent);
+        border-color: var(--bfm-accent);
+        color: var(--text-on-accent);
+}
+
+.bfm-download-modal button.mod-cta:hover:not(:disabled),
+.bfm-library-modal button.mod-cta:hover:not(:disabled),
+.bfm-stats-modal button.mod-cta:hover:not(:disabled),
+.bfm-recs-modal button.mod-cta:hover:not(:disabled),
+.bfm-details-modal button.mod-cta:hover:not(:disabled),
+.bfm-player-modal button.mod-cta:hover:not(:disabled),
+.bfm-find-modal button.mod-cta:hover:not(:disabled),
+.bfm-download-manager button.mod-cta:hover:not(:disabled) {
+        background: var(--interactive-accent-hover, var(--bfm-accent));
+        border-color: var(--interactive-accent-hover, var(--bfm-accent));
+}
+
+.bfm-download-modal button.mod-warning,
+.bfm-library-modal button.mod-warning,
+.bfm-stats-modal button.mod-warning,
+.bfm-recs-modal button.mod-warning,
+.bfm-details-modal button.mod-warning,
+.bfm-player-modal button.mod-warning,
+.bfm-find-modal button.mod-warning,
+.bfm-download-manager button.mod-warning {
+        background: var(--text-error);
+        border-color: var(--text-error);
+        color: var(--text-on-accent);
+}
 
 .bfm-dl-controls {
         display: flex;
@@ -781,13 +837,9 @@
 
 .bfm-dl-actions {
         display: flex;
+        flex-wrap: wrap;
         justify-content: flex-end;
         gap: var(--bfm-space-2);
-}
-
-.bfm-dl-actions button {
-        min-height: var(--bfm-tap);
-        padding: 0 var(--bfm-space-4);
 }
 
 .bfm-dl-job {
@@ -847,12 +899,6 @@
         min-width: 0;
         font-size: 12px;
         color: var(--text-muted);
-}
-
-.bfm-dl-resume button {
-        flex: 0 0 auto;
-        min-height: 34px;
-        padding: 0 var(--bfm-space-3);
 }
 
 /* Fullscreen downloader window. */
