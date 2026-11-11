@@ -976,6 +976,12 @@ export class DownloadManager {
                 const onProgress = (progress: { completed: number; bytes: number }): void => {
                         job.completed = progress.completed;
                         job.bytes = progress.bytes;
+                        this.debug('download.progress', {
+                                id: job.id,
+                                completed: progress.completed,
+                                total: job.total,
+                                bytes: progress.bytes,
+                        });
                         onTick();
                         this.scheduleUpdate();
                 };

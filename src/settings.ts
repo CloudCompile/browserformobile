@@ -279,6 +279,10 @@ export class AnimeSettingTab extends PluginSettingTab {
                 if (key === 'glassEffect') {
                         this.plugin.applyGlassSetting();
                 }
+                if (key === 'debugMode' && Boolean(value)) {
+                        this.plugin.debugMachineInfo();
+                        this.plugin.debug('debug.enabled');
+                }
                 await this.plugin.saveSettings();
         }
 }

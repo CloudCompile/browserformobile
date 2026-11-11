@@ -82,6 +82,10 @@ export default class AnimePlugin extends Plugin {
 	debug(message: string, details?: unknown): void {
 		this.debugLogger?.log(message, details);
 	}
+
+	debugMachineInfo(): void {
+		this.debugLogger?.logMachineInfo();
+	}
 	/**
 	 * Last-seen state of every downloaded file, keyed by path.
 	 *
@@ -109,6 +113,16 @@ export default class AnimePlugin extends Plugin {
 			() => this.settings.debugMode,
 		);
 		this.debug('plugin.onload');
+		this.debugLogger.logMachineInfo();
+		this.debug('settings.runtime', {
+			format: this.settings.downloadFormat,
+			quality: this.settings.downloadQuality,
+			segmentConcurrency: this.settings.downloadSegmentConcurrency,
+			maxConcurrentJobs: this.settings.downloadMaxConcurrentJobs,
+			externalStorage: this.settings.downloadExternal,
+			recommendationModel: this.settings.recommendationModel,
+			llmProvider: this.settings.llmProvider,
+		});
 
 		this.library = new VideoLibrary();
 		this.library.load(this.watchRecords);
