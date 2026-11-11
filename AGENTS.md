@@ -304,6 +304,11 @@ page and the recommendations.
   section.
 - `src/recommendationsModal.ts` — the recommendations page: a poster grid over
   the whole download history, with per-seed progress while it loads.
+- `src/findModal.ts` — the finder: browse listing sections and genre pages
+  (paginated) without searching, then open a title in the downloader. The 18+
+  source is a second tab behind its own opt-in checkbox, reusing the same views.
+  `browseSection` / `browseGenre` / `loadGenres` in `animeApi.ts` back it, and
+  pick the native routes or the `hentaimama` provider routes by source.
 - `src/recommend.ts` — the pure ranking engine: `tokenize`, `buildTasteProfile`,
   `bm25Scores`, `rankRecommendations`, `blendModelScores`. No I/O, so it is
   directly testable.

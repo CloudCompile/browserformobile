@@ -12,6 +12,7 @@ import { DEFAULT_SETTINGS, AnimeSettingTab, type AnimeSettings } from './setting
 import { StatsStore, type DownloadRun } from './stats';
 import { StatsModal } from './statsModal';
 import { SeriesPickerModal } from './modals';
+import { FindModal } from './findModal';
 import { DetailsModal } from './detailsModal';
 import { applyModelScores, collectRecommendations, deriveSeeds } from './recommendService';
 import { RecommendationsModal, type RecommendationsResult } from './recommendationsModal';
@@ -28,7 +29,7 @@ import {
         type CuratorTool,
 } from './llm';
 import { curateInProcess, WllamaRuntime, type LocalRuntime } from './llmLocal';
-import { loadPreview, searchSeries } from './animeApi';
+import { loadPreview, searchSeries, type SeriesSummary } from './animeApi';
 import type { Recommendation, TasteSeed } from './recommend';
 import { requestUrl } from 'obsidian';
 import { DownloadManagerView, VIEW_TYPE_DOWNLOADS } from './downloadManagerView';
@@ -58,6 +59,7 @@ export default class AnimePlugin extends Plugin {
 	private statsModal: StatsModal | null = null;
 	private detailsModal: DetailsModal | null = null;
 	private recommendationsModal: RecommendationsModal | null = null;
+	private findModal: FindModal | null = null;
 	/** Re-ranks recommendations with a decision model, when one is enabled. */
 	private localRanker: TinyDecideRanker | null = null;
 	private hostedRanker: JevRanker | null = null;
@@ -122,6 +124,10 @@ export default class AnimePlugin extends Plugin {
 
 		this.addRibbonIcon('sparkles', 'Recommendations', () => {
 			this.openRecommendations();
+		});
+
+		this.addRibbonIcon('compass', 'Find anime', () => {
+			this.openFind();
 		});
 
 		this.registerCommands();
@@ -280,6 +286,23 @@ export default class AnimePlugin extends Plugin {
 			},
 		});
 		this.recommendationsModal = modal;
+		modal.open();
+	}
+
+	/**
+	 * Open the finder: browse sections and genres, then hand a picked title to
+	 * the downloader with its source attached.
+	 */
+	openFind(): void {
+		if (this.findModal) {
+			this.findModal.close();
+			this.findModal = null;
+		}
+		const modal = new FindModal(this.app, {
+			apiBase: this.settings.animeApiBase,
+			onOpenSeries: (series) => this.openDownloader(undefined, series),
+		});
+		this.findModal = modal;
 		modal.open();
 	}
 
@@ -753,7 +776,7 @@ export default class AnimePlugin extends Plugin {
 		};
 	}
 
-	openDownloader(query?: string): void {
+	openDownloader(query?: string, series?: SeriesSummary): void {
 		if (this.downloadModal) {
 			this.downloadModal.close();
 			this.downloadModal = null;
@@ -772,6 +795,7 @@ export default class AnimePlugin extends Plugin {
 				maxConcurrentJobs: this.settings.downloadMaxConcurrentJobs,
 				confirmDestructiveActions: this.settings.confirmDestructiveActions,
 				initialQuery: query,
+				initialSeries: series,
 			},
 			{
 				onOptionsChanged: (patch) => {
@@ -880,6 +904,14 @@ export default class AnimePlugin extends Plugin {
 			name: 'Open download statistics',
 			callback: () => {
 				this.openStats();
+			},
+		});
+
+		this.addCommand({
+			id: 'open-anime-finder',
+			name: 'Anime: find anime',
+			callback: () => {
+				this.openFind();
 			},
 		});
 

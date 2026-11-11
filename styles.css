@@ -1501,3 +1501,148 @@ body.bfm-glass-on .bfm-recs-card {
         backdrop-filter: blur(6px);
         -webkit-backdrop-filter: blur(6px);
 }
+
+/* Find modal: browse sections and genres. */
+.bfm-find-body {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+}
+
+.bfm-find-tabs {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+}
+
+.bfm-find-tab {
+        padding: 4px 12px;
+        border-radius: 999px;
+        border: 1px solid var(--background-modifier-border);
+        background: var(--background-secondary);
+        cursor: pointer;
+}
+
+.bfm-find-tab.is-active {
+        border-color: var(--interactive-accent);
+        color: var(--interactive-accent);
+}
+
+.bfm-find-adult {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--text-muted);
+        cursor: pointer;
+}
+
+.bfm-find-sections {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 10px;
+}
+
+.bfm-find-section {
+        padding: 14px 12px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-m, 8px);
+        background: var(--background-secondary);
+        cursor: pointer;
+}
+
+.bfm-find-section:hover {
+        border-color: var(--interactive-accent);
+}
+
+.bfm-find-section-title {
+        font-size: 14px;
+        font-weight: 600;
+}
+
+.bfm-find-genre-link {
+        align-self: flex-start;
+        background: none;
+        border: none;
+        padding: 0;
+        color: var(--interactive-accent);
+        cursor: pointer;
+}
+
+.bfm-find-genres {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+}
+
+.bfm-find-genre {
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--background-modifier-border);
+        background: var(--background-secondary);
+        font-size: 12px;
+        cursor: pointer;
+}
+
+.bfm-find-genre:hover {
+        border-color: var(--interactive-accent);
+}
+
+.bfm-find-browse-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+}
+
+.bfm-find-heading {
+        font-weight: 600;
+}
+
+.bfm-find-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 10px;
+}
+
+.bfm-find-card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-m, 8px);
+        background: var(--background-secondary);
+        cursor: pointer;
+}
+
+.bfm-find-card:hover {
+        border-color: var(--interactive-accent);
+}
+
+.bfm-find-poster {
+        width: 100%;
+        aspect-ratio: 5 / 7;
+        object-fit: cover;
+        border-radius: var(--radius-s, 6px);
+        background: var(--background-modifier-border);
+}
+
+.bfm-find-card-title {
+        font-size: 13px;
+        font-weight: 600;
+}
+
+.bfm-find-hint {
+        margin: 0;
+        font-size: 13px;
+        color: var(--text-muted);
+}
+
+.bfm-find-pager {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        justify-content: center;
+}

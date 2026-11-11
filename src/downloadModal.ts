@@ -27,6 +27,8 @@ export interface DownloadModalOptions {
         confirmDestructiveActions: boolean;
         /** Pre-filled search text, so a caller can open the downloader on a title. */
         initialQuery?: string;
+        /** A specific series to open straight to its detail page, with its source. */
+        initialSeries?: SeriesSummary;
 }
 
 export interface DownloadModalCallbacks {
@@ -91,7 +93,10 @@ export class DownloadModal extends Modal {
                 this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-dl-body' });
                 this.statusEl = this.contentEl.createDiv({ cls: 'bfm-dl-status' });
                 this.render();
-                if (this.options.initialQuery) {
+                if (this.options.initialSeries) {
+                        this.includeAdult = Boolean(this.options.initialSeries.adultContent);
+                        void this.openSeries(this.options.initialSeries);
+                } else if (this.options.initialQuery) {
                         this.searchValue = this.options.initialQuery;
                         this.render();
                         void this.doSearch();

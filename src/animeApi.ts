@@ -310,6 +310,178 @@ export async function searchSeries(
         return { series: last.series, totalPages: last.totalPages };
 }
 
+/** One page of a browse listing (a section or a genre), from either source. */
+export interface BrowsePage {
+        series: SeriesSummary[];
+        totalPages: number;
+        page: number;
+}
+
+/** A genre the current source can be filtered by. */
+export interface GenreRef {
+        slug: string;
+        name: string;
+}
+
+/** Browse a listing section, e.g. `most-popular`, `movie`, `top-airing`. */
+export async function browseSection(
+        base: string,
+        section: string,
+        page: number,
+        source?: string,
+): Promise<BrowsePage> {
+        if (source === ADULT_PROVIDER) {
+                const payload = (await getJson(
+                        base,
+                        `/api/providers/${ADULT_PROVIDER}/browse?section=${encodeURIComponent(section)}&page=${page}`,
+                )) as { results?: { data?: unknown; totalPages?: unknown; page?: unknown } };
+                return adultPage(payload?.results);
+        }
+        const payload = (await getJson(
+                base,
+                `/api/${encodeURIComponent(section)}?page=${page}`,
+        )) as { results?: { data?: unknown; totalPages?: unknown; page?: unknown } };
+        return nativePage(payload?.results, page);
+}
+
+/** Browse one genre's titles, paginated. */
+export async function browseGenre(
+        base: string,
+        slug: string,
+        page: number,
+        source?: string,
+): Promise<BrowsePage> {
+        if (source === ADULT_PROVIDER) {
+                const payload = (await getJson(
+                        base,
+                        `/api/providers/${ADULT_PROVIDER}/browse?genre=${encodeURIComponent(slug)}&page=${page}`,
+                )) as { results?: { data?: unknown; totalPages?: unknown; page?: unknown } };
+                return adultPage(payload?.results);
+        }
+        const payload = (await getJson(
+                base,
+                `/api/genre/${encodeURIComponent(slug)}?page=${page}`,
+        )) as { results?: { data?: unknown; totalPages?: unknown; page?: unknown } };
+        return nativePage(payload?.results, page);
+}
+
+/** The genre list for the source: the 18+ source is scraped, the native one is fixed. */
+export async function loadGenres(base: string, source?: string): Promise<GenreRef[]> {
+        if (source === ADULT_PROVIDER) {
+                const payload = (await getJson(base, `/api/providers/${ADULT_PROVIDER}/genres`)) as {
+                        results?: { data?: unknown };
+                };
+                const rows = payload?.results?.data;
+                return Array.isArray(rows)
+                        ? rows
+                                .map((row) => {
+                                        const record = (row ?? {}) as Record<string, unknown>;
+                                        return { slug: asString(record.slug), name: asString(record.name) };
+                                })
+                                .filter((genre) => genre.slug && genre.name)
+                        : [];
+        }
+        return NATIVE_GENRES.map((genre) => ({ ...genre }));
+}
+
+/** The native catalogue's genre pages, matching `/api/genre/<slug>`. */
+export const NATIVE_GENRES: GenreRef[] = [
+        { slug: 'action', name: 'Action' },
+        { slug: 'adventure', name: 'Adventure' },
+        { slug: 'cars', name: 'Cars' },
+        { slug: 'comedy', name: 'Comedy' },
+        { slug: 'dementia', name: 'Dementia' },
+        { slug: 'demons', name: 'Demons' },
+        { slug: 'drama', name: 'Drama' },
+        { slug: 'ecchi', name: 'Ecchi' },
+        { slug: 'fantasy', name: 'Fantasy' },
+        { slug: 'game', name: 'Game' },
+        { slug: 'harem', name: 'Harem' },
+        { slug: 'historical', name: 'Historical' },
+        { slug: 'horror', name: 'Horror' },
+        { slug: 'isekai', name: 'Isekai' },
+        { slug: 'josei', name: 'Josei' },
+        { slug: 'kids', name: 'Kids' },
+        { slug: 'magic', name: 'Magic' },
+        { slug: 'martial-arts', name: 'Martial Arts' },
+        { slug: 'mecha', name: 'Mecha' },
+        { slug: 'military', name: 'Military' },
+        { slug: 'music', name: 'Music' },
+        { slug: 'mystery', name: 'Mystery' },
+        { slug: 'parody', name: 'Parody' },
+        { slug: 'police', name: 'Police' },
+        { slug: 'psychological', name: 'Psychological' },
+        { slug: 'romance', name: 'Romance' },
+        { slug: 'samurai', name: 'Samurai' },
+        { slug: 'school', name: 'School' },
+        { slug: 'sci-fi', name: 'Sci-Fi' },
+        { slug: 'seinen', name: 'Seinen' },
+        { slug: 'shoujo', name: 'Shoujo' },
+        { slug: 'shoujo-ai', name: 'Shoujo Ai' },
+        { slug: 'shounen', name: 'Shounen' },
+        { slug: 'shounen-ai', name: 'Shounen Ai' },
+        { slug: 'slice-of-life', name: 'Slice of Life' },
+        { slug: 'space', name: 'Space' },
+        { slug: 'sports', name: 'Sports' },
+        { slug: 'super-power', name: 'Super Power' },
+        { slug: 'supernatural', name: 'Supernatural' },
+        { slug: 'thriller', name: 'Thriller' },
+        { slug: 'vampire', name: 'Vampire' },
+];
+
+function toNativeSummary(record: Record<string, unknown>): SeriesSummary {
+        const info = (record.tvInfo ?? {}) as Record<string, unknown>;
+        return {
+                id: asString(record.id),
+                title: asString(record.title),
+                japaneseTitle: asString(record.japanese_title) || null,
+                poster: asString(record.poster) || null,
+                showType: asString(info.showType) || 'Unknown',
+                sub: asNumber(info.sub),
+                dub: asNumber(info.dub),
+                eps: asNumber(info.eps),
+        };
+}
+
+function nativePage(results: unknown, requestedPage: number): BrowsePage {
+        const record = (results ?? {}) as Record<string, unknown>;
+        const rows = Array.isArray(record.data) ? record.data : [];
+        return {
+                series: rows.map((row) => toNativeSummary(row as Record<string, unknown>)).filter((series) => series.id),
+                totalPages: Math.max(1, asNumber(record.totalPages)),
+                page: asNumber(record.page) || requestedPage,
+        };
+}
+
+function adultPage(results: unknown): BrowsePage {
+        const record = (results ?? {}) as Record<string, unknown>;
+        const rows = Array.isArray(record.data) ? record.data : [];
+        const series = rows
+                .map((row): SeriesSummary | null => {
+                        const entry = (row ?? {}) as Record<string, unknown>;
+                        const id = asString(entry.slug) || asString(entry.id);
+                        if (!id) return null;
+                        return {
+                                id,
+                                title: asString(entry.title),
+                                japaneseTitle: asString(entry.japaneseTitle) || null,
+                                poster: asString(entry.poster) || null,
+                                showType: asString(entry.type) || 'TV',
+                                sub: 0,
+                                dub: 0,
+                                eps: asNumber(entry.episodes),
+                                adultContent: true,
+                                provider: ADULT_PROVIDER,
+                        };
+                })
+                .filter((series): series is SeriesSummary => series !== null);
+        return {
+                series,
+                totalPages: Math.max(1, asNumber(record.totalPages)),
+                page: asNumber(record.page) || 1,
+        };
+}
+
 export async function loadEpisodes(base: string, seriesId: string, provider?: string): Promise<SeriesDetail> {
         // The 18+ source is addressed by slug through its own provider route and
         // returns a flat episode list rather than the native nested shape.

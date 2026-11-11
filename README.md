@@ -18,6 +18,9 @@ which do not need one.
 
 - **Search and download** from an anime catalogue, with per-episode selection,
   ranges, skip-filler, and "download missing".
+- **Find and browse** the catalogue without a search: pick a listing section
+  (most popular, top airing, movies, …) or a genre page and page through the
+  titles, then open one in the downloader.
 - **Resumable downloads** that continue from the last segment after a failure.
 - **An offline video library** that plays your episodes and remembers where you
   stopped.
@@ -34,6 +37,20 @@ which do not need one.
   written by older versions.
 - **A responsive, touch-friendly layout** built for narrow screens, with
   safe-area insets for notched phones and larger tap targets on touch devices.
+
+## Find anime
+
+Open it from the compass ribbon icon or the **Anime: find anime** command.
+
+Instead of typing a search, browse the catalogue: pick a listing section (most
+popular, top airing, top upcoming, recently added, completed, or a format such
+as movies) or **Browse by genre**, then page through the poster grid. Selecting
+a title opens it straight in the downloader, ready for episode selection.
+
+The **18+** checkbox in the finder reveals a second tab backed by the adult
+source, which has its own sections (monthly releases, all series) and its own
+genre list. It uses the same grid and pager, so the browsing is identical; leave
+the box off and only the normal catalogue is reachable.
 
 ## Anime downloader
 
