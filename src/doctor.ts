@@ -417,7 +417,13 @@ export async function repairFolder(
         adapter: VaultAdapter,
         folder: string,
         onProgress?: (path: string, done: number, total: number) => void,
-        options: { byteBudget?: number; maxInFlight?: number; ledger?: RepairLedger } = {},
+        options: {
+                byteBudget?: number;
+                maxInFlight?: number;
+                /** Refuse a single conversion that cannot fit safely in memory. */
+                maxFileBytes?: number;
+                ledger?: RepairLedger;
+        } = {},
 ): Promise<RepairResult> {
         const result: RepairResult = { scanned: 0, repaired: 0, skipped: 0, fixed: [], failed: [] };
         const files = await collectMp4(adapter, folder);
@@ -470,6 +476,16 @@ export async function repairFolder(
                         onProgress?.(path, started++, files.length);
                         result.scanned++;
                         result.skipped++;
+                        continue;
+                }
+                if (options.maxFileBytes !== undefined && stamp && stamp.size > options.maxFileBytes) {
+                        onProgress?.(path, started++, files.length);
+                        result.scanned++;
+                        ledger?.forget(path);
+                        result.failed.push({
+                                path,
+                                message: `Skipped ${Math.round(stamp.size / (1024 * 1024))} MB file: repair is limited to ${Math.round(options.maxFileBytes / (1024 * 1024))} MB on this device to prevent an out-of-memory restart.`,
+                        });
                         continue;
                 }
                 // An unknown size is assumed to fill the budget so that file runs alone;

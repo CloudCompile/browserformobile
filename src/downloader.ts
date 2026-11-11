@@ -775,6 +775,9 @@ export class DownloadManager {
                 signal: AbortSignal,
                 onTick: () => void,
         ): Promise<void> {
+                if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+                        throw new DownloadError('No internet connection. Reconnect and resume this download.');
+                }
                 const source = await loadStream(this.options.apiBase, job.episode.id, job.episode.provider);
                 if (signal.aborted) throw new DownloadError('Download cancelled.');
                 if (!source.url || source.variants.length === 0) {
@@ -864,6 +867,7 @@ export class DownloadManager {
                         throw new DownloadError(`${destination.displayPath(path)} already exists.`);
                 }
 
+                await this.checkStorageSpace(playlist, resumeBytes);
                 job.total = playlist.segments.length;
                 job.completed = resumeFrom;
                 job.resumeSegments = resumeFrom;
@@ -887,10 +891,33 @@ export class DownloadManager {
                         this.options.format === 'ts'
                                 ? await this.writeTs(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes)
                                 : await this.writeMp4(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes);
-
                 job.fileSize = written;
                 job.partialFound = false;
                 this.stagingPaths.delete(job.id);
+        }
+
+        /**
+         * Browser storage quotas are the only portable free-space signal on
+         * mobile. If the platform exposes one, fail before writing a large
+         * partial instead of discovering a full disk after hours of work.
+         */
+        private async checkStorageSpace(playlist: MediaPlaylist, resumeBytes: number): Promise<void> {
+                const storage = typeof navigator !== 'undefined'
+                        ? (navigator as Navigator & {
+                                storage?: { estimate?: () => Promise<{ quota?: number; usage?: number }> };
+                        }).storage
+                        : undefined;
+                if (!storage?.estimate) return;
+                const estimate = await storage.estimate().catch(() => null);
+                if (!estimate?.quota || estimate.usage === undefined) return;
+                const expected = Math.max(64 * 1024 * 1024, playlist.duration * 200 * 1024);
+                const needed = Math.max(0, expected - resumeBytes) * 1.15;
+                const available = estimate.quota - estimate.usage;
+                if (available < needed) {
+                        throw new DownloadError(
+                                `Not enough storage for this download. Free about ${formatBytes(Math.max(0, available))}; need about ${formatBytes(needed)}.`,
+                        );
+                }
         }
 
         /**
@@ -919,7 +946,7 @@ export class DownloadManager {
                         await downloadSegmentsStreaming(
                                 playlist,
                                 {
-                                        concurrency: this.options.segmentConcurrency,
+                                        concurrency: Math.max(1, Math.floor(this.options.segmentConcurrency / Math.max(1, this.running))),
                                         signal,
                                         onProgress,
                                         batchBytes: this.batchBytesFor(playlist),
@@ -1108,7 +1135,7 @@ export class DownloadManager {
                                 await downloadSegmentsStreaming(
                                         playlist,
                                         {
-                                                concurrency: this.options.segmentConcurrency,
+                                                concurrency: Math.max(1, Math.floor(this.options.segmentConcurrency / Math.max(1, this.running))),
                                                 signal,
                                                 onProgress,
                                                 batchBytes: this.batchBytesFor(playlist),

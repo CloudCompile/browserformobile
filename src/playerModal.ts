@@ -75,6 +75,15 @@ export class PlayerModal extends Modal {
 		this.saveTimer = window.setInterval(() => this.flush(false), SAVE_INTERVAL_MS);
 
 		const bar = this.contentEl.createDiv({ cls: 'bfm-player-bar' });
+		const speed = bar.createEl('select', { cls: 'bfm-player-speed', attr: { 'aria-label': 'Playback speed' } });
+		for (const rate of [0.75, 1, 1.25, 1.5, 2]) {
+			const option = speed.createEl('option', { text: `${rate}×`, value: String(rate) });
+			option.selected = rate === 1;
+		}
+		speed.addEventListener('change', () => {
+			const rate = Number(speed.value);
+			if (Number.isFinite(rate) && rate > 0) this.videoEl.playbackRate = rate;
+		});
 		const restart = bar.createEl('button', { cls: 'bfm-player-restart' });
 		setIcon(restart, 'rotate-ccw');
 		restart.createSpan({ text: 'Start over' });

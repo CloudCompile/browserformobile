@@ -1,9 +1,9 @@
-import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
+import { Notice, Platform, Plugin, WorkspaceLeaf } from 'obsidian';
 import { AnimeCache, type CachePersistence } from './animeCache';
 import { setAnimeCache } from './animeApi';
 import { DownloadManager, type DownloaderOptions } from './downloader';
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
-import { repairFolder, RepairLedger } from './doctor';
+import { repairByteBudget, repairFolder, RepairLedger } from './doctor';
 import { externalStorageAvailable } from './destination';
 import { VideoLibrary, type LibraryItem, type WatchRecord } from './library';
 import { LibraryModal } from './libraryModal';
@@ -957,7 +957,11 @@ export default class AnimePlugin extends Plugin {
 		};
 		const notice = new Notice('Checking downloaded videos…', 0);
 		try {
-			const result = await repairFolder(adapter, folder, undefined, { ledger: this.repairLedger });
+			const result = await repairFolder(adapter, folder, undefined, {
+				ledger: this.repairLedger,
+				maxFileBytes: Platform.isMobile ? repairByteBudget() / 2 : undefined,
+				maxInFlight: Platform.isMobile ? 1 : undefined,
+			});
 			await this.saveSettings();
 			notice.hide();
 			if (result.scanned === 0) {
