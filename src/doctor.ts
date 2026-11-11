@@ -288,6 +288,31 @@ export class RepairLedger {
                 delete this.entries[path];
         }
 
+        /**
+         * Adopt the download manager's scan verdicts.
+         *
+         * The scan reads every file once to decide what needs repair, and stores
+         * each verdict under a `mtime|size` key. That is the same evidence a repair
+         * pass records, so taking it over lets the first repair after a scan read
+         * only the files the scan flagged — instead of reading the whole
+         * collection a second time to reach the same conclusion. Only verdicts the
+         * scan reached without error (`needsRepair: false`) are adopted.
+         */
+        seedFromScanCache(records: unknown): void {
+                if (!records || typeof records !== 'object') return;
+                const entries = Object.entries(records as Record<string, { key?: unknown; status?: { needsRepair?: unknown } }>);
+                for (const [path, entry] of entries) {
+                        if (entry?.status?.needsRepair !== false) continue;
+                        if (typeof entry.key !== 'string') continue;
+                        const [mtimeText, sizeText] = entry.key.split('|');
+                        const mtime = Number(mtimeText);
+                        const size = Number(sizeText);
+                        // A stamp that cannot change is no evidence the file is unchanged.
+                        if (!Number.isFinite(mtime) || !Number.isFinite(size) || mtime <= 0) continue;
+                        this.markClean(path, size, mtime);
+                }
+        }
+
         toJSON(): Record<string, string> {
                 return this.entries;
         }

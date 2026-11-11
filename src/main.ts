@@ -1004,6 +1004,9 @@ export default class AnimePlugin extends Plugin {
 		this.animeCacheRecords = raw?.animeCache ?? null;
 		this.downloadScanCache = raw?.downloadScanCache ?? {};
 		this.repairLedger = new RepairLedger(raw?.repairLedger);
+		// A scan from an earlier session already read every file it covered. Adopt
+		// its verdicts so the first repair this session skips them.
+		this.repairLedger.seedFromScanCache(this.downloadScanCache);
 	}
 
 	async saveSettings(): Promise<void> {

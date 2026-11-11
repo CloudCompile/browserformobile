@@ -974,6 +974,69 @@ describe('doctor', () => {
 			expect(restored.isClean('anime/ep.mp4', 10, 101)).toBe(false);
 		});
 
+		// The download manager's scan reads every file once to decide what needs
+		// repair, under a `mtime|size` key. Adopting those verdicts is what keeps a
+		// repair from reading the whole collection a second time.
+		it('adopts the download scan verdicts so the repair reads only what it flagged', async () => {
+			const healthy = repairDuration(file())!.data;
+			const files: Record<string, Uint8Array> = {
+				'anime/good.mp4': healthy,
+				'anime/bad.mp4': file(),
+			};
+			const mtimes: Record<string, number> = { 'anime/good.mp4': 500, 'anime/bad.mp4': 500 };
+			const store = vault(files);
+			store.stat = async (path: string) => ({ size: files[path]!.byteLength, mtime: mtimes[path] ?? 0 });
+
+			// What the scan would have cached: good is clean, bad needs repair.
+			const ledger = new RepairLedger();
+			ledger.seedFromScanCache({
+				'anime/good.mp4': { key: `500|${files['anime/good.mp4']!.byteLength}`, status: { needsRepair: false } },
+				'anime/bad.mp4': { key: `500|${files['anime/bad.mp4']!.byteLength}`, status: { needsRepair: true } },
+			});
+
+			let reads = 0;
+			const reading = store.readBinary.bind(store);
+			store.readBinary = async (path: string) => {
+				reads++;
+				return reading(path);
+			};
+			const result = await repairFolder(store as never, '', undefined, { ledger });
+			expect(reads).toBe(1);
+			expect(result.skipped).toBe(1);
+			expect(result.repaired).toBe(1);
+		});
+
+		// A scan verdict only covers the file it saw. A file with a new size or
+		// mtime is not the file the scan cleared, so it is read again.
+		it('ignores a scan verdict whose stamp no longer matches', async () => {
+			const files: Record<string, Uint8Array> = { 'anime/ep.mp4': file() };
+			const mtimes: Record<string, number> = { 'anime/ep.mp4': 900 };
+			const store = vault(files);
+			store.stat = async (path: string) => ({ size: files[path]!.byteLength, mtime: mtimes[path] ?? 0 });
+
+			const ledger = new RepairLedger();
+			ledger.seedFromScanCache({
+				'anime/ep.mp4': { key: `100|${files['anime/ep.mp4']!.byteLength}`, status: { needsRepair: false } },
+			});
+			const result = await repairFolder(store as never, '', undefined, { ledger });
+			expect(result.skipped).toBe(0);
+			expect(result.repaired).toBe(1);
+		});
+
+		// A verdict with no mtime cannot be trusted to stay put, and a failed scan
+		// carries no verdict at all, so neither is adopted.
+		it('adopts nothing without a usable stamp or verdict', () => {
+			const ledger = new RepairLedger();
+			ledger.seedFromScanCache({
+				'anime/no-mtime.mp4': { key: `0|100`, status: { needsRepair: false } },
+				'anime/failed.mp4': { key: `500|100`, status: { needsRepair: true } },
+				'anime/no-status.mp4': { key: `500|100` },
+			});
+			expect(ledger.isClean('anime/no-mtime.mp4', 100, 0)).toBe(false);
+			expect(ledger.isClean('anime/failed.mp4', 100, 500)).toBe(false);
+			expect(ledger.isClean('anime/no-status.mp4', 100, 500)).toBe(false);
+		});
+
 });
 
 // ---------------------------------------------------------------------------

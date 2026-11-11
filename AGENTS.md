@@ -889,3 +889,35 @@ false), the progressive file is not rewritten, and a second pass repairs nothing
 Converting `/tmp/bfmmp4/out/fragmented.mp4` directly reproduced the source's
 video packets exactly and left 645/645 audio packets with identical sizes and
 checksums, only re-based to start at zero.
+
+## Repair and scan share one read (3.5.4+)
+
+Repairing a download folder costs a full read of every file: the adapter reads
+whole files and `moov` may sit at either end, so there is no way to inspect part
+of one. On a collection of episodes that is the whole library, every run.
+
+Two passes touch the same bytes. The download-manager scan (`scan()` in
+`downloadManagerView.ts`) reads each file once to decide `needsRepair` and caches
+the verdict under a `mtime|size` key. The repair (`repairFolder` in `doctor.ts`)
+then read each file *again* to reach the same conclusion.
+
+`RepairLedger` records the `{size, mtime}` a pass leaves per path; a later pass
+trusts an unchanged file and reads nothing. Two ways feed it, so neither pass
+repeats the other's work:
+
+- `repairFolder` marks a file clean once it has verified or rewritten it, and
+  skips a clean file without a read. Persisted in the plugin data file as
+  `repairLedger`.
+- `RepairLedger.seedFromScanCache` adopts the scan's verdicts (`needsRepair:
+  false` only), called when the scan saves its cache and when settings load, so
+  the first repair after a scan — or after a restart — reads only what the scan
+  flagged.
+
+A stamp is only trusted while size *and* mtime match, and only when mtime > 0:
+a re-download or sync replaces the file and invalidates the entry by itself, and
+a stamp that cannot change is no evidence at all. The ledger is written only for
+files this plugin verified or wrote, so skipping them cannot hide a bad file.
+
+Measured on 20 fragmented + 20 healthy files (`/workspace/scratch/ab.mjs`):
+repair reads 40/40 files unseeded, 20/40 seeded (the 20 it skips are the healthy
+ones). On a mostly-healthy library the post-scan repair reads almost nothing.

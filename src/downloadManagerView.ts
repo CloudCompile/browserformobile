@@ -141,6 +141,9 @@ export class DownloadManagerView extends ItemView {
 			// Write through the plugin's own data file so a concurrent saveSettings
 			// cannot drop the scan cache.
 			this.plugin.downloadScanCache = Object.fromEntries(this.scanCache);
+			// The scan already read every file to decide what needs repair; hand
+			// those verdicts to the repair so it does not read them a second time.
+			this.plugin.repairLedger.seedFromScanCache(this.plugin.downloadScanCache);
 			await this.plugin.saveSettings();
 		} catch {
 			// Persistence is best-effort; the in-memory cache still helps.
