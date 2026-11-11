@@ -1566,6 +1566,14 @@
 /* Row actions stay on one line but may drop below the row on a narrow screen. */
 .bfm-dm-row { flex-wrap: wrap; }
 
+.bfm-dm-select {
+        flex: 0 0 auto;
+        width: 18px;
+        height: 18px;
+        margin: 0;
+        accent-color: var(--interactive-accent);
+}
+
 .bfm-dm-actions {
         display: flex;
         flex-wrap: wrap;
@@ -1688,5 +1696,305 @@ body.bfm-glass-on .bfm-recs-card {
         .bfm-details-rec-card:hover,
         .bfm-details-rec-card:focus-visible {
                 transform: none;
+        }
+}
+
+/* --------------------------------------------------------- visual refresh */
+/*
+ * The feature surfaces above intentionally share class names, so the final
+ * layer can improve the whole plugin without making each modal drift into its
+ * own design system. It keeps Obsidian's theme variables as the source of
+ * truth while adding a clearer surface hierarchy and more confident spacing.
+ */
+.bfm-download-modal,
+.bfm-library-modal,
+.bfm-stats-modal,
+.bfm-recs-modal,
+.bfm-details-modal,
+.bfm-player-modal,
+.bfm-find-modal,
+.bfm-download-manager {
+        --bfm-radius-s: 8px;
+        --bfm-radius-m: 12px;
+        --bfm-radius-l: 18px;
+        --bfm-surface-raised: var(--background-primary-alt, var(--background-secondary));
+        --bfm-surface-inset: var(--background-primary);
+        --bfm-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.1), 0 4px 12px rgba(0, 0, 0, 0.06);
+        --bfm-shadow-2: 0 10px 28px rgba(0, 0, 0, 0.16);
+        --bfm-transition: 160ms ease;
+}
+
+.bfm-download-modal .modal-header,
+.bfm-library-modal .modal-header,
+.bfm-stats-modal .modal-header,
+.bfm-recs-modal .modal-header,
+.bfm-details-modal .modal-header,
+.bfm-player-modal .modal-header,
+.bfm-find-modal .modal-header {
+        margin-bottom: var(--bfm-space-4);
+        padding-bottom: var(--bfm-space-3);
+        border-bottom: 1px solid var(--bfm-border);
+}
+
+.bfm-download-modal .modal-title,
+.bfm-library-modal .modal-title,
+.bfm-stats-modal .modal-title,
+.bfm-recs-modal .modal-title,
+.bfm-details-modal .modal-title,
+.bfm-player-modal .modal-title,
+.bfm-find-modal .modal-title {
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+}
+
+.bfm-download-modal .modal-content,
+.bfm-library-modal .modal-content,
+.bfm-stats-modal .modal-content,
+.bfm-recs-modal .modal-content,
+.bfm-details-modal .modal-content,
+.bfm-player-modal .modal-content,
+.bfm-find-modal .modal-content {
+        gap: var(--bfm-space-4);
+}
+
+.bfm-download-modal button,
+.bfm-library-modal button,
+.bfm-stats-modal button,
+.bfm-recs-modal button,
+.bfm-details-modal button,
+.bfm-player-modal button,
+.bfm-find-modal button,
+.bfm-download-manager button {
+        font-weight: 500;
+        transition:
+                border-color var(--bfm-transition),
+                background var(--bfm-transition),
+                color var(--bfm-transition),
+                box-shadow var(--bfm-transition),
+                transform var(--bfm-transition);
+}
+
+.bfm-download-modal button:hover:not(:disabled),
+.bfm-library-modal button:hover:not(:disabled),
+.bfm-stats-modal button:hover:not(:disabled),
+.bfm-recs-modal button:hover:not(:disabled),
+.bfm-details-modal button:hover:not(:disabled),
+.bfm-player-modal button:hover:not(:disabled),
+.bfm-find-modal button:hover:not(:disabled),
+.bfm-download-manager button:hover:not(:disabled) {
+        box-shadow: var(--bfm-shadow-1);
+}
+
+.bfm-download-modal button.mod-cta:hover:not(:disabled),
+.bfm-library-modal button.mod-cta:hover:not(:disabled),
+.bfm-stats-modal button.mod-cta:hover:not(:disabled),
+.bfm-recs-modal button.mod-cta:hover:not(:disabled),
+.bfm-details-modal button.mod-cta:hover:not(:disabled),
+.bfm-player-modal button.mod-cta:hover:not(:disabled),
+.bfm-find-modal button.mod-cta:hover:not(:disabled),
+.bfm-download-manager button.mod-cta:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+
+.bfm-dl-input,
+.bfm-library-search,
+.bfm-dl-episodes,
+.bfm-dl-result,
+.bfm-find-card,
+.bfm-recs-card,
+.bfm-library-item,
+.bfm-stats-card,
+.bfm-dm-row,
+.bfm-dl-job,
+.bfm-details-fact,
+.bfm-details-music li,
+.bfm-details-cast-card,
+.bfm-find-section {
+        background: var(--bfm-surface-raised);
+        box-shadow: var(--bfm-shadow-1);
+}
+
+.bfm-dl-input,
+.bfm-library-search {
+        border-color: var(--bfm-border);
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.bfm-dl-input:focus,
+.bfm-library-search:focus {
+        border-color: var(--bfm-accent);
+        box-shadow: 0 0 0 3px var(--background-modifier-border-focus, var(--bfm-border));
+}
+
+.bfm-dl-result,
+.bfm-find-card,
+.bfm-recs-card {
+        border-color: transparent;
+        box-shadow: var(--bfm-shadow-1);
+}
+
+.bfm-dl-result:hover,
+.bfm-find-card:hover,
+.bfm-recs-card:hover,
+.bfm-recs-card:focus-visible {
+        border-color: var(--bfm-accent);
+        box-shadow: var(--bfm-shadow-2);
+        transform: translateY(-3px);
+}
+
+.bfm-dl-poster,
+.bfm-find-poster,
+.bfm-details-poster,
+.bfm-details-rec-poster {
+        background: var(--background-modifier-hover);
+}
+
+.bfm-library-item,
+.bfm-stats-row,
+.bfm-dm-row,
+.bfm-dl-job {
+        border-color: transparent;
+        box-shadow: var(--bfm-shadow-1);
+}
+
+.bfm-library-item:hover,
+.bfm-dm-row:hover {
+        border-color: var(--bfm-border-hover);
+        background: var(--bfm-hover);
+        box-shadow: var(--bfm-shadow-2);
+        transform: translateY(-1px);
+}
+
+.bfm-stats-card {
+        padding: var(--bfm-space-4);
+        border-color: transparent;
+}
+
+.bfm-stats-card-value {
+        font-size: 1.55em;
+        letter-spacing: -0.02em;
+}
+
+.bfm-details-hero {
+        padding: var(--bfm-space-4);
+        border: 1px solid var(--bfm-border);
+        border-radius: var(--bfm-radius-l);
+        background: var(--bfm-surface-raised);
+        background:
+                linear-gradient(135deg, var(--background-modifier-hover), transparent 55%),
+                var(--bfm-surface-raised);
+        box-shadow: var(--bfm-shadow-1);
+}
+
+.bfm-details-poster {
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+}
+
+.bfm-details-section-title,
+.bfm-stats-section-title {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+}
+
+.bfm-details-section-title {
+        padding-bottom: var(--bfm-space-2);
+        border-bottom-color: var(--bfm-border-hover);
+}
+
+.bfm-dl-status,
+.bfm-stats-note,
+.bfm-dm-hint,
+.bfm-find-hint,
+.bfm-dl-hint {
+        color: var(--text-muted);
+}
+
+.bfm-dl-progress,
+.bfm-library-progress,
+.bfm-recs-progress-track,
+.bfm-dm-progress-fill {
+        background: var(--background-modifier-border);
+}
+
+.bfm-dl-progress-fill,
+.bfm-library-progress-fill,
+.bfm-recs-progress-fill,
+.bfm-dm-progress-fill {
+        background: linear-gradient(90deg, var(--bfm-accent), var(--interactive-accent-hover, var(--bfm-accent)));
+}
+
+.bfm-dl-episode,
+.bfm-details-music li,
+.bfm-details-cast-card,
+.bfm-find-section {
+        transition: border-color var(--bfm-transition), background var(--bfm-transition), transform var(--bfm-transition);
+}
+
+.bfm-dl-episode:hover,
+.bfm-details-music li:hover,
+.bfm-details-cast-card:hover,
+.bfm-find-section:hover {
+        border-color: var(--bfm-border-hover);
+        background: var(--bfm-hover);
+}
+
+.bfm-player-stage {
+        border: 1px solid var(--bfm-border);
+        box-shadow: var(--bfm-shadow-2);
+}
+
+@media (max-width: 640px) {
+        .bfm-download-modal:not(.is-fullscreen),
+        .bfm-library-modal,
+        .bfm-stats-modal,
+        .bfm-recs-modal,
+        .bfm-details-modal,
+        .bfm-player-modal,
+        .bfm-find-modal {
+                width: min(100vw - 20px, 680px);
+                max-width: calc(100vw - 20px);
+        }
+
+        .bfm-details-hero {
+                flex-direction: column;
+        }
+
+        .bfm-details-poster {
+                width: 116px;
+                flex-basis: auto;
+        }
+
+        .bfm-dl-detail {
+                gap: var(--bfm-space-3);
+        }
+
+        .bfm-dl-detail > .bfm-dl-poster {
+                flex-basis: 96px;
+                width: 96px;
+        }
+
+        .bfm-dl-results,
+        .bfm-find-grid,
+        .bfm-recs-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: var(--bfm-space-2);
+        }
+
+        .bfm-stats-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .bfm-dl-actions,
+        .bfm-modal-actions,
+        .bfm-dm-actions {
+                justify-content: stretch;
+        }
+
+        .bfm-dl-actions button,
+        .bfm-modal-actions button,
+        .bfm-dm-actions button {
+                flex: 1 1 auto;
         }
 }

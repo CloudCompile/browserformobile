@@ -39,6 +39,10 @@ export class DownloadManagerView extends ItemView {
 	private progressText!: HTMLElement;
 	private statuses = new Map<string, FileStatus>();
 	private scanCache = new Map<string, CacheEntry>();
+	private selectedPaths = new Set<string>();
+	private scanSelectedBtn!: HTMLButtonElement;
+	private selectAllBtn!: HTMLButtonElement;
+	private clearSelectionBtn!: HTMLButtonElement;
 	private busy = false;
 	private cancelled = false;
 
@@ -59,8 +63,18 @@ export class DownloadManagerView extends ItemView {
 		header.createEl('h2', { text: 'Download manager' });
 
 		const toolbar = this.contentEl.createDiv({ cls: 'bfm-dm-toolbar' });
-		const scanBtn = toolbar.createEl('button', { text: 'Scan' });
+		const scanBtn = toolbar.createEl('button', { text: 'Scan all' });
 		scanBtn.addEventListener('click', () => void this.scan());
+		this.scanSelectedBtn = toolbar.createEl('button', { text: 'Scan selected' });
+		this.scanSelectedBtn.addEventListener('click', () => void this.scan(true));
+		this.selectAllBtn = toolbar.createEl('button', { text: 'Select all' });
+		this.selectAllBtn.addEventListener('click', () => this.selectAll());
+		this.clearSelectionBtn = toolbar.createEl('button', { text: 'Clear selection' });
+		this.clearSelectionBtn.addEventListener('click', () => {
+			this.selectedPaths.clear();
+			this.updateSelectionControls();
+			this.render();
+		});
 		const fixNeededBtn = toolbar.createEl('button', { text: 'Fix needs-repair' });
 		fixNeededBtn.addEventListener('click', () => void this.repairNeedsRepair());
 		const repairAllBtn = toolbar.createEl('button', { cls: 'mod-cta', text: 'Fix all' });
@@ -101,6 +115,7 @@ export class DownloadManagerView extends ItemView {
 
 		await this.loadScanCache();
 		this.hydrateStatusesFromCache();
+		this.updateSelectionControls();
 		this.render();
 	}
 
@@ -139,6 +154,22 @@ export class DownloadManagerView extends ItemView {
 			this.statuses.set(path, { ...cached.status });
 		}
 	}
+
+	private updateSelectionControls(): void {
+		const count = this.selectedPaths.size;
+		this.scanSelectedBtn.disabled = count === 0;
+		this.clearSelectionBtn.disabled = count === 0;
+		this.selectAllBtn.disabled = this.plugin.library.items().length === count;
+	}
+
+	private selectAll(): void {
+		for (const item of this.plugin.library.items()) {
+			this.selectedPaths.add(item.path);
+		}
+		this.updateSelectionControls();
+		this.render();
+	}
+
 	private async saveScanCache(): Promise<void> {
 		try {
 			// Write through the plugin's own data file so a concurrent saveSettings
@@ -153,16 +184,28 @@ export class DownloadManagerView extends ItemView {
 		}
 	}
 
-	private async scan(): Promise<void> {
+	private async scan(selectedOnly = false): Promise<void> {
 		if (this.busy) return;
+		const selected = new Set(this.selectedPaths);
+		if (selectedOnly && selected.size === 0) {
+			new Notice('Select at least one video to scan.');
+			return;
+		}
 		this.busy = true;
 		this.cancelled = false;
 		try {
 			const { complete } = await this.plugin.refreshLibrary();
 			const library = this.plugin.library;
-			const entries = library.entries;
+			const allEntries = library.entries;
+			const present = new Set(allEntries.map((entry) => entry.path));
+			for (const path of [...this.selectedPaths]) {
+				if (!present.has(path)) this.selectedPaths.delete(path);
+			}
+			const entries = selectedOnly
+				? allEntries.filter((entry) => selected.has(entry.path))
+				: allEntries;
 			const total = entries.length;
-			this.statuses.clear();
+			if (!selectedOnly) this.statuses.clear();
 			this.setProgress(true, 0, total === 0 ? 'Nothing to scan.' : `Scanning 0/${total}…`);
 
 			// The per-file results are only invalidated when the walk actually saw
@@ -170,7 +213,6 @@ export class DownloadManagerView extends ItemView {
 			// "everything is gone" would discard the repair state of every episode
 			// at once.
 			if (complete) {
-				const present = new Set(entries.map((entry) => entry.path));
 				for (const path of [...this.scanCache.keys()]) {
 					if (!present.has(path)) this.scanCache.delete(path);
 				}
@@ -256,7 +298,7 @@ export class DownloadManagerView extends ItemView {
 			}
 			await Promise.all(active);
 
-			this.setProgress(true, 100, `Done · ${total} file${total === 1 ? '' : 's'} scanned.`);
+			this.setProgress(true, 100, `Done · ${total} selected file${total === 1 ? '' : 's'} scanned.`);
 			window.setTimeout(() => this.setProgress(false, 0, ''), 1200);
 			this.render();
 			void this.saveScanCache();
@@ -264,6 +306,7 @@ export class DownloadManagerView extends ItemView {
 			this.setProgress(false, 0, '');
 			new Notice(error instanceof Error ? error.message : 'Scan failed.');
 		} finally {
+			this.updateSelectionControls();
 			this.busy = false;
 		}
 	}
@@ -311,6 +354,15 @@ export class DownloadManagerView extends ItemView {
 		const row = this.listEl.createDiv({ cls: 'bfm-dm-row' });
 		const st = this.statuses.get(item.path);
 		const status = this.repairStatus(item);
+
+		const select = row.createEl('input', { cls: 'bfm-dm-select', attr: { type: 'checkbox' } });
+		select.checked = this.selectedPaths.has(item.path);
+		select.setAttribute('aria-label', `Select ${item.name} for scanning`);
+		select.addEventListener('change', () => {
+			if (select.checked) this.selectedPaths.add(item.path);
+			else this.selectedPaths.delete(item.path);
+			this.updateSelectionControls();
+		});
 
 		const main = row.createDiv({ cls: 'bfm-dm-main' });
 		main.createDiv({ cls: 'bfm-dm-title', text: item.name });
