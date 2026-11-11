@@ -276,8 +276,13 @@ export class DownloadManager {
                  */
                 private readonly onRunFinished?: (run: DownloadRun) => void,
                 private readonly onQueueChanged?: (jobs: PersistedDownloadJob[]) => void,
+                private readonly onDebug?: (message: string, details?: unknown) => void,
         ) {
                 this.options = options;
+        }
+
+        private debug(message: string, details?: unknown): void {
+                this.onDebug?.(message, details);
         }
 
         /** Return the queue states worth restoring after Obsidian restarts. */
@@ -360,6 +365,7 @@ export class DownloadManager {
          * is resumed rather than a second job writing the same staging path.
          */
         enqueue(request: EnqueueRequest): DownloadJob[] {
+                this.debug('queue.enqueue', { series: request.seriesTitle, episodes: request.episodes.map((episode) => episode.id) });
                 const created: DownloadJob[] = [];
                 for (const episode of request.episodes) {
                         const existing = this.jobs.find((job) => job.episode.id === episode.id);
@@ -642,6 +648,7 @@ export class DownloadManager {
         }
 
         private async run(job: DownloadJob): Promise<void> {
+                this.debug('download.start', { id: job.id, episode: job.episode.id, series: job.seriesTitle });
                 this.running++;
                 job.status = 'running';
                 // Android suspends the WebView when the screen sleeps, which stalls
@@ -659,7 +666,13 @@ export class DownloadManager {
                 try {
                         await this.execute(job, controller.signal, () => this.trackSpeed(job));
                         job.status = 'done';
+                        this.debug('download.done', { id: job.id, bytes: job.fileSize });
                 } catch (error) {
+                        this.debug('download.error', {
+                                id: job.id,
+                                error: error instanceof Error ? error.message : String(error),
+                                status: job.status,
+                        });
                         if (controller.signal.aborted) {
                                 // A pause aborts the run but must keep the work, so
                                 // the status set by pause() decides which way to go.
@@ -852,6 +865,7 @@ export class DownloadManager {
                 signal: AbortSignal,
                 onTick: () => void,
         ): Promise<void> {
+                this.debug('download.execute', { id: job.id, format: this.options.format, quality: this.options.quality });
                 if (typeof navigator !== 'undefined' && navigator.onLine === false) {
                         throw new DownloadError('No internet connection. Reconnect and resume this download.');
                 }
@@ -868,6 +882,7 @@ export class DownloadManager {
                 if (!variant) throw new DownloadError('No stream quality was available.');
 
                 const playlist = await loadMediaPlaylist(variant.url);
+                this.debug('download.playlist', { id: job.id, segments: playlist.segments.length, duration: playlist.duration });
                 if (signal.aborted) throw new DownloadError('Download cancelled.');
                 // Kept for the duration of the run so the speed tracker can turn a
                 // rate into an ETA from the playlist's own segment durations.
@@ -890,6 +905,7 @@ export class DownloadManager {
                 let resumeFrom = 0;
                 let resumeBytes = 0;
                 const partial = await readPartial(destination, path);
+                this.debug('download.resume-check', { id: job.id, path, found: Boolean(partial) });
                 if (partial) {
                         const matches =
                                 partial.episodeId === job.episode.id &&
@@ -969,6 +985,7 @@ export class DownloadManager {
                                 ? await this.writeTs(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes)
                                 : await this.writeMp4(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes);
                 job.fileSize = written;
+                this.debug('download.file-written', { id: job.id, path, bytes: written });
                 job.partialFound = false;
                 this.stagingPaths.delete(job.id);
         }

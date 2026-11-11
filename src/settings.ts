@@ -68,6 +68,8 @@ export interface AnimeSettings {
         llmLocalModel: string;
         /** Apply the glass effect to the plugin's panels. Desktop only. */
         glassEffect: boolean;
+        /** Write a detailed diagnostic log while downloads and repairs run. */
+        debugMode: boolean;
 }
 
 export const DEFAULT_SETTINGS: AnimeSettings = {
@@ -102,6 +104,7 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         llmSearchUrl: '',
         llmLocalModel: 'lfm2.5-230m',
         glassEffect: false,
+        debugMode: false,
 };
 
 export class AnimeSettingTab extends PluginSettingTab {
@@ -245,6 +248,11 @@ export class AnimeSettingTab extends PluginSettingTab {
                                 name: 'Glass effect',
                                 desc: "Apply a translucent glass surface to the plugin's panels. Desktop only: it needs the compositor to blur what is behind the panel, which is too costly on a phone. Off by default.",
                                 control: { type: 'toggle', key: 'glassEffect' },
+                        },
+                        {
+                                name: 'Debug mode',
+                                desc: 'Write a detailed diagnostic log for downloads, scans, and repairs to the plugin data folder. Turn this off when finished testing.',
+                                control: { type: 'toggle', key: 'debugMode' },
                         },
                         {
                                 name: 'Confirm destructive actions',

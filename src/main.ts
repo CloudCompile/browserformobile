@@ -1,10 +1,10 @@
 import { Notice, Platform, Plugin, WorkspaceLeaf } from 'obsidian';
 import { AnimeCache, type CachePersistence } from './animeCache';
 import { setAnimeCache } from './animeApi';
-import { DownloadManager, type DownloaderOptions, type PersistedDownloadJob } from './downloader';
+import { DownloadManager, seriesFolderName, type DownloaderOptions, type PersistedDownloadJob } from './downloader';
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
 import { repairByteBudget, repairFolder, RepairLedger } from './doctor';
-import { externalStorageAvailable } from './destination';
+import { externalStorageAvailable, sanitizePath } from './destination';
 import { VideoLibrary, type LibraryItem, type WatchRecord } from './library';
 import { LibraryModal } from './libraryModal';
 import { PlayerModal } from './playerModal';
@@ -14,6 +14,7 @@ import { StatsModal } from './statsModal';
 import { SeriesPickerModal } from './modals';
 import { FindModal } from './findModal';
 import { DetailsModal } from './detailsModal';
+import { DebugLogger } from './debug';
 import { applyModelScores, collectRecommendations, deriveSeeds } from './recommendService';
 import { RecommendationsModal, type RecommendationsResult } from './recommendationsModal';
 import { JevRanker, TinyDecideRanker, type DecisionDeps } from './decision';
@@ -76,6 +77,11 @@ export default class AnimePlugin extends Plugin {
 	private animeCacheRecords: unknown = null;
 	private downloadQueue: PersistedDownloadJob[] = [];
 	private queueSaveTimer: number | null = null;
+	private debugLogger!: DebugLogger;
+
+	debug(message: string, details?: unknown): void {
+		this.debugLogger?.log(message, details);
+	}
 	/**
 	 * Last-seen state of every downloaded file, keyed by path.
 	 *
@@ -97,6 +103,12 @@ export default class AnimePlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.debugLogger = new DebugLogger(
+			this.app.vault.adapter,
+			`${this.app.vault.configDir}/plugins/browser-for-mobile/debug.log`,
+			() => this.settings.debugMode,
+		);
+		this.debug('plugin.onload');
 
 		this.library = new VideoLibrary();
 		this.library.load(this.watchRecords);
@@ -125,6 +137,7 @@ export default class AnimePlugin extends Plugin {
 					void this.saveSettings();
 				}, 500);
 			},
+			(message, details) => this.debug(message, details),
 		);
 		this.downloader.restoreQueue(this.downloadQueue);
 
@@ -185,6 +198,7 @@ export default class AnimePlugin extends Plugin {
 	}
 
 	onunload(): void {
+		this.debug('plugin.onunload');
 		if (this.queueSaveTimer !== null) window.clearTimeout(this.queueSaveTimer);
 		this.animeCache.dispose();
 		this.downloader.dispose();
@@ -792,6 +806,62 @@ export default class AnimePlugin extends Plugin {
 		await this.saveWatchRecords();
 	}
 
+	/** Move flat legacy downloads into the current series-folder layout. */
+	async migrateDownloads(): Promise<void> {
+		if (this.settings.downloadExternal) {
+			new Notice('Migration is available for downloads inside the vault only.');
+			return;
+		}
+		const adapter = this.app.vault.adapter as unknown as {
+			rename(from: string, to: string): Promise<void>;
+			exists(path: string): Promise<boolean>;
+			mkdir(path: string): Promise<void>;
+		};
+		await this.refreshLibrary();
+		const folder = this.settings.downloadFolder.replace(/^\/+|\/+$/g, '');
+		const items = this.library.items();
+		let moved = 0;
+		let skipped = 0;
+		let failed = 0;
+		for (const item of items) {
+			if (!item.series) {
+				skipped++;
+				continue;
+			}
+			const target = sanitizePath(`${folder}/${seriesFolderName(item.series)}/${item.name}`);
+			if (target === item.path) {
+				skipped++;
+				continue;
+			}
+			try {
+				if (await adapter.exists(target)) {
+					skipped++;
+					this.debug('migration.skip-existing', { from: item.path, to: target });
+					continue;
+				}
+				const parts = target.split('/');
+				parts.pop();
+				let current = '';
+				for (const part of parts) {
+					current = current ? `${current}/${part}` : part;
+					if (!(await adapter.exists(current))) await adapter.mkdir(current);
+				}
+				await adapter.rename(item.path, target);
+				moved++;
+				this.debug('migration.moved', { from: item.path, to: target });
+			} catch (error) {
+				failed++;
+				this.debug('migration.failed', {
+					from: item.path,
+					to: target,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		await this.refreshLibrary();
+		new Notice(`Migration complete · ${moved} moved · ${skipped} skipped${failed ? ` · ${failed} failed` : ''}.`);
+	}
+
 	/** Persist the watch map alongside the browser data. */
 	private async saveWatchRecords(): Promise<void> {
 		this.watchRecords = this.library.toJSON();
@@ -919,6 +989,13 @@ export default class AnimePlugin extends Plugin {
 			name: 'Repair downloaded videos',
 			callback: () => {
 				void this.repairDownloads();
+			},
+		});
+		this.addCommand({
+			id: 'migrate-anime-downloads',
+			name: 'Organize downloads into series folders',
+			callback: () => {
+				void this.migrateDownloads();
 			},
 		});
 
