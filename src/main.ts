@@ -79,6 +79,10 @@ export default class AnimePlugin extends Plugin {
 	private queueSaveTimer: number | null = null;
 	private debugLogger!: DebugLogger;
 
+	private debugLogPath(): string {
+		return `${this.app.vault.configDir}/plugins/browser-for-mobile/debug.log`;
+	}
+
 	debug(message: string, details?: unknown): void {
 		this.debugLogger?.log(message, details);
 	}
@@ -109,7 +113,7 @@ export default class AnimePlugin extends Plugin {
 		await this.loadSettings();
 		this.debugLogger = new DebugLogger(
 			this.app.vault.adapter,
-			`${this.app.vault.configDir}/plugins/browser-for-mobile/debug.log`,
+			this.debugLogPath(),
 			() => this.settings.debugMode,
 		);
 		this.debug('plugin.onload');
@@ -826,6 +830,7 @@ export default class AnimePlugin extends Plugin {
 			new Notice('Migration is available for downloads inside the vault only.');
 			return;
 		}
+
 		const adapter = this.app.vault.adapter as unknown as {
 			rename(from: string, to: string): Promise<void>;
 			exists(path: string): Promise<boolean>;
@@ -874,6 +879,53 @@ export default class AnimePlugin extends Plugin {
 		}
 		await this.refreshLibrary();
 		new Notice(`Migration complete · ${moved} moved · ${skipped} skipped${failed ? ` · ${failed} failed` : ''}.`);
+	}
+
+	async exportDebugLog(): Promise<void> {
+		if (this.settings.downloadExternal) {
+			new Notice('Export the debug log with vault downloads enabled.');
+			return;
+		}
+		const adapter = this.app.vault.adapter as unknown as {
+			exists(path: string): Promise<boolean>;
+			readBinary(path: string): Promise<ArrayBuffer>;
+			writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+			remove(path: string): Promise<void>;
+			mkdir(path: string): Promise<void>;
+		};
+		const source = this.debugLogPath();
+		try {
+			await this.debugLogger.flush();
+			if (!(await adapter.exists(source))) {
+				new Notice('No debug log has been written yet.');
+				return;
+			}
+			const folder = this.settings.downloadFolder.replace(/^\/+|\/+$/g, '');
+			const safeFolder = folder ? sanitizePath(folder) : '';
+			const base = safeFolder ? `${safeFolder}/debug-log` : 'debug-log';
+			let target = `${base}.md`;
+			if (await adapter.exists(target)) {
+				const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+				target = `${base}-${stamp}.md`;
+			}
+			const parts = target.split('/');
+			parts.pop();
+			let current = '';
+			for (const part of parts) {
+				current = current ? `${current}/${part}` : part;
+				if (!(await adapter.exists(current))) await adapter.mkdir(current);
+			}
+			const logText = new TextDecoder().decode(await adapter.readBinary(source));
+			const markdown = `# Anime for Mobile debug log\n\n\`\`\`text\n${logText.replace(/```/g, '``\\u200b`')}\`\`\`\n`;
+			await adapter.writeBinary(target, new TextEncoder().encode(markdown).buffer);
+			await adapter.remove(source);
+			new Notice(`Debug log exported to ${target}`);
+		} catch (error) {
+			this.debug('debug.export.failed', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			new Notice(error instanceof Error ? `Debug log export failed: ${error.message}` : 'Debug log export failed.');
+		}
 	}
 
 	/** Persist the watch map alongside the browser data. */

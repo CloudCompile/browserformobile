@@ -255,6 +255,13 @@ export class AnimeSettingTab extends PluginSettingTab {
                                 control: { type: 'toggle', key: 'debugMode' },
                         },
                         {
+                                name: 'Export debug log',
+                                desc: 'Move the current diagnostic log into the download folder as a copyable Markdown file, then remove the private plugin log.',
+                                action: () => {
+                                        void this.plugin.exportDebugLog();
+                                },
+                        },
+                        {
                                 name: 'Confirm destructive actions',
                                 desc: 'Ask before deleting a downloaded file or clearing the download log.',
                                 control: { type: 'toggle', key: 'confirmDestructiveActions' },

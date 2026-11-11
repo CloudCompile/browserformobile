@@ -78,6 +78,10 @@ export class DebugLogger {
 		this.log('machine.info', machineInfo());
 	}
 
+	async flush(): Promise<void> {
+		await this.queue;
+	}
+
 	private stringify(value: unknown): string {
 		try {
 			return JSON.stringify(value);
