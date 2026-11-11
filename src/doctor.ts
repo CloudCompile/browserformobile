@@ -231,6 +231,8 @@ export interface RepairResult {
         scanned: number;
         /** Files rewritten. */
         repaired: number;
+        /** Files skipped without being read, because a previous pass cleared them. */
+        skipped: number;
         /** Seconds of duration recovered, per file. */
         fixed: { path: string; durationSeconds: number }[];
         /** Files that could not be read or written. */
@@ -241,8 +243,54 @@ export interface VaultAdapter extends AtomicWriter {
         readBinary(path: string): Promise<ArrayBuffer>;
         list(path: string): Promise<{ files: string[]; folders: string[] }>;
         exists(path: string): Promise<boolean>;
-        /** File size, when the adapter can report it. Used to bound the batch. */
-        stat?(path: string): Promise<{ size: number } | null>;
+        /** File metadata, when the adapter can report it. Used to bound the batch. */
+        stat?(path: string): Promise<{ size: number; mtime?: number } | null>;
+}
+
+/**
+ * Files a previous pass already cleared, so a later pass can skip them.
+ *
+ * The repair cannot look at part of a file: the adapter reads whole files, and
+ * `moov` may sit at either end. So every file costs a full read — and for a
+ * folder of episodes that is the whole collection, re-read on every run, only to
+ * find that the great majority were fine the first time. A file that is already
+ * progressive never changes unless something rewrites it, and Obsidian reports
+ * that as a new size and mtime. Recording the pair a pass left behind lets the
+ * next pass trust it and read nothing.
+ *
+ * A file is only trusted while its size *and* mtime both match the record, so an
+ * edit, a re-download or a sync that replaces it invalidates the entry by
+ * itself. The ledger is only ever written for files this plugin has verified or
+ * written, both of which are correct, so skipping them cannot hide a bad file.
+ */
+export class RepairLedger {
+        private entries: Record<string, string>;
+
+        constructor(records?: unknown) {
+                this.entries = {};
+                if (records && typeof records === 'object') {
+                        for (const [path, stamp] of Object.entries(records as Record<string, unknown>)) {
+                                if (typeof stamp === 'string') this.entries[path] = stamp;
+                        }
+                }
+        }
+
+        /** True when `path` is unchanged since the pass that cleared it. */
+        isClean(path: string, size: number, mtime: number): boolean {
+                return this.entries[path] === `${size}:${mtime}`;
+        }
+
+        markClean(path: string, size: number, mtime: number): void {
+                this.entries[path] = `${size}:${mtime}`;
+        }
+
+        forget(path: string): void {
+                delete this.entries[path];
+        }
+
+        toJSON(): Record<string, string> {
+                return this.entries;
+        }
 }
 
 /** The write surface an atomic replace needs, and nothing more. */
@@ -305,22 +353,23 @@ export function repairByteBudget(): number {
 }
 
 /**
- * The sizes of `files`, where the adapter can report them. A file that cannot be
- * stat-ed is left out, and is then treated as taking the whole budget.
+ * The size and mtime of `files`, where the adapter can report them. A file that
+ * cannot be stat-ed is left out, and is then treated as taking the whole budget
+ * and as never clean.
  */
-async function fileSizes(adapter: VaultAdapter, files: string[]): Promise<Map<string, number>> {
-        const sizes = new Map<string, number>();
+async function fileStamps(adapter: VaultAdapter, files: string[]): Promise<Map<string, { size: number; mtime: number }>> {
+        const stamps = new Map<string, { size: number; mtime: number }>();
         const stat = adapter.stat?.bind(adapter);
-        if (!stat) return sizes;
+        if (!stat) return stamps;
         await mapWithConcurrency(files, 8, async (path) => {
                 try {
                         const info = await stat(path);
-                        if (info) sizes.set(path, info.size);
+                        if (info) stamps.set(path, { size: info.size, mtime: info.mtime ?? 0 });
                 } catch {
                         /* A file that vanished mid-scan is reported by the repair itself. */
                 }
         });
-        return sizes;
+        return stamps;
 }
 
 /**
@@ -333,19 +382,27 @@ async function fileSizes(adapter: VaultAdapter, files: string[]): Promise<Map<st
  * bounded by `repairByteBudget` — and a file whose size is unknown runs on its
  * own — so a run on a phone stays inside its memory rather than being killed
  * partway through.
+ *
+ * When a `ledger` is supplied, a file a previous pass already cleared is trusted
+ * from its size and mtime alone and is never read. Repairing a folder costs a
+ * full read of every file it holds, so on a collection of episodes that is the
+ * difference between scanning everything again and scanning only what changed.
  */
 export async function repairFolder(
         adapter: VaultAdapter,
         folder: string,
         onProgress?: (path: string, done: number, total: number) => void,
-        options: { byteBudget?: number; maxInFlight?: number } = {},
+        options: { byteBudget?: number; maxInFlight?: number; ledger?: RepairLedger } = {},
 ): Promise<RepairResult> {
-        const result: RepairResult = { scanned: 0, repaired: 0, fixed: [], failed: [] };
+        const result: RepairResult = { scanned: 0, repaired: 0, skipped: 0, fixed: [], failed: [] };
         const files = await collectMp4(adapter, folder);
         const budget = options.byteBudget ?? repairByteBudget();
         const maxInFlight = Math.max(1, options.maxInFlight ?? REPAIR_IN_FLIGHT);
-        const sizes = await fileSizes(adapter, files);
-        const known = sizes.size > 0;
+        const stamps = await fileStamps(adapter, files);
+        const known = stamps.size > 0;
+        // The ledger is only meaningful when the adapter can report an mtime; a
+        // stamp that cannot change is no evidence that a file is unchanged.
+        const ledger = known && [...stamps.values()].some((s) => s.mtime > 0) ? options.ledger : undefined;
 
         let started = 0;
         let inFlightBytes = 0;
@@ -357,13 +414,22 @@ export async function repairFolder(
                 try {
                         const buffer = await adapter.readBinary(path);
                         const data = new Uint8Array(buffer);
-                        if (!needsRepair(data)) return;
+                        if (!needsRepair(data)) {
+                                // Verified good; remember it so the next pass reads nothing.
+                                const stamp = stamps.get(path);
+                                if (ledger && stamp) ledger.markClean(path, stamp.size, stamp.mtime);
+                                return;
+                        }
                         const repaired = repairDuration(data);
                         if (!repaired) return;
                         await writeAtomically(adapter, path, repaired.data);
                         result.repaired++;
                         result.fixed.push({ path, durationSeconds: repaired.durationSeconds });
+                        // The swap changed the file; record what it is now.
+                        const after = ledger && adapter.stat ? await adapter.stat(path).catch(() => null) : null;
+                        if (ledger && after) ledger.markClean(path, after.size, after.mtime ?? 0);
                 } catch (error) {
+                        ledger?.forget(path);
                         result.failed.push({
                                 path,
                                 message: error instanceof Error ? error.message : String(error),
@@ -372,9 +438,18 @@ export async function repairFolder(
         };
 
         for (const path of files) {
+                const stamp = stamps.get(path);
+                // A file a previous pass cleared, and that has not changed since, needs
+                // no read at all.
+                if (ledger && stamp && stamp.mtime > 0 && ledger.isClean(path, stamp.size, stamp.mtime)) {
+                        onProgress?.(path, started++, files.length);
+                        result.scanned++;
+                        result.skipped++;
+                        continue;
+                }
                 // An unknown size is assumed to fill the budget so that file runs alone;
                 // without a size there is no way to know what it costs.
-                const weight = known ? 2 * (sizes.get(path) ?? budget) : 2 * budget;
+                const weight = known ? 2 * (stamps.get(path)?.size ?? budget) : 2 * budget;
                 while (pending.size >= maxInFlight || (pending.size > 0 && inFlightBytes + weight > budget)) {
                         await Promise.race(pending);
                 }

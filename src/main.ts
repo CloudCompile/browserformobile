@@ -3,7 +3,7 @@ import { AnimeCache, type CachePersistence } from './animeCache';
 import { setAnimeCache } from './animeApi';
 import { DownloadManager, type DownloaderOptions } from './downloader';
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
-import { repairFolder } from './doctor';
+import { repairFolder, RepairLedger } from './doctor';
 import { externalStorageAvailable } from './destination';
 import { VideoLibrary, type LibraryItem, type WatchRecord } from './library';
 import { LibraryModal } from './libraryModal';
@@ -44,6 +44,8 @@ interface PersistedShape {
 	animeCache?: unknown;
 	/** Last-seen state of every downloaded file, for the download manager. */
 	downloadScanCache?: Record<string, unknown>;
+	/** Files a repair pass already cleared, keyed by path. */
+	repairLedger?: Record<string, string>;
 }
 
 export default class AnimePlugin extends Plugin {
@@ -79,6 +81,15 @@ export default class AnimePlugin extends Plugin {
 	 * would otherwise drop it.
 	 */
 	downloadScanCache: Record<string, unknown> = {};
+	/**
+	 * Files a repair pass already cleared, keyed by path.
+	 *
+	 * A repair reads a file whole, so re-scanning a folder of episodes re-reads
+	 * the whole collection every time to confirm what a previous pass already
+	 * proved. This records the size and mtime a pass left behind, so the next
+	 * pass trusts an unchanged file and reads nothing.
+	 */
+	repairLedger = new RepairLedger();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -796,6 +807,7 @@ export default class AnimePlugin extends Plugin {
 				confirmDestructiveActions: this.settings.confirmDestructiveActions,
 				initialQuery: query,
 				initialSeries: series,
+				repairLedger: this.repairLedger,
 			},
 			{
 				onOptionsChanged: (patch) => {
@@ -941,10 +953,12 @@ export default class AnimePlugin extends Plugin {
 			exists(path: string): Promise<boolean>;
 			rename(from: string, to: string): Promise<void>;
 			remove(path: string): Promise<void>;
+			stat(path: string): Promise<{ size: number; mtime: number } | null>;
 		};
 		const notice = new Notice('Checking downloaded videos…', 0);
 		try {
-			const result = await repairFolder(adapter, folder);
+			const result = await repairFolder(adapter, folder, undefined, { ledger: this.repairLedger });
+			await this.saveSettings();
 			notice.hide();
 			if (result.scanned === 0) {
 				new Notice('No downloaded videos were found.');
@@ -956,6 +970,7 @@ export default class AnimePlugin extends Plugin {
 				result.repaired > 0 ? `${result.repaired} repaired` : 'none needed repair',
 			];
 			if (result.repaired > 0) parts.push(`${Math.round(seconds / 60)} minutes of video fixed`);
+			if (result.skipped > 0) parts.push(`${result.skipped} already checked`);
 			if (result.failed.length > 0) {
 				// A count alone is not diagnosable; the first reason names the
 				// cause (an unreadable path, a permissions error).
@@ -988,12 +1003,14 @@ export default class AnimePlugin extends Plugin {
 		this.watchRecords = raw?.watch ?? {};
 		this.animeCacheRecords = raw?.animeCache ?? null;
 		this.downloadScanCache = raw?.downloadScanCache ?? {};
+		this.repairLedger = new RepairLedger(raw?.repairLedger);
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData({
 			settings: this.settings,
 			downloadScanCache: this.downloadScanCache,
+			repairLedger: this.repairLedger.toJSON(),
 			watch: this.watchRecords,
 			stats: this.stats.toJSON(),
 			animeCache: this.animeCacheRecords,

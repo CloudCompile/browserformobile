@@ -12,7 +12,7 @@ import {
 	readIndex,
 	type ParsedFragment,
 } from '../src/mp4';
-import { inspectDurationEnhanced, needsRepair, repairDuration, repairFolder, toArrayBuffer } from '../src/doctor';
+import { inspectDurationEnhanced, needsRepair, repairDuration, repairFolder, RepairLedger, toArrayBuffer } from '../src/doctor';
 import { TransmuxStream } from '../src/transmux';
 
 /**
@@ -871,6 +871,109 @@ describe('doctor', () => {
 			expect(result.repaired).toBe(6);
 			expect(peak).toBe(2);
 		});
+
+		// A file a previous pass cleared is trusted from its size and mtime, so a
+		// second pass over an unchanged folder reads nothing at all. The repair
+		// reads whole files, so on a folder of episodes this is the difference
+		// between re-reading the collection and re-reading nothing.
+		it('skips files a previous pass already cleared', async () => {
+			const files: Record<string, Uint8Array> = {};
+			for (let i = 0; i < 3; i++) files[`anime/ep${i}.mp4`] = file();
+			const mtimes: Record<string, number> = {};
+			for (const path of Object.keys(files)) mtimes[path] = 1000;
+			const store = vault(files);
+			store.stat = async (path: string) => ({ size: files[path]!.byteLength, mtime: mtimes[path] ?? 0 });
+			const ledger = new RepairLedger();
+
+			const first = await repairFolder(store as never, '', undefined, { ledger });
+			expect(first.repaired).toBe(3);
+			expect(first.skipped).toBe(0);
+
+			let reads = 0;
+			const reading = store.readBinary.bind(store);
+			store.readBinary = async (path: string) => {
+				reads++;
+				return reading(path);
+			};
+			const second = await repairFolder(store as never, '', undefined, { ledger });
+			expect(reads).toBe(0);
+			expect(second.skipped).toBe(3);
+			expect(second.repaired).toBe(0);
+		});
+
+		// The stamp a pass leaves behind has to match for the skip to be safe: a
+		// file edited or re-downloaded in between has a new size or mtime and is
+		// read again rather than trusted.
+		it('re-reads a file whose mtime changed since the pass', async () => {
+			const files: Record<string, Uint8Array> = { 'anime/ep.mp4': file() };
+			const mtimes: Record<string, number> = { 'anime/ep.mp4': 100 };
+			const store = vault(files);
+			store.stat = async (path: string) => ({ size: files[path]!.byteLength, mtime: mtimes[path] ?? 0 });
+			const ledger = new RepairLedger();
+			await repairFolder(store as never, '', undefined, { ledger });
+
+			let reads = 0;
+			const reading = store.readBinary.bind(store);
+			store.readBinary = async (path: string) => {
+				reads++;
+				return reading(path);
+			};
+			mtimes['anime/ep.mp4'] = 200;
+			const changed = await repairFolder(store as never, '', undefined, { ledger });
+			expect(reads).toBe(1);
+			expect(changed.skipped).toBe(0);
+		});
+
+		// Without an mtime the ledger has nothing that can change, so it is ignored
+		// rather than treating every file as clean forever.
+		it('ignores the ledger when the adapter reports no mtime', async () => {
+			const files: Record<string, Uint8Array> = { 'anime/ep.mp4': file() };
+			const store = vault(files);
+			store.stat = async (path: string) => ({ size: files[path]!.byteLength });
+			const ledger = new RepairLedger();
+			await repairFolder(store as never, '', undefined, { ledger });
+
+			let reads = 0;
+			const reading = store.readBinary.bind(store);
+			store.readBinary = async (path: string) => {
+				reads++;
+				return reading(path);
+			};
+			const again = await repairFolder(store as never, '', undefined, { ledger });
+			expect(reads).toBe(1);
+			expect(again.skipped).toBe(0);
+		});
+
+		// A file a previous pass left healthy is trusted too, so a mixed folder
+		// only pays for the files that still need repair.
+		it('skips a healthy file on the second pass', async () => {
+			const healthy = repairDuration(file())!.data;
+			const files: Record<string, Uint8Array> = { 'anime/good.mp4': healthy, 'anime/bad.mp4': file() };
+			const mtimes: Record<string, number> = {};
+			for (const path of Object.keys(files)) mtimes[path] = 1000;
+			const store = vault(files);
+			store.stat = async (path: string) => ({ size: files[path]!.byteLength, mtime: mtimes[path] ?? 0 });
+			const ledger = new RepairLedger();
+			const first = await repairFolder(store as never, '', undefined, { ledger });
+			expect(first.repaired).toBe(1);
+			expect(first.skipped).toBe(0);
+
+			const second = await repairFolder(store as never, '', undefined, { ledger });
+			expect(second.skipped).toBe(2);
+			expect(second.repaired).toBe(0);
+		});
+
+		// The ledger round-trips through JSON, so the plugin can persist it in the
+		// data file and rebuild it on the next start.
+		it('round-trips through JSON', () => {
+			const ledger = new RepairLedger();
+			ledger.markClean('anime/ep.mp4', 10, 100);
+			const restored = new RepairLedger(JSON.parse(JSON.stringify(ledger.toJSON())));
+			expect(restored.isClean('anime/ep.mp4', 10, 100)).toBe(true);
+			expect(restored.isClean('anime/ep.mp4', 11, 100)).toBe(false);
+			expect(restored.isClean('anime/ep.mp4', 10, 101)).toBe(false);
+		});
+
 });
 
 // ---------------------------------------------------------------------------

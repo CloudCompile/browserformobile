@@ -437,12 +437,14 @@ export class DownloadManagerView extends ItemView {
 			exists(path: string): Promise<boolean>;
 			rename(from: string, to: string): Promise<void>;
 			remove(path: string): Promise<void>;
+			stat(path: string): Promise<{ size: number; mtime: number } | null>;
 		};
 		this.setProgress(true, 0, 'Checking downloaded videos…');
 		try {
 			const result = await repairFolder(adapter, folder, (path, done, total) => {
 				this.setProgress(true, (done / Math.max(1, total)) * 100, `${done + 1}/${total} · ${path.split('/').pop() ?? path}`);
-			});
+			}, { ledger: this.plugin.repairLedger });
+			await this.plugin.saveSettings();
 			this.setProgress(true, 100, `Done · ${result.scanned} checked.`);
 			const seconds = result.fixed.reduce((sum, entry) => sum + entry.durationSeconds, 0);
 			const parts = [
@@ -450,6 +452,7 @@ export class DownloadManagerView extends ItemView {
 				result.repaired > 0 ? `${result.repaired} repaired` : 'none needed repair',
 			];
 			if (result.repaired > 0) parts.push(`${Math.round(seconds / 60)} min fixed`);
+			if (result.skipped > 0) parts.push(`${result.skipped} already checked`);
 			if (result.failed.length > 0) parts.push(`${result.failed.length} failed`);
 			new Notice(parts.join(' · '));
 			window.setTimeout(() => this.setProgress(false, 0, ''), 1500);

@@ -11,7 +11,7 @@ import {
 import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat } from './downloader';
 import { formatSpeed } from './hls';
 import { externalStorageAvailable } from './destination';
-import { repairFolder } from './doctor';
+import { repairFolder, type RepairLedger } from './doctor';
 import { ConfirmModal } from './modals';
 
 export interface DownloadModalOptions {
@@ -29,6 +29,8 @@ export interface DownloadModalOptions {
         initialQuery?: string;
         /** A specific series to open straight to its detail page, with its source. */
         initialSeries?: SeriesSummary;
+        /** Files a previous repair pass cleared, so this one skips them. */
+        repairLedger?: RepairLedger;
 }
 
 export interface DownloadModalCallbacks {
@@ -938,11 +940,12 @@ export class DownloadModal extends Modal {
                         exists(path: string): Promise<boolean>;
                         rename(from: string, to: string): Promise<void>;
                         remove(path: string): Promise<void>;
+                        stat(path: string): Promise<{ size: number; mtime: number } | null>;
                 };
                 const folder = this.options.external ? '' : this.options.folder;
                 const notice = new Notice('Checking downloaded videos…', 0);
                 try {
-                        const result = await repairFolder(adapter, folder);
+                        const result = await repairFolder(adapter, folder, undefined, { ledger: this.options.repairLedger });
                         notice.hide();
                         if (result.scanned === 0) {
                                 new Notice('No downloaded videos were found in this folder.');
@@ -954,6 +957,7 @@ export class DownloadModal extends Modal {
                                 result.repaired > 0 ? `${result.repaired} repaired` : 'none needed repair',
                         ];
                         if (result.repaired > 0) parts.push(`${Math.round(seconds / 60)} minutes fixed`);
+                        if (result.skipped > 0) parts.push(`${result.skipped} already checked`);
                         if (result.failed.length > 0) {
                                 // A count alone is not diagnosable; the first reason names the
                                 // cause (an unreadable path, a permissions error).
