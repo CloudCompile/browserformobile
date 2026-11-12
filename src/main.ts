@@ -1,6 +1,7 @@
 import { Notice, Platform, Plugin, WorkspaceLeaf } from 'obsidian';
 import { AnimeCache, type CachePersistence } from './animeCache';
-import { setAnimeCache } from './animeApi';
+import { setAnimeCache, setMetadataSink } from './animeApi';
+import { MetadataStore } from './metadataStore';
 import {
         DownloadManager,
         seriesFolderName,
@@ -37,7 +38,7 @@ import {
         type CuratorTool,
 } from './llm';
 import { curateInProcess, WllamaRuntime, type LocalRuntime } from './llmLocal';
-import { loadPreview, collectPosters, searchSeries, type SeriesSummary } from './animeApi';
+import { loadPreview, collectPosters, searchSeries, type AnimePreview, type SeriesSummary } from './animeApi';
 import {
 	isDismissed,
 	pushDismissed,
@@ -69,6 +70,8 @@ interface PersistedShape {
 	libraryView?: 'list' | 'grid';
 	/** Recommendation titles the user said they are not interested in. */
 	dismissedRecommendations?: string[];
+	/** Persistent series metadata, kept for offline details and posters. */
+	seriesMetadata?: Record<string, unknown>;
 }
 
 export default class AnimePlugin extends Plugin {
@@ -95,6 +98,10 @@ export default class AnimePlugin extends Plugin {
 	private statsRuns: DownloadRun[] = [];
 	/** Cached API responses as loaded, handed to the anime cache in onload. */
 	private animeCacheRecords: unknown = null;
+	/** Persistent series metadata: details kept for offline rendering. */
+	private metadataStore = new MetadataStore();
+	/** Debounce timer for metadata writes, so a browse burst saves once. */
+	private metadataSaveTimer: number | null = null;
 	private downloadQueue: PersistedDownloadJob[] = [];
 	private queueSaveTimer: number | null = null;
 	/** Per-series format/quality overrides, keyed by series title. */
@@ -170,6 +177,7 @@ export default class AnimePlugin extends Plugin {
 		this.animeCache = new AnimeCache(this.animeCachePersistence());
 		this.animeCache.load(this.animeCacheRecords);
 		this.applyAnimeCacheSetting();
+		this.installMetadataSink();
 
 		this.downloader = new DownloadManager(
 			this.app,
@@ -250,6 +258,23 @@ export default class AnimePlugin extends Plugin {
 	}
 
 	/**
+	 * Feed every successful details answer into the persistent store, and
+	 * persist the store debounced — a browse burst becomes one whole-blob
+	 * save, like the queue timer below. Installed once at load; the sink is
+	 * fire-and-forget, so it must never await the save.
+	 */
+	private installMetadataSink(): void {
+		setMetadataSink((seriesId, payload) => {
+			this.metadataStore.set(seriesId, payload);
+			if (this.metadataSaveTimer !== null) window.clearTimeout(this.metadataSaveTimer);
+			this.metadataSaveTimer = window.setTimeout(() => {
+				this.metadataSaveTimer = null;
+				void this.saveSettings();
+			}, 5_000);
+		});
+	}
+
+	/**
 	 * The anime cache persists through the same `saveData` call as everything
 	 * else, merged rather than overwritten so a cache write cannot drop settings.
 	 */
@@ -265,6 +290,11 @@ export default class AnimePlugin extends Plugin {
 	onunload(): void {
 		this.debug('plugin.onunload');
 		if (this.queueSaveTimer !== null) window.clearTimeout(this.queueSaveTimer);
+		if (this.metadataSaveTimer !== null) {
+			window.clearTimeout(this.metadataSaveTimer);
+			this.metadataSaveTimer = null;
+		}
+		setMetadataSink(null);
 		this.animeCache.dispose();
 		this.downloader.dispose();
 		this.playerModal?.close();
@@ -304,9 +334,17 @@ export default class AnimePlugin extends Plugin {
 				this.libraryView = view;
 				void this.saveSettings();
 			},
-			// Posters are mined from the cached API answers, so the grid costs no
-			// network: a series never browsed gets a fallback card instead.
-			posters: () => collectPosters(this.animeCacheRecords),
+			// Posters come from the persistent store first, then the cached
+			// API answers, so the grid costs no network: a series never
+			// browsed gets a fallback card instead, and a browsed one keeps
+			// its poster even when the TTL cache has expired.
+			posters: () => {
+				const posters = collectPosters(this.animeCacheRecords);
+				for (const entry of Object.values(this.metadataStore.toJSON())) {
+					if (entry.poster && !posters.has(entry.key)) posters.set(entry.key, entry.poster);
+				}
+				return posters;
+			},
 			onClosed: () => {
 				this.libraryModal = null;
 			},
@@ -364,6 +402,10 @@ export default class AnimePlugin extends Plugin {
 			{
 				series: name,
 				apiBase: this.settings.animeApiBase,
+				// A series browsed before paints from the kept copy at once;
+				// the live fetch still runs and replaces it only if the
+				// catalogue moved on.
+				initialPreview: (this.metadataStore.get(name)?.payload ?? null) as AnimePreview | null,
 				loadRecommendations: (seed) => this.recommendFor(seed),
 			},
 			{
@@ -732,15 +774,25 @@ export default class AnimePlugin extends Plugin {
 		const seeds = [{ series: seed, weight: top + 1 }, ...others];
 		const owned = this.ownedSeries();
 
-		const result = await collectRecommendations(this.settings.animeApiBase, seeds, {
-			alreadyHave: owned,
-			limit: 12,
-		});
-		if (result.items.length === 0) return result.items;
+		try {
+			const result = await collectRecommendations(this.settings.animeApiBase, seeds, {
+				alreadyHave: owned,
+				limit: 12,
+			});
+			if (result.items.length > 0) {
+				const scores = await this.scoreWithModel(this.modelProfile(seed, [seed]), result.items);
+				const ranked = scores.size === 0 ? result.items : applyModelScores(result.items, scores);
+				return this.filterDismissed(ranked);
+			}
+		} catch {
+			/* Offline or unreachable — the store fallback below still renders. */
+		}
 
-		const scores = await this.scoreWithModel(this.modelProfile(seed, [seed]), result.items);
-		const ranked = scores.size === 0 ? result.items : applyModelScores(result.items, scores);
-		return this.filterDismissed(ranked);
+		// The API answered nothing usable. A series browsed before carries the
+		// catalogue's own recommendation list in the metadata store, so the
+		// section still fills — recommendations always render, offline
+		// included, and this fallback can never surface an error.
+		return this.filterDismissed(this.metadataStore.recommendationsFor(seed));
 	}
 
 	/**
@@ -1503,6 +1555,7 @@ export default class AnimePlugin extends Plugin {
 		this.statsRuns = Array.isArray(raw?.stats) ? raw.stats : [];
 		this.watchRecords = raw?.watch ?? {};
 		this.animeCacheRecords = raw?.animeCache ?? null;
+		this.metadataStore.load(raw?.seriesMetadata);
 		this.downloadQueue = Array.isArray(raw?.downloadQueue) ? raw.downloadQueue : [];
 		this.downloadScanCache = raw?.downloadScanCache ?? {};
 		this.seriesPreferences =
@@ -1544,6 +1597,7 @@ export default class AnimePlugin extends Plugin {
 			watch: this.watchRecords,
 			stats: this.stats.toJSON(),
 			animeCache: this.animeCacheRecords,
+			seriesMetadata: this.metadataStore.toJSON(),
 			downloadQueue: this.downloader?.serializeQueue?.() ?? this.downloadQueue,
 			seriesPreferences: this.seriesPreferences,
 			finderState: this.finderState,

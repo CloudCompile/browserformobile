@@ -19,6 +19,18 @@ export function setAnimeCache(cache: AnimeCache | null): void {
         activeCache = cache;
 }
 
+/**
+ * Where every successful details answer is handed, installed once at plugin
+ * load and null in tests. The persistent metadata store feeds itself this way —
+ * mirroring `setAnimeCache` — so anything the viewer browses once is kept for
+ * offline rendering, with no extra request anywhere.
+ */
+let metadataSink: ((seriesId: string, payload: AnimePreview) => void) | null = null;
+
+export function setMetadataSink(sink: ((seriesId: string, payload: AnimePreview) => void) | null): void {
+        metadataSink = sink;
+}
+
 /** The `Referer` the CDN's HLS endpoints expect. Segments 404 without it. */
 export const STREAM_REFERER = 'https://play.echovideo.ru/';
 
@@ -1250,7 +1262,7 @@ export async function loadPreview(base: string, seriesId: string): Promise<Anime
         if (!results || !results.detail) return null;
 
         const record = results as Record<string, unknown>;
-        return {
+        const preview: AnimePreview = {
                 source: asString(record.source) || 'jikan',
                 malId: asNullableNumber(record.malId),
                 detail: normalizePreviewDetail(record.detail),
@@ -1311,4 +1323,9 @@ export async function loadPreview(base: string, seriesId: string): Promise<Anime
                           })
                         : [],
         };
+        // Feed the persistent store here, so a details page browsed once
+        // renders offline forever after. The sink is fire-and-forget: a slow
+        // or failing store must never delay the answer just fetched.
+        metadataSink?.(seriesId, preview);
+        return preview;
 }

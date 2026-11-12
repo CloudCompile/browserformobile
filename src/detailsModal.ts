@@ -16,6 +16,12 @@ export interface DetailsModalOptions {
         series: string;
         /** Base URL of the anime API, from the plugin settings. */
         apiBase: string;
+        /**
+         * The kept details answer from the metadata store, when the series was
+         * browsed before. The page paints from it immediately and corrects
+         * itself if the background refresh differs — airplane mode included.
+         */
+        initialPreview?: AnimePreview | null;
         /** Called when recommendations should be produced for this series. */
         loadRecommendations?: (seed: string) => Promise<Recommendation[]>;
 }
@@ -44,6 +50,8 @@ export class DetailsModal extends Modal {
         private preview: AnimePreview | null = null;
         private loading = true;
         private failed: string | null = null;
+        /** Serialized form of what the last render painted from. */
+        private renderedPreview: string | null = null;
         private recommendations: Recommendation[] = [];
         private recommendationsLoading = false;
         private bodyEl!: HTMLElement;
@@ -61,6 +69,15 @@ export class DetailsModal extends Modal {
                 this.titleEl.setText(this.options.series);
                 this.contentEl.empty();
                 this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-details-body' });
+                // Stale-while-revalidate: a series browsed before paints from
+                // the kept copy in the first frame, and the load below only
+                // replaces it when the catalogue actually moved on. A series
+                // with no kept copy behaves exactly as before — a spinner and
+                // the same error surface when the API is unreachable.
+                if (this.options.initialPreview) {
+                        this.preview = this.options.initialPreview;
+                        this.loading = false;
+                }
                 this.render();
                 void this.load();
         }
@@ -75,10 +92,25 @@ export class DetailsModal extends Modal {
                         this.preview = await loadPreview(this.options.apiBase, this.options.series);
                         if (!this.preview) this.failed = 'No details are available for this title.';
                 } catch (error) {
-                        this.failed = error instanceof Error ? error.message : 'Could not load details.';
+                        // A kept copy is already on screen; an unreachable API
+                        // only matters when there was nothing to show. The
+                        // stale copy is not marked with a banner — it is a
+                        // details page, not an episode list, and nothing in it
+                        // can send the viewer wrong the way a wrong count
+                        // would. When the refresh does differ, the render
+                        // below replaces it silently.
+                        if (!this.preview) this.failed = error instanceof Error ? error.message : 'Could not load details.';
                 } finally {
                         this.loading = false;
-                        this.render();
+                        // Re-render only when the fresh answer differs from the
+                        // one painted from the store — the common case is the
+                        // same payload fetched again, and a repaint of
+                        // identical content is churn the modal can skip.
+                        const serialized = this.preview ? JSON.stringify(this.preview) : null;
+                        if (serialized !== this.renderedPreview) {
+                                this.renderedPreview = serialized;
+                                this.render();
+                        }
                 }
                 // Recommendations are a separate pass so the details page does not
                 // wait on them.
@@ -97,6 +129,9 @@ export class DetailsModal extends Modal {
         }
 
         private render(): void {
+                // What the last render painted from, so a background refresh
+                // that fetched identical content does not repaint the page.
+                this.renderedPreview = this.preview ? JSON.stringify(this.preview) : null;
                 this.bodyEl.empty();
                 if (this.loading) {
                         const loading = this.bodyEl.createDiv({ cls: 'bfm-details-loading' });
