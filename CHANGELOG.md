@@ -13,6 +13,25 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.0.0 — 2026-11-12
+
+Structural work, hence the `.0`: series metadata becomes a store on disk rather
+than a cache of API answers, and the API becomes a refresh instead of a
+dependency.
+
+- **Persistent series metadata.** Details pages are kept per series — bounded at
+  200 entries / 2 MB, oldest evicted first — in `data.json`, holding catalogue
+  text and poster URLs, nothing from the vault.
+- **Details pages open offline.** A series browsed before paints from the kept
+  copy in its first frame and corrects itself silently if the catalogue moved
+  on; a series with no kept copy behaves exactly as before.
+- **Recommendations render offline.** The catalogue's own recommendation list
+  rides in the store, so a browsed series fills its section even when the API is
+  unreachable.
+- **Library rows show posters.** The list joins the grid: poster thumbs from a
+  map read over the store and cached answers — never the network, never the
+  adapter — with the episode-card look kept for anything never browsed.
+
 ## 4.2.5 — 2026-11-12
 
 - **Watch progress survives a vault sync.** `data.json` is written whole, so a sync landing another device's progress used to overwrite it. Every save now merges what is on disk per file — the further position wins, ties go to the newer save — and the continue-watching strip picks the merged progress up immediately.
