@@ -407,8 +407,16 @@ videos, and clear the anime cache.
 npm install
 npm run dev      # watch build
 npm run build    # production build
-npm run lint
+npm run lint     # must be clean (0 errors, 0 warnings)
+npm test         # vitest, the committed gate
 ```
+
+The constraints the code follows — memory bounds, ordered writes, what may
+leave the device — are in [CONTRIBUTING.md](CONTRIBUTING.md). The direction of
+travel is [ROADMAP.md](ROADMAP.md), whose items are the issue tracker's
+milestones. Every release is summarised in [CHANGELOG.md](CHANGELOG.md); the
+full notes live on each release. Security-relevant details are in
+[SECURITY.md](SECURITY.md).
 
 ## On mobile
 

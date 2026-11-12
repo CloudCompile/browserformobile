@@ -1,0 +1,63 @@
+name: Bug report
+description: Something broke, or behaves differently from what the README promises.
+labels: ['type:bug']
+body:
+    - type: markdown
+      attributes:
+          value: |
+              Thank you for reporting. Please check [ROADMAP.md](https://github.com/CloudCompile/browserformobile/blob/master/ROADMAP.md) first — if this is already listed, a thumbs-up on that issue helps more than a new one.
+    - type: input
+      id: version
+      attributes:
+          label: Plugin version
+          description: From **Settings → Community plugins**, or the release you installed.
+      validations:
+          required: true
+    - type: dropdown
+      id: platform
+      attributes:
+          label: Platform
+          options:
+              - Android
+              - iOS
+              - Desktop (Windows/Linux/macOS)
+      validations:
+          required: true
+    - type: input
+      id: obsidian
+      attributes:
+          label: Obsidian version
+          placeholder: e.g. 1.13.0
+      validations:
+          required: true
+    - type: textarea
+      id: what-happened
+      attributes:
+          label: What happened?
+          description: What you did, what you expected, what you saw instead.
+      validations:
+          required: true
+    - type: textarea
+      id: logs
+      attributes:
+          label: Debug log / diagnostics
+          description: |
+              For download and playback problems, use **Export debug log** (command palette) and paste or attach the file. The log contains non-secret runtime details; please export it rather than screenshotting it.
+      validations:
+          required: false
+    - type: input
+      id: series
+      attributes:
+          label: Affected series or episode
+          description: An episode id such as `naruto-76396?ep=76396_1` makes download reports far easier to trace.
+      validations:
+          required: false
+    - type: checkboxes
+      id: checks
+      attributes:
+          label: Checks
+          options:
+              - label: I checked the README's Limitations section and this is not listed there.
+                required: true
+              - label: I searched existing issues for a duplicate.
+                required: true

@@ -24,7 +24,26 @@ jobs:
             - name: Build plugin
               run: |
                   npm ci
+                  npm run lint
+                  npm test
                   npm run build
+
+            - name: Extract release notes from CHANGELOG
+              run: |
+                  tag="${GITHUB_REF#refs/tags/}"
+                  node -e '
+                    const fs = require("fs");
+                    const tag = process.argv[1];
+                    const text = fs.readFileSync("CHANGELOG.md", "utf8");
+                    const start = text.indexOf("## " + tag + " ");
+                    if (start === -1) process.exit(0);
+                    const rest = text.slice(start + 3 + tag.length);
+                    const end = rest.indexOf("\n## ");
+                    const notes = (end === -1 ? rest : rest.slice(0, end)).trim();
+                    fs.writeFileSync("RELEASE_NOTES.md", notes + "\n\n---\n\nFull changelog: CHANGELOG.md in the repository.");
+                  ' "$tag"
+                  [ -f RELEASE_NOTES.md ] && echo "notes=true" >> "$GITHUB_OUTPUT" || echo "notes=false" >> "$GITHUB_OUTPUT"
+              id: notes
 
             - name: Check for optional styles
               id: styles
@@ -43,8 +62,7 @@ jobs:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   tag="${GITHUB_REF#refs/tags/}"
-
-                  gh release create "$tag" \
-                    --title="$tag" \
-                    --draft \
-                    main.js manifest.json ${{ steps.styles.outputs.exists == 'true' && 'styles.css' || '' }}
+                  args=("$tag" --title="$tag" --draft main.js manifest.json)
+                  if [ "${{ steps.styles.outputs.exists }}" = "true" ]; then args+=("styles.css"); fi
+                  if [ "${{ steps.notes.outputs.notes }}" = "true" ]; then args+=(--notes-file=RELEASE_NOTES.md); fi
+                  gh release create "${args[@]}"

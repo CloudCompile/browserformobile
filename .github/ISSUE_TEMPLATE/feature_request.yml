@@ -1,0 +1,31 @@
+name: Feature request
+description: Something you wish the plugin did.
+labels: ['type:enhancement']
+body:
+    - type: markdown
+      attributes:
+          value: |
+              Check [ROADMAP.md](https://github.com/CloudCompile/browserformobile/blob/master/ROADMAP.md) first — the idea may already have an issue and a milestone.
+    - type: textarea
+      id: problem
+      attributes:
+          label: The problem
+          description: What you are trying to do, and what gets in the way.
+      validations:
+          required: true
+    - type: textarea
+      id: proposal
+      attributes:
+          label: The proposal
+          description: What the plugin would do instead. Concrete beats general.
+      validations:
+          required: true
+    - type: checkboxes
+      id: constraints
+      attributes:
+          label: Constraints acknowledged
+          description: These shape every feature; see CONTRIBUTING.md.
+          options:
+              - label: This does not require embedding a browser engine.
+              - label: This does not add network calls beyond the catalogue and the opt-in recommendation model.
+              - label: This keeps mobile memory bounded (no whole-episode buffering).
