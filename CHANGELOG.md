@@ -13,6 +13,13 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 4.2.5 — 2026-11-12
+
+- **Watch progress survives a vault sync.** `data.json` is written whole, so a sync landing another device's progress used to overwrite it. Every save now merges what is on disk per file — the further position wins, ties go to the newer save — and the continue-watching strip picks the merged progress up immediately.
+- **Per-device download statistics.** Runs remember where they happened, the stats page shows a **By device** section when the log spans more than one, and the label rides the CSV export.
+- **The TS format is presented honestly.** The picker, settings, and README now describe TS as an archive copy of the raw stream for remuxing later — unplayable in a browser — with MP4 named as the choice for watching.
+- **A "What syncs" README section**: where plugin data lives, what vault sync carries, and the multi-device caveats.
+
 ## 4.1.5 — 2026-11-12
 
 - **Subtitle preferences in the player.** A downloaded sidecar now has controls on the player's bar: on or off (remembered), text size **S / M / L**, and a **±0.5 s delay** stepper for tracks that run a beat ahead or behind, clamped to five seconds. The delay moves the track's own cue timings, so native rendering does the work.
