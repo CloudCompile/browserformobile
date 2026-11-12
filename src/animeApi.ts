@@ -504,6 +504,50 @@ function adultPage(results: unknown): BrowsePage {
         };
 }
 
+/**
+ * Poster URLs mined from cached API responses, keyed by lowercased title.
+ *
+ * The library's grid mode needs a cover per series. The catalogue already
+ * served one in every search, info, and preview response the user has browsed,
+ * and those answers sit in the persisted cache — so the grid is filled from
+ * what is already on disk rather than issuing a round of poster requests the
+ * API (which runs serverless, with no cache of its own) would answer cold.
+ *
+ * Pure and tolerant: it walks the cached envelopes for `title` plus `poster`/
+ * `image` pairs at a bounded depth, keeps the first URL per title, and skips
+ * anything that is not an http(s) URL. Titles without a poster simply have no
+ * entry, and the UI shows a fallback card for those.
+ */
+export function collectPosters(records: unknown): Map<string, string> {
+        const posters = new Map<string, string>();
+        const visit = (value: unknown, depth: number): void => {
+                if (!value || typeof value !== 'object' || depth > 6) return;
+                if (Array.isArray(value)) {
+                        for (const item of value) visit(item, depth + 1);
+                        return;
+                }
+                const record = value as Record<string, unknown>;
+                const title = typeof record.title === 'string' ? record.title.trim() : '';
+                const image =
+                        typeof record.poster === 'string' && record.poster
+                                ? record.poster
+                                : typeof record.image === 'string'
+                                  ? record.image
+                                  : '';
+                if (title && /^https?:\/\//i.test(image)) {
+                        const key = title.toLowerCase();
+                        if (!posters.has(key)) posters.set(key, image);
+                }
+                for (const item of Object.values(record)) visit(item, depth + 1);
+        };
+        if (!records || typeof records !== 'object') return posters;
+        for (const entry of Object.values(records as Record<string, unknown>)) {
+                const value = entry && typeof entry === 'object' ? (entry as { value?: unknown }).value : null;
+                visit(value, 0);
+        }
+        return posters;
+}
+
 export async function loadEpisodes(base: string, seriesId: string, provider?: string): Promise<SeriesDetail> {
         // The 18+ source is addressed by slug through its own provider route and
         // returns a flat episode list rather than the native nested shape.

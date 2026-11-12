@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTasteProfile, rankRecommendations, tokenize, bm25Scores, blendModelScores, dampEngagement, diversify } from './src/recommend';
+import { buildTasteProfile, rankRecommendations, tokenize, bm25Scores, blendModelScores, dampEngagement, diversify, pushDismissed, isDismissed } from './src/recommend';
 
 describe('tokenize', () => {
   it('drops stop words and single chars', () => {
@@ -17,6 +17,75 @@ describe('buildTasteProfile', () => {
     expect(p[0]).toEqual({series:'Naruto',weight:3.32});
     expect(p[1]).toEqual({series:'Bleach',weight:2});
     expect(p[0].weight).toBeGreaterThan(p[1].weight);
+  });
+
+  it('weights an in-progress episode by its watch fraction', () => {
+    // In-progress is 0.5 + 1.5 * fraction: half-way scores 1.25 raw, damped to
+    // 1 + log2(2.25) = 2.17 — more than a bare download (2), less than a
+    // completion (1 + log2(3) = 2.58).
+    const half = buildTasteProfile([], [{ series: 'Bleach', watched: false, progress: 0.5 }]);
+    expect(half[0].weight).toBe(2.17);
+    // A quarter through scores 0.875 raw — below a bare download.
+    const quarter = buildTasteProfile([], [{ series: 'Bleach', watched: false, progress: 0.25 }]);
+    expect(quarter[0].weight).toBe(1.91);
+  });
+
+  it('treats a barely-started episode as noise', () => {
+    expect(buildTasteProfile([], [{series:'X', watched:false, progress:0.04}])).toEqual([]);
+    expect(buildTasteProfile([], [{series:'X', watched:false, progress:0.05}]).length).toBe(1);
+  });
+
+  it('never scores an in-progress episode above a finished one', () => {
+    const profile = buildTasteProfile([], [
+      { series: 'Half way', watched: false, progress: 0.5 },
+      { series: 'Finished', watched: true },
+    ]);
+    const done = profile.find((p) => p.series === 'Finished')!;
+    const half = profile.find((p) => p.series === 'Half way')!;
+    expect(done.weight).toBeGreaterThan(half.weight);
+    // At the limit they converge: 0.5 + 1.5 * 1 = 2 raw, same as a completion.
+    const capped = buildTasteProfile([], [{series:'X', watched:false, progress:1.4}]);
+    expect(capped[0].weight).toBe(2.58);
+    expect(capped[0].weight).toBe(buildTasteProfile([], [{series:'Y', watched:true}])[0].weight);
+  });
+
+  it('weights by fraction, not raw seconds', () => {
+    // Five minutes of a two-hour film (fraction ~0.04) is noise, even though
+    // five minutes of raw seconds once counted as a full "started" signal.
+    expect(buildTasteProfile([], [{series:'Film', watched:false, progress:300 / 7200}])).toEqual([]);
+  });
+});
+
+describe('pushDismissed', () => {
+  it('adds a title to the front, newest first', () => {
+    expect(pushDismissed(['Bleach'], 'Naruto')).toEqual(['Naruto', 'Bleach']);
+  });
+
+  it('matches case-insensitively and keeps the newest spelling', () => {
+    const out = pushDismissed(['naruto shippuuden'], 'Naruto Shippuuden');
+    expect(out).toEqual(['Naruto Shippuuden']);
+  });
+
+  it('caps the list, dropping the oldest (last) entry', () => {
+    const list = Array.from({ length: 200 }, (_, i) => `Series ${i}`);
+    const out = pushDismissed(list, 'New one');
+    expect(out).toHaveLength(200);
+    expect(out[0]).toBe('New one');
+    expect(out).not.toContain('Series 199'); // pushed off the end
+    expect(out).toContain('Series 0');
+  });
+
+  it('ignores an empty or blank title', () => {
+    expect(pushDismissed(['A'], '   ')).toEqual(['A']);
+  });
+});
+
+describe('isDismissed', () => {
+  it('matches case-insensitively and trims', () => {
+    expect(isDismissed(['Naruto'], 'naruto')).toBe(true);
+    expect(isDismissed([' Naruto '], 'naruto')).toBe(true);
+    expect(isDismissed(['Naruto'], 'Bleach')).toBe(false);
+    expect(isDismissed(['Naruto'], '')).toBe(false);
   });
 });
 

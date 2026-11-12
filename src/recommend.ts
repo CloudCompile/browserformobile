@@ -92,6 +92,11 @@ function termFrequency(terms: string[]): Map<string, number> {
  * A series downloaded several times, or watched through, is a stronger signal
  * than one tried once, so weights accumulate. Series names are the only thing
  * the history records, so that is what the profile is keyed on.
+ *
+ * A library item carries its `progress` as a 0–1 watch fraction (position over
+ * duration), not raw seconds: an episode five minutes into a twenty-four-minute
+ * file is a different signal from one five minutes into a two-hour film, and a
+ * raw-second reading made every long file look half-watched.
  */
 /**
  * Damp a raw engagement count onto a bounded scale.
@@ -109,6 +114,12 @@ export function dampEngagement(raw: number): number {
         return Math.round((1 + Math.log2(1 + safe)) * 100) / 100;
 }
 
+/**
+ * Below this watch fraction an in-progress episode is noise rather than taste:
+ * a tap, a wrong file, or a few seconds of preview. It contributes nothing.
+ */
+const PROGRESS_NOISE_FRACTION = 0.05;
+
 export function buildTasteProfile(
         downloads: Array<{ series: string }>,
         watched: Array<{ series: string; watched: boolean; progress?: number }> = [],
@@ -122,14 +133,55 @@ export function buildTasteProfile(
 
         for (const run of downloads) add(run.series, 1);
         for (const item of watched) {
-                // A finished episode is worth more than a file that merely exists.
-                if (item.watched) add(item.series, 2);
-                else if ((item.progress ?? 0) > 0) add(item.series, 1);
+                // A finished episode is worth a flat 2. An in-progress one counts
+                // in proportion to how far it got, between a floor of 0.5 (it was
+                // chosen at all) and 2 (it was all but finished): exactly half-way
+                // scores 1.25, more than a bare download, less than a completion.
+                if (item.watched) {
+                        add(item.series, 2);
+                        continue;
+                }
+                const fraction = item.progress ?? 0;
+                if (Number.isFinite(fraction) && fraction >= PROGRESS_NOISE_FRACTION) {
+                        add(item.series, 0.5 + 1.5 * Math.min(1, fraction));
+                }
         }
 
         return [...counts.entries()]
                 .map(([series, count]) => ({ series, weight: dampEngagement(count) }))
                 .sort((left, right) => right.weight - left.weight || left.series.localeCompare(right.series));
+}
+
+/**
+ * Ceiling on the dismissed-recommendations list.
+ *
+ * A dismissal is a small, reversible preference, not data to grow forever: past
+ * this many the oldest is dropped, which keeps the persisted shape bounded no
+ * matter how long a list someone builds.
+ */
+export const MAX_DISMISSED = 200;
+
+/**
+ * Record a title the user is not interested in, newest first.
+ *
+ * Matching is case-insensitive — the catalogue spells titles inconsistently
+ * between endpoints, and a dismissal that only works for one spelling is not a
+ * dismissal. Re-dismissing a title moves it to the front instead of duplicating
+ * it. Pure, so the persisted list is produced rather than mutated.
+ */
+export function pushDismissed(dismissed: string[], title: string, max = MAX_DISMISSED): string[] {
+        const name = title.trim();
+        if (!name) return dismissed;
+        const key = name.toLowerCase();
+        const rest = dismissed.filter((entry) => entry.trim().toLowerCase() !== key);
+        return [name, ...rest].slice(0, max);
+}
+
+/** Whether a title is on the dismissed list, case-insensitively. */
+export function isDismissed(dismissed: string[], title: string): boolean {
+        const key = title.trim().toLowerCase();
+        if (!key) return false;
+        return dismissed.some((entry) => entry.trim().toLowerCase() === key);
 }
 
 /** The text a candidate is compared on. */

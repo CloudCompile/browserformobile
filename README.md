@@ -257,6 +257,13 @@ that does not match is kept whole as the title.
 - **Search** filters across series, episode number, and title.
 - **Filters** narrow the list to everything, unwatched, or in progress.
 - **Delete** removes the file from your vault after a confirmation.
+- **Continue watching** — when episodes are half-watched, a strip above the list
+  shows each one with its position and what is left, most recently played first.
+  Tapping a card resumes it.
+- **Grid view** — the toggle beside the filters switches the list to a poster
+  grid. Posters come from catalogue answers already cached on your device, so a
+  series you have never browsed shows a fallback card with its first letter
+  instead. The choice is remembered.
 
 Progress is saved every few seconds and when you close the player, and it is
 stored with your other plugin data. The library marks a file **Watched** once
@@ -328,7 +335,16 @@ rather than quietly looking complete. **Refresh** rebuilds it.
 
 The list is spread across your history rather than dominated by one series. A
 series you watched all the way through still counts for more than one you tried
-once, but only somewhat more, and no single series can fill the page.
+once, but only somewhat more, and no single series can fill the page. An episode
+you are part-way through counts in proportion to how far you got, so five
+minutes of a two-hour film is not the same signal as an hour.
+
+### Not interested
+
+A card's **Not interested** action removes it and keeps it out of future lists —
+including the details page's "more like this" — until you bring the titles back
+with **Restore dismissed** at the top of the page. Dismissals are remembered
+with your other plugin data and capped at the most recent 200.
 
 ### Letting a language model choose
 
@@ -418,7 +434,19 @@ device, and only when you switch one on:
 All actions are available from the command palette: open the anime downloader,
 open the video library, open the download manager, open download statistics,
 open the recommendations page, open a series' details page, repair downloaded
-videos, and clear the anime cache.
+videos, clear the anime cache, and export or import your watch progress and
+statistics.
+
+## Backing up data
+
+**Export watch progress and statistics** writes two files into the download
+folder: `anime-data-export.json` (every resume position and the whole download
+run log) and `anime-statistics.csv` (the same log, readable by a spreadsheet).
+**Import watch progress and statistics** reads the JSON back and, after a
+confirmation, *replaces* the current progress and run log with it — a snapshot
+from another device overwrites rather than merges. Both commands need downloads
+saved inside the vault, and the files live in your vault like any other note, so
+syncing the vault syncs the backup.
 
 ## Development
 
