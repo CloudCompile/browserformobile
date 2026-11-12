@@ -5,13 +5,13 @@ import { DownloadManager, seriesFolderName, type DownloaderOptions, type Persist
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
 import { repairByteBudget, repairFolder, RepairLedger } from './doctor';
 import { externalStorageAvailable, sanitizePath } from './destination';
-import { VideoLibrary, type LibraryItem, type WatchRecord } from './library';
+import { VideoLibrary, watchFraction, type LibraryItem, type WatchRecord } from './library';
 import { LibraryModal } from './libraryModal';
 import { PlayerModal } from './playerModal';
 import { DEFAULT_FILENAME_TEMPLATE, DEFAULT_SETTINGS, AnimeSettingTab, type AnimeSettings } from './settings';
-import { StatsStore, type DownloadRun } from './stats';
+import { StatsStore, buildStatsCsv, parseDataExport, type DataExport, type DownloadRun } from './stats';
 import { StatsModal } from './statsModal';
-import { SeriesPickerModal } from './modals';
+import { ConfirmModal, SeriesPickerModal } from './modals';
 import { FindModal } from './findModal';
 import { DetailsModal } from './detailsModal';
 import { DebugLogger } from './debug';
@@ -30,8 +30,13 @@ import {
         type CuratorTool,
 } from './llm';
 import { curateInProcess, WllamaRuntime, type LocalRuntime } from './llmLocal';
-import { loadPreview, searchSeries, type SeriesSummary } from './animeApi';
-import type { Recommendation, TasteSeed } from './recommend';
+import { loadPreview, collectPosters, searchSeries, type SeriesSummary } from './animeApi';
+import {
+	isDismissed,
+	pushDismissed,
+	type Recommendation,
+	type TasteSeed,
+} from './recommend';
 import { requestUrl } from 'obsidian';
 import { DownloadManagerView, VIEW_TYPE_DOWNLOADS } from './downloadManagerView';
 
@@ -49,6 +54,10 @@ interface PersistedShape {
 	repairLedger?: Record<string, string>;
 	/** Queued and paused downloads to restore after a restart. */
 	downloadQueue?: PersistedDownloadJob[];
+	/** The library's layout, remembered between sessions. */
+	libraryView?: 'list' | 'grid';
+	/** Recommendation titles the user said they are not interested in. */
+	dismissedRecommendations?: string[];
 }
 
 export default class AnimePlugin extends Plugin {
@@ -78,6 +87,14 @@ export default class AnimePlugin extends Plugin {
 	private downloadQueue: PersistedDownloadJob[] = [];
 	private queueSaveTimer: number | null = null;
 	private debugLogger!: DebugLogger;
+	/** The library layout, persisted so the grid is still the grid next time. */
+	libraryView: 'list' | 'grid' = 'list';
+	/**
+	 * Recommendation titles the user dismissed, capped — see `pushDismissed`.
+	 * A dismissal is a filter over the ranked list, so restoring the list is
+	 * clearing this array; nothing is re-fetched to bring titles back.
+	 */
+	dismissedRecommendations: string[] = [];
 
 	private debugLogPath(): string {
 		return `${this.app.vault.configDir}/plugins/browser-for-mobile/debug.log`;
@@ -252,6 +269,14 @@ export default class AnimePlugin extends Plugin {
 			onDelete: (item) => this.deleteItem(item),
 			onRefresh: () => this.refreshLibrary(),
 			onDetails: (series) => this.openDetails(series),
+			initialView: this.libraryView,
+			onViewChange: (view) => {
+				this.libraryView = view;
+				void this.saveSettings();
+			},
+			// Posters are mined from the cached API answers, so the grid costs no
+			// network: a series never browsed gets a fallback card instead.
+			posters: () => collectPosters(this.animeCacheRecords),
 			onClosed: () => {
 				this.libraryModal = null;
 			},
@@ -338,6 +363,9 @@ export default class AnimePlugin extends Plugin {
 			onLoad: (progress, onResults) => this.buildRecommendations(progress, onResults),
 			onDetails: (title) => this.openDetails(title),
 			onDownload: (title) => this.openDownloader(title),
+			onDismiss: (title) => this.dismissRecommendation(title),
+			dismissedCount: () => this.dismissedRecommendations.length,
+			onRestoreDismissed: () => this.restoreDismissedRecommendations(),
 			onClosed: () => {
 				this.recommendationsModal = null;
 			},
@@ -393,8 +421,33 @@ export default class AnimePlugin extends Plugin {
 			this.modelProfile(result.usedSeeds.join(', '), result.usedSeeds),
 			curated.items,
 		);
-		if (scores.size === 0) return { ...result, items: curated.items };
-		return { ...result, items: applyModelScores(curated.items, scores) };
+		const ranked = scores.size === 0 ? curated.items : applyModelScores(curated.items, scores);
+		return { ...result, items: this.filterDismissed(ranked) };
+	}
+
+	/**
+	 * Titles the user said they are not interested in, removed after ranking.
+	 *
+	 * Filtering happens at the end so the list the model saw (and the order it
+	 * produced) is untouched — a dismissal is a presentational cut, and with the
+	 * filter applied last, restoring titles is just clearing the array.
+	 */
+	private filterDismissed(items: Recommendation[]): Recommendation[] {
+		if (this.dismissedRecommendations.length === 0) return items;
+		return items.filter((item) => !isDismissed(this.dismissedRecommendations, item.title));
+	}
+
+	/** Remember a title the user is not interested in, newest first. */
+	dismissRecommendation(title: string): void {
+		this.dismissedRecommendations = pushDismissed(this.dismissedRecommendations, title);
+		void this.saveSettings();
+	}
+
+	/** Put every dismissed title back into rotation. */
+	restoreDismissedRecommendations(): void {
+		if (this.dismissedRecommendations.length === 0) return;
+		this.dismissedRecommendations = [];
+		void this.saveSettings();
 	}
 
 	/**
@@ -596,7 +649,10 @@ export default class AnimePlugin extends Plugin {
 			this.library.items().map((item) => ({
 				series: item.series,
 				watched: item.watched,
-				progress: item.progress?.position ?? 0,
+				// A 0–1 watch fraction, not raw seconds: buildTasteProfile weights
+				// an in-progress episode by how far through it the viewer got, and
+				// feeding it seconds made every long file read as half-watched.
+				progress: watchFraction(item),
 			})),
 		);
 	}
@@ -641,8 +697,8 @@ export default class AnimePlugin extends Plugin {
 		if (result.items.length === 0) return result.items;
 
 		const scores = await this.scoreWithModel(this.modelProfile(seed, [seed]), result.items);
-		if (scores.size === 0) return result.items;
-		return applyModelScores(result.items, scores);
+		const ranked = scores.size === 0 ? result.items : applyModelScores(result.items, scores);
+		return this.filterDismissed(ranked);
 	}
 
 	/**
@@ -965,6 +1021,141 @@ export default class AnimePlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * The download folder for an export, or null when downloads go outside the
+	 * vault — where the adapter cannot write (mobile) or read back (import).
+	 */
+	private exportFolder(): string | null {
+		if (this.settings.downloadExternal) return null;
+		const folder = this.settings.downloadFolder.replace(/^\/+|\/+$/g, '');
+		return folder ? sanitizePath(folder) : '';
+	}
+
+	private exportAdapter(): {
+		exists(path: string): Promise<boolean>;
+		readBinary(path: string): Promise<ArrayBuffer>;
+		writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+		mkdir(path: string): Promise<void>;
+	} {
+		return this.app.vault.adapter;
+	}
+
+	/** Create every folder on a vault-relative export path. */
+	private async ensureFolders(adapter: ReturnType<AnimePlugin['exportAdapter']>, path: string): Promise<void> {
+		const parts = path.split('/');
+		parts.pop();
+		let current = '';
+		for (const part of parts) {
+			current = current ? `${current}/${part}` : part;
+			if (!(await adapter.exists(current))) await adapter.mkdir(current);
+		}
+	}
+
+	/**
+	 * Write the watch progress and the run log into the download folder, as one
+	 * JSON document plus the run log as CSV for a spreadsheet.
+	 *
+	 * Vault-only, like the debug-log export. The JSON is overwritten in place
+	 * rather than stamped, because the import command reads exactly this path —
+	 * a stamped file would never be picked up.
+	 */
+	async exportData(): Promise<void> {
+		const folder = this.exportFolder();
+		if (folder === null) {
+			new Notice('Export data with vault downloads enabled.');
+			return;
+		}
+		const adapter = this.exportAdapter();
+		try {
+			const payload = {
+				version: 1 as const,
+				exportedAt: new Date().toISOString(),
+				watch: this.library.toJSON(),
+				stats: this.stats.toJSON(),
+			};
+			const base = folder ? `${folder}/anime-data-export` : 'anime-data-export';
+			await this.ensureFolders(adapter, `${base}.json`);
+			await adapter.writeBinary(
+				`${base}.json`,
+				new TextEncoder().encode(JSON.stringify(payload, null, '\t')).buffer,
+			);
+			const csvPath = folder ? `${folder}/anime-statistics.csv` : 'anime-statistics.csv';
+			await adapter.writeBinary(
+				csvPath,
+				new TextEncoder().encode(buildStatsCsv(this.stats.toJSON())).buffer,
+			);
+			this.debug('data.exported', {
+				runs: payload.stats.length,
+				watch: Object.keys(payload.watch).length,
+			});
+			new Notice(`Exported to ${base}.json and ${csvPath}`);
+		} catch (error) {
+			this.debug('data.export.failed', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			new Notice(error instanceof Error ? `Export failed: ${error.message}` : 'Export failed.');
+		}
+	}
+
+	/**
+	 * Replace the watch progress and run log from an export file in the download
+	 * folder.
+	 *
+	 * Replacement, not merging: the export is a snapshot of one device's state,
+	 * and a merge would resurrect progress the user deleted on purpose. The file
+	 * is fully parsed and validated before the confirmation, so a malformed
+	 * export changes nothing, and the confirm names what would be replaced.
+	 */
+	async importData(): Promise<void> {
+		const folder = this.exportFolder();
+		if (folder === null) {
+			new Notice('Import data with vault downloads enabled.');
+			return;
+		}
+		const adapter = this.exportAdapter();
+		const path = folder ? `${folder}/anime-data-export.json` : 'anime-data-export.json';
+		try {
+			if (!(await adapter.exists(path))) {
+				new Notice(`No anime-data-export.json found in ${folder || 'the vault root'}.`);
+				return;
+			}
+			let payload: unknown;
+			try {
+				payload = JSON.parse(new TextDecoder().decode(await adapter.readBinary(path)));
+			} catch {
+				new Notice('The export file is not valid JSON.');
+				return;
+			}
+			const parsed = parseDataExport(payload);
+			if (!parsed) {
+				new Notice('That file is not a data export (version 1).');
+				return;
+			}
+			new ConfirmModal(
+				this.app,
+				`Replace your watch progress (${Object.keys(parsed.watch).length} entries) and download statistics (${parsed.stats.length} runs) with the contents of this file? The current data is overwritten.`,
+				() => void this.applyImport(parsed),
+			).open();
+		} catch (error) {
+			this.debug('data.import.failed', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			new Notice(error instanceof Error ? `Import failed: ${error.message}` : 'Import failed.');
+		}
+	}
+
+	/** Apply an already-validated export: replace, persist, refresh. */
+	private async applyImport(parsed: DataExport): Promise<void> {
+		this.library.load(parsed.watch);
+		this.watchRecords = this.library.toJSON();
+		this.stats.load(parsed.stats);
+		await this.saveSettings();
+		await this.refreshLibrary();
+		new Notice(
+			`Imported ${Object.keys(parsed.watch).length} watch entries and ${parsed.stats.length} runs.`,
+		);
+	}
+
 	/** Persist the watch map alongside the browser data. */
 	private async saveWatchRecords(): Promise<void> {
 		this.watchRecords = this.library.toJSON();
@@ -1045,21 +1236,21 @@ export default class AnimePlugin extends Plugin {
 	}
 
 	private registerCommands(): void {
+		this.addCommand({
+			id: 'export-anime-data',
+			name: 'Export watch progress and statistics',
+			callback: () => {
+				void this.exportData();
+			},
+		});
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+		this.addCommand({
+			id: 'import-anime-data',
+			name: 'Import watch progress and statistics',
+			callback: () => {
+				void this.importData();
+			},
+		});
 
 		this.addCommand({
 			id: 'open-anime-details',
@@ -1220,6 +1411,10 @@ export default class AnimePlugin extends Plugin {
 		this.animeCacheRecords = raw?.animeCache ?? null;
 		this.downloadQueue = Array.isArray(raw?.downloadQueue) ? raw.downloadQueue : [];
 		this.downloadScanCache = raw?.downloadScanCache ?? {};
+		this.libraryView = raw?.libraryView === 'grid' ? 'grid' : 'list';
+		this.dismissedRecommendations = Array.isArray(raw?.dismissedRecommendations)
+			? raw.dismissedRecommendations.filter((title): title is string => typeof title === 'string')
+			: [];
 		this.repairLedger = new RepairLedger(raw?.repairLedger);
 		// A scan from an earlier session already read every file it covered. Adopt
 		// its verdicts so the first repair this session skips them.
@@ -1235,6 +1430,8 @@ export default class AnimePlugin extends Plugin {
 			stats: this.stats.toJSON(),
 			animeCache: this.animeCacheRecords,
 			downloadQueue: this.downloader?.serializeQueue?.() ?? this.downloadQueue,
+			libraryView: this.libraryView,
+			dismissedRecommendations: this.dismissedRecommendations,
 		});
 	}
 

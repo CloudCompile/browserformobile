@@ -34,6 +34,15 @@ export interface RecommendationsCallbacks {
         onDetails(title: string): void;
         /** Queue episodes for a recommendation through the downloader. */
         onDownload(title: string): void;
+        /**
+         * Remember that the user is not interested in a title. The card is
+         * removed locally; the list is not re-fetched.
+         */
+        onDismiss?(title: string): void;
+        /** How many titles are currently on the dismissed list. */
+        dismissedCount?(): number;
+        /** Clear the dismissed list; the caller reloads afterwards. */
+        onRestoreDismissed?(): void;
         onClosed?(): void;
 }
 
@@ -156,9 +165,13 @@ export class RecommendationsModal extends Modal {
                 if (this.failedSeeds.length > 0) this.renderPartialNote();
         }
 
-        /** The seed summary and the refresh control. */
+        /** The seed summary, the refresh control, and the restore control. */
         private renderHeader(): void {
-                const bar = this.bodyEl.createDiv({ cls: 'bfm-recs-bar' });
+                // Re-rendered in place after a dismissal, so the restore count
+                // updates without rebuilding (and reloading the images of) the grid.
+                let bar = this.bodyEl.querySelector<HTMLElement>('.bfm-recs-bar');
+                if (!bar) bar = this.bodyEl.createDiv({ cls: 'bfm-recs-bar' });
+                bar.empty();
                 const summary = bar.createDiv({ cls: 'bfm-recs-summary' });
                 if (this.loading) {
                         summary.setText('Reading your download history…');
@@ -170,6 +183,19 @@ export class RecommendationsModal extends Modal {
                         );
                 } else {
                         summary.setText('Based on your download history');
+                }
+
+                const dismissed = this.callbacks.dismissedCount?.() ?? 0;
+                if (dismissed > 0 && !this.loading) {
+                        const restore = bar.createEl('button', {
+                                cls: 'bfm-recs-restore',
+                                text: `Restore dismissed (${dismissed})`,
+                        });
+                        restore.setAttribute('aria-label', `Restore ${dismissed} dismissed recommendations`);
+                        restore.addEventListener('click', () => {
+                                this.callbacks.onRestoreDismissed?.();
+                                void this.load();
+                        });
                 }
 
                 const refresh = bar.createEl('button', { cls: 'bfm-recs-refresh' });
@@ -262,6 +288,16 @@ export class RecommendationsModal extends Modal {
                         new Notice(`Opening the downloader for ${item.title}…`);
                         this.close();
                 });
+                if (this.callbacks.onDismiss) {
+                        const dismiss = actions.createEl('button', {
+                                cls: 'bfm-recs-card-action',
+                                text: 'Not interested',
+                        });
+                        dismiss.addEventListener('click', (event) => {
+                                event.stopPropagation();
+                                this.dismiss(item, card);
+                        });
+                }
 
                 card.addEventListener('click', () => this.callbacks.onDetails(item.title));
                 card.addEventListener('keydown', (event) => {
@@ -269,6 +305,22 @@ export class RecommendationsModal extends Modal {
                         event.preventDefault();
                         this.callbacks.onDetails(item.title);
                 });
+        }
+
+        /**
+         * Drop one card after the user says they are not interested.
+         *
+         * Only the element is removed, never a grid rebuild — rebuilding would
+         * reload every poster image on the phone for the sake of one card. The
+         * header is repainted in place so the restore count follows, and an
+         * emptied grid falls back to the empty state.
+         */
+        private dismiss(item: Recommendation, card: HTMLElement): void {
+                this.callbacks.onDismiss?.(item.title);
+                this.items = this.items.filter((entry) => entry !== item);
+                card.remove();
+                if (this.items.length === 0) this.render();
+                else this.renderHeader();
         }
 
         /** Say the list is partial when some seeds could not be read. */

@@ -89,6 +89,7 @@ export function deriveSeeds(
         libraryItems: Array<{ series: string; watched: boolean; progress?: number }>,
 ): TasteSeed[] {
         // Only successful runs count: a failed download is not a signal of taste.
+        // `progress` is a 0–1 watch fraction, not seconds — see buildTasteProfile.
         const downloads = runs.filter((run) => run.outcome === 'done').map((run) => ({ series: run.series }));
         const profile = buildTasteProfile(downloads, libraryItems);
         return profile.filter((seed) => seed.weight >= MIN_SEED_WEIGHT);

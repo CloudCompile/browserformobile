@@ -7,6 +7,8 @@
  * is a pure function over it so the page has no state of its own.
  */
 
+import { VideoLibrary, type WatchRecord } from './library';
+
 /** How a run ended. */
 export type RunOutcome = 'done' | 'failed' | 'cancelled';
 
@@ -243,4 +245,101 @@ export class StatsStore {
         summary(): StatsSummary {
                 return summarize(this.runs);
         }
+}
+
+/** One field of a CSV row, quoted when it contains a comma, quote, or newline. */
+function csvField(value: string | number | boolean): string {
+        const text = String(value);
+        return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** The columns of the statistics CSV, in order. */
+const CSV_COLUMNS = [
+        'id',
+        'series',
+        'episode',
+        'outcome',
+        'format',
+        'quality',
+        'segments',
+        'resumed',
+        'bytes',
+        'fileSize',
+        'seconds',
+        'averageSpeed',
+        'peakSpeed',
+        'finishedAt',
+] as const;
+
+/**
+ * The run log as a CSV document, oldest first so it reads in download order.
+ *
+ * Timestamps are ISO 8601 in UTC so a spreadsheet sorts them without guessing,
+ * and every field goes through the same quoting rule, so a series named
+ * `Campfire Cooking, Vol. 2` survives the round trip. Pure, so the export
+ * command writes exactly what this returns and a test can hold it to that.
+ */
+export function buildStatsCsv(runs: DownloadRun[]): string {
+        const rows = [...runs]
+                .sort((a, b) => a.finishedAt - b.finishedAt)
+                .map((run) =>
+                        [
+                                run.id,
+                                run.series,
+                                run.episode,
+                                run.outcome,
+                                run.format,
+                                run.quality,
+                                run.segments,
+                                run.resumed,
+                                run.bytes,
+                                run.fileSize,
+                                run.seconds,
+                                run.averageSpeed,
+                                run.peakSpeed,
+                                run.finishedAt > 0 ? new Date(run.finishedAt).toISOString() : '',
+                        ]
+                                .map(csvField)
+                                .join(','),
+                );
+        return [CSV_COLUMNS.join(','), ...rows].join('\n') + '\n';
+}
+
+/** The parsed contents of a data export file. */
+export interface DataExport {
+        /** Watch progress by vault path, already validated. */
+        watch: Record<string, WatchRecord>;
+        /** Download runs, already validated and pruned. */
+        stats: DownloadRun[];
+        /** When the file was written, as the exporter recorded it. */
+        exportedAt: string | null;
+}
+
+/**
+ * Parse a data export file, or return null when it is not one.
+ *
+ * Import *replaces* the live watch progress and run log, so the shape is
+ * checked before anything is applied: the version must be exactly 1 (there is
+ * no migration path into arbitrary JSON a user may have edited), and both
+ * sections go through the same parsers the plugin's own persisted data uses, so
+ * a malformed record is dropped rather than smuggled in. `stats` reuse of the
+ * run parser also caps the list, so an oversized file cannot grow the log past
+ * what the plugin itself would keep.
+ */
+export function parseDataExport(payload: unknown): DataExport | null {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+        const raw = payload as Record<string, unknown>;
+        if (raw.version !== 1) return null;
+        if (!raw.watch || typeof raw.watch !== 'object' || Array.isArray(raw.watch)) return null;
+        if (!Array.isArray(raw.stats)) return null;
+
+        const library = new VideoLibrary();
+        library.load(raw.watch as Record<string, WatchRecord>);
+        const store = new StatsStore();
+        store.load(raw.stats);
+        return {
+                watch: library.toJSON(),
+                stats: store.toJSON(),
+                exportedAt: typeof raw.exportedAt === 'string' ? raw.exportedAt : null,
+        };
 }

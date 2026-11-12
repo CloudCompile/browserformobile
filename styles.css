@@ -641,6 +641,220 @@
 .bfm-stats-row-time,
 .bfm-dm-status { flex: 0 0 auto; }
 
+/* List/grid view toggle. */
+.bfm-library-views {
+        display: inline-flex;
+        flex: 0 0 auto;
+        gap: 2px;
+        padding: 2px;
+        border: 1px solid var(--bfm-border);
+        border-radius: var(--bfm-radius-s);
+        background: var(--background-secondary);
+}
+
+.bfm-library-view {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 34px;
+        min-height: 30px;
+        padding: 0 6px;
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        border-radius: calc(var(--bfm-radius-s) - 2px);
+}
+
+.bfm-library-view.is-active {
+        background: var(--interactive-accent);
+        color: var(--text-on-accent);
+}
+
+/* Continue-watching strip. */
+.bfm-library-continue {
+        margin-top: var(--bfm-space-3);
+}
+
+.bfm-library-continue-heading {
+        margin-bottom: var(--bfm-space-2);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+}
+
+.bfm-library-continue-row {
+        display: flex;
+        gap: var(--bfm-space-2);
+        overflow-x: auto;
+        padding-bottom: var(--bfm-space-1);
+}
+
+.bfm-library-continue-card {
+        flex: 0 0 210px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: var(--bfm-space-3);
+        border: 1px solid var(--bfm-border);
+        border-radius: var(--bfm-radius-m);
+        background: var(--bfm-surface);
+        cursor: pointer;
+        transition: background var(--bfm-transition), border-color var(--bfm-transition);
+}
+
+.bfm-library-continue-card:hover {
+        background: var(--bfm-hover);
+        border-color: var(--bfm-border-hover);
+}
+
+.bfm-library-continue-series {
+        font-weight: 600;
+        color: var(--text-normal);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+.bfm-library-continue-meta {
+        font-size: 12px;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+}
+
+.bfm-library-continue-card .bfm-library-progress { margin-top: var(--bfm-space-2); }
+
+/* Poster grid (library grid mode). */
+.bfm-library-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+        gap: var(--bfm-space-3);
+        overflow-y: auto;
+        min-height: 0;
+        margin-top: var(--bfm-space-3);
+}
+
+.bfm-library-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--bfm-border);
+        border-radius: var(--bfm-radius-m);
+        background: var(--bfm-surface);
+        overflow: hidden;
+        cursor: pointer;
+        transition: border-color var(--bfm-transition), transform var(--bfm-transition);
+}
+
+.bfm-library-card:hover { border-color: var(--bfm-border-hover); }
+
+.bfm-library-card.is-watched { opacity: 0.68; }
+
+.bfm-library-card-poster {
+        position: relative;
+        aspect-ratio: 2 / 3;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background:
+                linear-gradient(145deg, color-mix(in srgb, var(--interactive-accent) 32%, transparent), transparent),
+                var(--background-secondary);
+        border-bottom: 1px solid var(--bfm-border);
+}
+
+.bfm-library-card-poster-image {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+}
+
+.bfm-library-card-poster-placeholder {
+        font-size: 40px;
+        font-weight: 800;
+        color: var(--text-faint);
+        letter-spacing: -0.04em;
+}
+
+.bfm-library-card-badge {
+        position: absolute;
+        left: var(--bfm-space-2);
+        top: var(--bfm-space-2);
+        padding: 2px 7px;
+        border-radius: var(--bfm-radius-s);
+        background: color-mix(in srgb, var(--background-primary) 78%, transparent);
+        backdrop-filter: blur(6px);
+        font-size: 11px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        color: var(--text-normal);
+}
+
+.bfm-library-card-poster .bfm-library-progress {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        margin: 0;
+        height: 4px;
+        border-radius: 0;
+}
+
+.bfm-library-card-poster .bfm-library-progress-fill { border-radius: 0; }
+
+.bfm-library-card-body {
+        padding: var(--bfm-space-2) var(--bfm-space-3);
+}
+
+.bfm-library-card-title {
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--text-normal);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+.bfm-library-card-meta {
+        margin-top: 2px;
+        font-size: 11px;
+        color: var(--text-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+.bfm-library-card-info,
+.bfm-library-card-delete {
+        position: absolute;
+        top: var(--bfm-space-2);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 30px;
+        min-height: 30px;
+        padding: 0;
+        border-radius: var(--bfm-radius-s);
+        background: color-mix(in srgb, var(--background-primary) 78%, transparent);
+        backdrop-filter: blur(6px);
+}
+
+.bfm-library-card-info { right: calc(var(--bfm-space-2) + 34px); }
+.bfm-library-card-delete { right: var(--bfm-space-2); }
+
+.bfm-library-card-delete:hover { color: var(--text-error); }
+
+/* Restore dismissed recommendations. */
+.bfm-recs-restore {
+        flex: 0 0 auto;
+        min-height: var(--bfm-tap);
+        padding: 0 var(--bfm-space-3);
+        font-size: 12px;
+}
+
 .bfm-stats-row-time {
         font-size: 12px;
         color: var(--text-muted);
@@ -1692,10 +1906,21 @@ body.bfm-glass-on .bfm-recs-card {
         .bfm-dl-job-cancel,
         .bfm-library-item-play,
         .bfm-library-item-delete,
-        .bfm-library-item-info {
+        .bfm-library-item-info,
+        .bfm-library-view,
+        .bfm-library-card-info,
+        .bfm-library-card-delete {
                 width: 44px;
                 height: 44px;
         }
+
+        .bfm-library-card-info,
+        .bfm-library-card-delete { min-width: 44px; min-height: 44px; }
+
+        .bfm-recs-restore { min-height: 44px; }
+
+        /* Cards stay tappable without a 44px row: the whole card is the target. */
+        .bfm-library-continue-card { flex-basis: 78%; }
 
         .bfm-dl-episode,
         .bfm-library-item,
