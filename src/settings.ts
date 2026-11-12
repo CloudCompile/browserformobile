@@ -33,6 +33,14 @@ export interface AnimeSettings {
          * requests per episode, and streams without subtitles are unaffected.
          */
         downloadSubtitles: boolean;
+        /** Show the sidecar subtitles when the player opens. */
+        subtitlesOn: boolean;
+        /** How large the subtitle cues render in the player. */
+        subtitleSize: 'small' | 'normal' | 'large';
+        /** Subtitles this many milliseconds later than the track's own timing. */
+        subtitleDelayMs: number;
+        /** Advance to the next episode of the series when one finishes. */
+        autoPlayNext: boolean;
         /**
          * Try dubbed servers first when the default one offers no file. Dub
          * availability follows the catalogue — many series are subbed only, and
@@ -107,6 +115,14 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         // Off by default: subtitles cost a second set of segment requests per
         // episode, and the sidecar is only useful when the source has a track.
         downloadSubtitles: false,
+        // The defaults that make a sidecar behave like the platform player:
+        // on at normal size with the track's own timing.
+        subtitlesOn: true,
+        subtitleSize: 'normal',
+        subtitleDelayMs: 0,
+        // Off: an unattended advance downloads nothing, but it does roll two
+        // watch records into one sitting without being asked to.
+        autoPlayNext: false,
         // Sub first: the fallback walk keeps the default response's audio track,
         // and most of the catalogue is subbed only.
         preferDub: false,
@@ -203,6 +219,25 @@ export class AnimeSettingTab extends PluginSettingTab {
                                 name: 'Download subtitles',
                                 desc: 'Save the stream\u2019s subtitle track as a WebVTT file next to the video; the player shows it automatically. Streams without subtitles download exactly as before. Off by default because it adds a second set of requests per episode.',
                                 control: { type: 'toggle', key: 'downloadSubtitles' },
+                        },
+                        {
+                                name: 'Show subtitles in the player',
+                                desc: 'Whether a downloaded sidecar starts visible. The player\u2019s own subtitle controls change this too.',
+                                control: { type: 'toggle', key: 'subtitlesOn' },
+                        },
+                        {
+                                name: 'Subtitle text size',
+                                desc: 'How large subtitles render in the player.',
+                                control: {
+                                        type: 'dropdown',
+                                        key: 'subtitleSize',
+                                        options: { small: 'Small', normal: 'Normal', large: 'Large' },
+                                },
+                        },
+                        {
+                                name: 'Auto-play the next episode',
+                                desc: 'When an episode finishes, start the next one of the same series. Off by default \u2014 advancing is one tap on the player\u2019s Next button either way.',
+                                control: { type: 'toggle', key: 'autoPlayNext' },
                         },
                         {
                                 name: 'Prefer dub',

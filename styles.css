@@ -1341,7 +1341,18 @@
         background: #000;
 }
 
-.bfm-player-bar { display: flex; justify-content: flex-end; }
+.bfm-player-bar {
+        display: flex;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: var(--bfm-space-1);
+}
+
+/* Subtitle cues size with the modal-scoped preference class. Chromium styles
+ * native cues through `::cue`; nothing else touches the video itself. */
+.bfm-player-modal.bfm-subs-small video::cue { font-size: 0.8em; }
+.bfm-player-modal.bfm-subs-normal video::cue { font-size: 1em; }
+.bfm-player-modal.bfm-subs-large video::cue { font-size: 1.35em; }
 
 .bfm-player-restart {
         display: inline-flex;

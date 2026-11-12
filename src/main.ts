@@ -907,31 +907,66 @@ export default class AnimePlugin extends Plugin {
 			return;
 		}
 		const subtitleUrl = await this.subtitleTrackFor(item.path);
-		const modal = new PlayerModal(this.app, item, source, this.library.getProgress(item.path), subtitleUrl, {
-			onProgress: (path, position, duration) => this.recordProgress(path, position, duration),
-			onReset: (path) => {
-				this.library.clearProgress(path);
-				void this.saveWatchRecords();
+		const modal = new PlayerModal(
+			this.app,
+			item,
+			source,
+			this.library.getProgress(item.path),
+			subtitleUrl,
+			{
+				on: this.settings.subtitlesOn,
+				size: this.settings.subtitleSize,
+				delayMs: this.settings.subtitleDelayMs,
 			},
-			onNavigate: (direction) => {
-				const candidates = this.library
-					.items()
-					.filter((entry) => entry.series === item.series && entry.ext === 'mp4')
-					.sort((left, right) => left.episode - right.episode || left.name.localeCompare(right.name));
-				const index = candidates.findIndex((entry) => entry.path === item.path);
-				const target = candidates[index + (direction === 'next' ? 1 : -1)];
-				if (!target) {
-					new Notice(direction === 'next' ? 'This is the last episode.' : 'This is the first episode.');
-					return;
-				}
-				void this.playItem(target);
+			{
+				onProgress: (path, position, duration) => this.recordProgress(path, position, duration),
+				onReset: (path) => {
+					this.library.clearProgress(path);
+					void this.saveWatchRecords();
+				},
+				onNavigate: (direction) => {
+					const target = this.adjacentEpisode(item, direction);
+					if (!target) {
+						new Notice(direction === 'next' ? 'This is the last episode.' : 'This is the first episode.');
+						return;
+					}
+					void this.playItem(target);
+				},
+				onEnded: () => {
+					// Off by default; when on, the finished record is already
+					// written, so the next open resumes wherever this sitting got.
+					if (!this.settings.autoPlayNext) return;
+					const target = this.adjacentEpisode(item, 'next');
+					if (target) void this.playItem(target);
+				},
+				onSubtitlePreference: (patch) => {
+					if (patch.on !== undefined) this.settings.subtitlesOn = patch.on;
+					if (patch.size !== undefined) this.settings.subtitleSize = patch.size;
+					if (patch.delayMs !== undefined) this.settings.subtitleDelayMs = patch.delayMs;
+					void this.saveSettings();
+				},
+				onClosed: () => {
+					this.playerModal = null;
+				},
 			},
-			onClosed: () => {
-				this.playerModal = null;
-			},
-		});
+		);
 		this.playerModal = modal;
 		modal.open();
+	}
+
+	/**
+	 * The episode before or after this one in the same series, in the library's
+	 * own display order. Resolved from the current scan at play time — nothing
+	 * about the next episode is held in memory.
+	 */
+	private adjacentEpisode(item: LibraryItem, direction: 'previous' | 'next'): LibraryItem | null {
+		const candidates = this.library
+			.items()
+			.filter((entry) => entry.series === item.series && entry.ext === 'mp4')
+			.sort((left, right) => left.episode - right.episode || left.name.localeCompare(right.name));
+		const index = candidates.findIndex((entry) => entry.path === item.path);
+		if (index < 0) return null;
+		return candidates[index + (direction === 'next' ? 1 : -1)] ?? null;
 	}
 
 	private recordProgress(path: string, position: number, duration: number): void {

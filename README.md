@@ -139,11 +139,19 @@ choice.
 
 When the source stream carries a subtitle track, the downloader can save it as a
 **WebVTT** sidecar next to the video — the same filename with the extension
-changed. The player picks the sidecar up automatically and shows the subtitles;
-a viewer can switch them off in the player as usual. The sidecar is off by
-default (**Download subtitles** in settings) because it adds a second set of
-requests per episode. A stream with no subtitle track downloads exactly as
-before, with no extra requests.
+changed. The player picks the sidecar up automatically and shows the subtitles.
+The sidecar is off by default (**Download subtitles** in settings) because it
+adds a second set of requests per episode. A stream with no subtitle track
+downloads exactly as before, with no extra requests.
+
+The player's bar has the subtitle controls when a sidecar exists: **on or off**
+(remembered), text size (**S / M / L**), and a **±0.5 s delay** stepper for
+tracks that run a beat ahead or behind — up to five seconds either way. The
+choices persist and apply to every episode's sidecar.
+
+When an episode finishes, the player can start the next one of the same series:
+**Auto-play the next episode** in settings, off by default. The **Next** button
+does the same thing by hand, and both stop honestly at the last episode.
 
 ### Where files are saved
 

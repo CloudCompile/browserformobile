@@ -1,6 +1,18 @@
 import { App, Modal, Notice, setIcon } from 'obsidian';
-import { formatDuration } from './hls';
+import { formatDuration, shiftCueTimes } from './hls';
 import { describeEntry, type LibraryEntry, type WatchRecord } from './library';
+
+/** How large the native subtitle cues render. */
+export type SubtitleSize = 'small' | 'normal' | 'large';
+
+/** The persisted subtitle preferences, handed to the player at open. */
+export interface SubtitlePreferences {
+	/** Off by user choice, not by absence of a sidecar. */
+	on: boolean;
+	size: SubtitleSize;
+	/** Applied to the track's own cue timings; ±5 s is the useful range. */
+	delayMs: number;
+}
 
 export interface PlayerCallbacks {
 	/** Persist how far the viewer got. Called on a timer and on close. */
@@ -9,6 +21,17 @@ export interface PlayerCallbacks {
 	onReset(path: string): void;
 	/** Open the adjacent episode, when one exists. */
 	onNavigate?(direction: 'previous' | 'next'): void;
+	/**
+	 * Persist a subtitle preference change. The player keeps its own copy so
+	 * the controls respond at once; the caller decides what to store.
+	 */
+	onSubtitlePreference?(patch: Partial<SubtitlePreferences>): void;
+	/**
+	 * Playback reached the file's natural end. Fired after the progress
+	 * flush, so the caller advancing to the next episode never races the
+	 * final save.
+	 */
+	onEnded?(): void;
 	onClosed?(): void;
 }
 
@@ -30,6 +53,9 @@ const MIN_SAVE_SECONDS = 5;
  */
 export class PlayerModal extends Modal {
 	private videoEl!: HTMLVideoElement;
+	private textTrack: TextTrack | null = null;
+	/** The delay currently baked into the track's cues. */
+	private appliedDelayMs = 0;
 	private lastSaved = 0;
 	private saveTimer: number | null = null;
 	private ended = false;
@@ -45,10 +71,12 @@ export class PlayerModal extends Modal {
 		 * episode has no sidecar.
 		 */
 		private readonly subtitleUrl: string | null,
+		private readonly subtitlePrefs: SubtitlePreferences,
 		private readonly callbacks: PlayerCallbacks,
 	) {
 		super(app);
 		this.modalEl.addClass('bfm-player-modal');
+		this.applySubtitleSize(subtitlePrefs.size);
 	}
 
 	onOpen(): void {
@@ -77,6 +105,9 @@ export class PlayerModal extends Modal {
 			if (Number.isFinite(length) && length > 0) {
 				new Notice(`Finished · ${formatDuration(length)}`);
 			}
+			// Fired after the flush, so an auto-advance starts from an honest
+			// final record for this episode.
+			this.callbacks.onEnded?.();
 		});
 		this.videoEl.addEventListener('error', () => this.renderPlaybackError());
 		this.videoEl.addEventListener('pause', () => this.flush(false));
@@ -113,12 +144,14 @@ export class PlayerModal extends Modal {
 			this.callbacks.onReset(this.entry.path);
 			void this.videoEl.play();
 		});
+		this.renderSubtitleControls(bar);
 	}
 
 	/**
 	 * Attach the downloaded subtitle sidecar, when there is one. The track is
 	 * marked default so the subtitles are simply on, which is the point of
-	 * having downloaded them; a viewer can switch them off in the player.
+	 * having downloaded them; the stored preference (and the player's own
+	 * toggle) decides visibility, size, and timing.
 	 */
 	private attachSubtitles(): void {
 		if (!this.subtitleUrl) return;
@@ -126,6 +159,87 @@ export class PlayerModal extends Modal {
 			attr: { kind: 'subtitles', label: 'Subtitles', src: this.subtitleUrl },
 		});
 		track.default = true;
+		// Cues exist only once the sidecar has loaded; `load` is the moment the
+		// preferences can actually be applied to them.
+		track.addEventListener('load', () => this.applySubtitleTrack());
+		// A few engines expose the text track before `load` fires; the first
+		// cuechange is the same moment seen from the other side.
+		track.addEventListener('cuechange', () => this.applySubtitleTrack());
+	}
+
+	/** Take the track and stamp the stored preferences onto it. */
+	private applySubtitleTrack(): void {
+		const track = this.videoEl.textTracks[0];
+		if (!track || this.textTrack === track) return;
+		this.textTrack = track;
+		track.mode = this.subtitlePrefs.on ? 'showing' : 'disabled';
+		this.applySubtitleDelay(this.subtitlePrefs.delayMs);
+	}
+
+	/** Move the cues so they land `delayMs` from where they sit now. */
+	private applySubtitleDelay(delayMs: number): void {
+		const track = this.textTrack;
+		if (!track || !track.cues) return;
+		shiftCueTimes(Array.from(track.cues), (delayMs - this.appliedDelayMs) / 1000);
+		this.appliedDelayMs = delayMs;
+	}
+
+	/** The subtitle controls, when this episode has a sidecar to tune. */
+	private renderSubtitleControls(bar: HTMLElement): void {
+		if (!this.subtitleUrl) return;
+		const captions = bar.createEl('button', { cls: 'bfm-player-nav', attr: { 'aria-label': 'Subtitles on or off' } });
+		const drawCaptions = (): void => {
+			captions.empty();
+			setIcon(captions, 'captions');
+			captions.createSpan({ text: this.subtitlePrefs.on ? 'On' : 'Off' });
+		};
+		drawCaptions();
+		captions.addEventListener('click', () => {
+			this.subtitlePrefs.on = !this.subtitlePrefs.on;
+			if (this.textTrack) this.textTrack.mode = this.subtitlePrefs.on ? 'showing' : 'disabled';
+			drawCaptions();
+			this.callbacks.onSubtitlePreference?.({ on: this.subtitlePrefs.on });
+		});
+
+		const size = bar.createEl('button', { cls: 'bfm-player-nav', attr: { 'aria-label': 'Subtitle text size' } });
+		const drawSize = (): void => {
+			size.empty();
+			setIcon(size, 'type');
+			size.createSpan({
+				text: this.subtitlePrefs.size === 'small' ? 'S' : this.subtitlePrefs.size === 'large' ? 'L' : 'M',
+			});
+		};
+		drawSize();
+		size.addEventListener('click', () => {
+			const order: SubtitleSize[] = ['small', 'normal', 'large'];
+			const next = order[(order.indexOf(this.subtitlePrefs.size) + 1) % order.length];
+			if (!next) return;
+			this.subtitlePrefs.size = next;
+			this.applySubtitleSize(next);
+			drawSize();
+			this.callbacks.onSubtitlePreference?.({ size: next });
+		});
+
+		const clampDelay = (ms: number): number => Math.max(-5000, Math.min(5000, ms));
+		const nudge = (delta: number): void => {
+			this.subtitlePrefs.delayMs = clampDelay(this.subtitlePrefs.delayMs + delta);
+			this.applySubtitleDelay(this.subtitlePrefs.delayMs);
+			const seconds = this.subtitlePrefs.delayMs / 1000;
+			new Notice(seconds === 0 ? 'Subtitle delay: none' : `Subtitle delay: ${seconds > 0 ? '+' : ''}${seconds} s`);
+			this.callbacks.onSubtitlePreference?.({ delayMs: this.subtitlePrefs.delayMs });
+		};
+		const later = bar.createEl('button', { cls: 'bfm-player-nav', attr: { 'aria-label': 'Subtitles half a second later' } });
+		later.createSpan({ text: 'Subs +0.5s' });
+		later.addEventListener('click', () => nudge(500));
+		const earlier = bar.createEl('button', { cls: 'bfm-player-nav', attr: { 'aria-label': 'Subtitles half a second earlier' } });
+		earlier.createSpan({ text: 'Subs −0.5s' });
+		earlier.addEventListener('click', () => nudge(-500));
+	}
+
+	/** The modal-scoped class the `::cue` rules key on. */
+	private applySubtitleSize(size: SubtitleSize): void {
+		this.modalEl.removeClass('bfm-subs-small', 'bfm-subs-normal', 'bfm-subs-large');
+		this.modalEl.addClass(`bfm-subs-${size}`);
 	}
 
 	/** Seek to the saved position once the length is known. */
