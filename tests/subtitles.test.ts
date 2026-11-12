@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseMasterPlaylist, parseSubtitleRenditions, serverNames } from '../src/animeApi';
-import { buildVttDocument, parseVttCues, type VttCue } from '../src/hls';
+import { buildVttDocument, parseVttCues, shiftCueTimes, type VttCue } from '../src/hls';
 import { renderTemplate } from '../src/downloader';
 
 const MASTER = [
@@ -124,5 +124,45 @@ describe('subtitle sidecar naming', () => {
                 const template = '{seriesFolder}/{series} - {ep:02} - {title}.{ext}';
                 const values = { series: 'Naruto', seriesFolder: 'Naruto', episode: 1, title: 'Enter', ext: 'vtt' };
                 expect(renderTemplate(template, values)).toBe('Naruto/Naruto - 01 - Enter.vtt');
+        });
+});
+
+describe('shiftCueTimes', () => {
+        it('moves every cue by the delay, later and earlier', () => {
+                const cues = [
+                        { startTime: 1, endTime: 2 },
+                        { startTime: 10, endTime: 12.5 },
+                ];
+                shiftCueTimes(cues, 0.5);
+                expect(cues).toEqual([
+                        { startTime: 1.5, endTime: 2.5 },
+                        { startTime: 10.5, endTime: 13 },
+                ]);
+                // Back to the original timing: the player re-shifts by the delta
+                // when the user changes the delay, so it must be exact.
+                shiftCueTimes(cues, -0.5);
+                expect(cues).toEqual([
+                        { startTime: 1, endTime: 2 },
+                        { startTime: 10, endTime: 12.5 },
+                ]);
+        });
+
+        it('clamps cues that would start before zero', () => {
+                const cues = [{ startTime: 0.5, endTime: 1.5 }];
+                shiftCueTimes(cues, -1);
+                expect(cues).toEqual([{ startTime: 0, endTime: 0.5 }]);
+        });
+
+        it('flattens a cue the delay moves entirely past the start', () => {
+                const cues = [{ startTime: 0.2, endTime: 0.8 }];
+                shiftCueTimes(cues, -1);
+                expect(cues).toEqual([{ startTime: 0, endTime: 0 }]);
+        });
+
+        it('ignores a zero or non-finite delay', () => {
+                const cues = [{ startTime: 1, endTime: 2 }];
+                shiftCueTimes(cues, 0);
+                shiftCueTimes(cues, Number.NaN);
+                expect(cues).toEqual([{ startTime: 1, endTime: 2 }]);
         });
 });

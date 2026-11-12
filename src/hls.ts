@@ -439,6 +439,31 @@ export function buildVttDocument(cues: VttCue[]): string {
         return blocks.length > 0 ? `WEBVTT\n\n${blocks.join('\n\n')}\n` : 'WEBVTT\n';
 }
 
+/**
+ * Shift every live cue's timing by `deltaSeconds`, in place.
+ *
+ * The subtitle delay control is not a rendering feature — the `<track>` shows
+ * native cues, and a WebVTT sidecar cannot be re-timed without rewriting it —
+ * so the delay is applied to the track's own cues: the player loads them, the
+ * modal walks the list and moves every start and end. Pure in everything but
+ * the cue objects themselves, so a test can hold it against plain objects.
+ *
+ * A negative delta pulls subtitles earlier, positive pushes them later. A cue
+ * whose shifted window would end before zero is clamped flat at zero — a
+ * zero-duration cue renders nothing, which is the honest outcome for a track
+ * delayed far beyond the video's start.
+ */
+export function shiftCueTimes(
+        cues: Array<{ startTime: number; endTime: number }>,
+        deltaSeconds: number,
+): void {
+        if (!Number.isFinite(deltaSeconds) || deltaSeconds === 0) return;
+        for (const cue of cues) {
+                cue.startTime = Math.max(0, cue.startTime + deltaSeconds);
+                cue.endTime = Math.max(0, cue.endTime + deltaSeconds);
+        }
+}
+
 /** One subtitle track, merged and ready to write next to the video. */
 export interface SubtitleTrackData {
         /** Human label from the master playlist, e.g. `English`. */
