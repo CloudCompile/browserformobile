@@ -59,6 +59,44 @@ export interface SeriesDetail {
         episodes: EpisodeSummary[];
 }
 
+/**
+ * Episode rows per picker group. A series at or below this many episodes
+ * renders as one flat list exactly as it always did; only a genuinely long
+ * series pays for the grouping chrome.
+ */
+export const EPISODE_GROUP_SIZE = 50;
+
+/** One numeric chunk of a long episode list. */
+export interface EpisodeGroup {
+        /** Honest range, e.g. `Episodes 101–150` — never an invented season. */
+        label: string;
+        episodes: EpisodeSummary[];
+}
+
+/**
+ * Plan the episode picker's groups.
+ *
+ * The API's episode list is flat: it carries no season boundaries, so any
+ * "Season 2" heading would be an invention. Long lists are chunked by position
+ * instead and labelled with the episode numbers actually inside the chunk —
+ * including any gaps the catalogue leaves in its numbering. Returns null when
+ * the list is short enough to render flat.
+ */
+export function planEpisodeGroups(episodes: EpisodeSummary[], size = EPISODE_GROUP_SIZE): EpisodeGroup[] | null {
+        if (episodes.length <= size) return null;
+        const groups: EpisodeGroup[] = [];
+        for (let start = 0; start < episodes.length; start += size) {
+                const chunk = episodes.slice(start, start + size);
+                const first = chunk[0]?.number ?? 0;
+                const last = chunk[chunk.length - 1]?.number ?? first;
+                groups.push({
+                        label: first === last ? `Episode ${first}` : `Episodes ${first}\u2013${last}`,
+                        episodes: chunk,
+                });
+        }
+        return groups;
+}
+
 export interface AnimeSeason {
         id: string;
         title: string | null;

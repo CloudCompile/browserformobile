@@ -34,10 +34,35 @@ const ADULT_SECTIONS: Section[] = [
 
 type View = 'sections' | 'genres' | 'browse';
 
+/**
+ * Where the finder was left, so reopening it lands back on the same listing
+ * instead of the top of the catalogue every time. Deliberately navigation
+ * only — the titles themselves reload from the (cached) API.
+ */
+export interface PersistedFinderState {
+        /** Active source: `undefined` is the catalogue, or the 18+ provider. */
+        source?: string;
+        view: View;
+        sectionId: string | null;
+        sectionName: string;
+        genreSlug: string | null;
+        page: number;
+        /**
+         * The 18+ opt-in as it stood. Restoring the adult source is gated on it,
+         * so a listing from that source only ever comes back when the opt-in
+         * comes back with it.
+         */
+        adultOptIn: boolean;
+}
+
 export interface FindModalOptions {
         apiBase: string;
         /** Open a title in the downloader, carrying its source. */
         onOpenSeries(series: SeriesSummary): void;
+        /** Where the finder was left last time, if anywhere. */
+        initialState?: PersistedFinderState;
+        /** Called whenever the visible place changes, to persist it. */
+        onStateChange?(state: PersistedFinderState): void;
 }
 
 /**
@@ -72,7 +97,40 @@ export class FindModal extends Modal {
                 this.titleEl.setText('Find anime');
                 this.contentEl.empty();
                 this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-find-body' });
+                this.restoreState();
                 this.render();
+                // A restored deep view reloads its listing; the sections view is
+                // already on screen after render().
+                if (this.view === 'browse') void this.load();
+                else if (this.view === 'genres') void this.loadGenreList();
+        }
+
+        /** Apply the persisted state, with the 18+ gate re-checked. */
+        private restoreState(): void {
+                const state = this.options.initialState;
+                if (!state) return;
+                this.includeAdult = state.adultOptIn === true;
+                this.view = state.view === 'genres' || state.view === 'browse' ? state.view : 'sections';
+                this.sectionId = typeof state.sectionId === 'string' ? state.sectionId : null;
+                this.sectionName = typeof state.sectionName === 'string' ? state.sectionName : '';
+                this.genreSlug = typeof state.genreSlug === 'string' ? state.genreSlug : null;
+                this.page = typeof state.page === 'number' && Number.isFinite(state.page) && state.page > 0 ? Math.floor(state.page) : 1;
+                // The same rule the opt-in checkbox applies: an 18+ source without
+                // the opt-in falls back to the catalogue.
+                this.source = state.source && this.includeAdult ? state.source : undefined;
+        }
+
+        /** The state as it is on screen, for the caller to persist. */
+        private snapshot(): PersistedFinderState {
+                return {
+                        source: this.source,
+                        view: this.view,
+                        sectionId: this.sectionId,
+                        sectionName: this.sectionName,
+                        genreSlug: this.genreSlug,
+                        page: this.page,
+                        adultOptIn: this.includeAdult,
+                };
         }
 
         onClose(): void {
@@ -89,6 +147,9 @@ export class FindModal extends Modal {
                 if (this.view === 'sections') this.renderSections();
                 else if (this.view === 'genres') this.renderGenres();
                 else this.renderBrowse();
+                // Persist where the user is after every visible change; the
+                // caller decides how to store it.
+                this.options.onStateChange?.(this.snapshot());
         }
 
         private renderSourceTabs(): void {
