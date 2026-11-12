@@ -627,8 +627,8 @@ export class DownloadModal extends Modal {
                         .setName('Format')
                         .setDesc(
                                 Platform.isMobile
-                                        ? `MP4 is one playable file and converts as it downloads. TS writes the raw stream with slightly less work. Applies to ${seriesTitle} only.`
-                                        : `MP4 produces a single playable file. TS keeps the raw stream. Applies to ${seriesTitle} only.`,
+                                        ? `MP4 is one playable file and converts as it downloads — right for watching. TS keeps the raw stream for archiving. Applies to ${seriesTitle} only.`
+                                        : `MP4 produces a single playable file — right for watching. TS keeps the raw stream for archiving or remuxing later. Applies to ${seriesTitle} only.`,
                         )
                         .addDropdown((dropdown) => {
                                 dropdown.addOption('mp4', 'Playable file (mp4)');

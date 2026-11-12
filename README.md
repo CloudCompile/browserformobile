@@ -118,12 +118,15 @@ still downloads the 720p stream.
 ### Output format
 
 - **MP4** produces one playable file. The stream is converted as it arrives, a
-  batch at a time, so memory stays bounded even for a feature-length file.
-- **TS** writes the raw stream straight to disk, a segment at a time. The result
-  plays in most players but is not an MP4.
+  batch at a time, so memory stays bounded even for a feature-length file. This
+  is the format to pick for watching: the library plays it, phones list it, and
+  the repair tool understands it.
+- **TS** writes the raw stream straight to disk, a segment at a time. It is an
+  archive copy — useful as source material to remux later, but a browser cannot
+  play it, so the library refuses it with a message instead of a black rectangle.
 
-Both formats keep memory low; **MP4** is the one to pick for a single playable
-file.
+Both formats keep memory low; pick **TS** only when you specifically want the
+untouched stream, and **MP4** for everything else.
 
 ### Per-series choices
 
@@ -506,6 +509,30 @@ confirmation, *replaces* the current progress and run log with it — a snapshot
 from another device overwrites rather than merges. Both commands need downloads
 saved inside the vault, and the files live in your vault like any other note, so
 syncing the vault syncs the backup.
+
+### What syncs
+
+Everything the plugin keeps lives in two places inside the vault, so a vault
+sync (Obsidian Sync, iCloud, Syncthing, a git repo) carries all of it:
+
+- **The download folder** — the videos, subtitle sidecars, and the two export
+  files above. These are ordinary files; every sync service moves them as they
+  are.
+- **`.obsidian/plugins/browser-for-mobile/data.json`** — your settings, watch
+  progress, download-run statistics, the per-series quality and format choices,
+  and the cached catalogue details. Some sync services skip `.obsidian` by
+  default; include it or settings and progress will not follow you.
+
+Two caveats for multi-device vaults:
+
+- **data.json is written whole.** Two devices saving at the same moment is a
+  last-writer-wins race on the file. Watch progress is merged per file on every
+  save — the further position wins, so a phone's viewing is not dropped when a
+  laptop's sync lands afterwards — but anything else that changed on both
+  devices at once (a setting, an in-flight queue) keeps only one side.
+- **Downloads in flight do not sync.** A partial `.part` staging file is
+  device-local state; if a sync moves one, the receiving device discards it and
+  the episode restarts from zero.
 
 ## Development
 

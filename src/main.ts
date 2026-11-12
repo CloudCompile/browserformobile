@@ -842,7 +842,17 @@ export default class AnimePlugin extends Plugin {
 
 	/** Append a finished run to the log and persist it. */
 	private async recordRun(run: DownloadRun): Promise<void> {
-		this.stats.record(run);
+		// Where this run happened, so a log spanning several devices can be
+		// read per device. Stamped here rather than in the downloader, which
+		// stays obsidian-free for its tests.
+		const device = Platform.isIosApp
+			? 'iOS'
+			: Platform.isAndroidApp
+				? 'Android'
+				: Platform.isMobileApp
+					? 'Mobile'
+					: 'Desktop';
+		this.stats.record({ ...run, device });
 		await this.saveSettings();
 	}
 
@@ -1511,6 +1521,22 @@ export default class AnimePlugin extends Plugin {
 	}
 
 	async saveSettings(): Promise<void> {
+		// A vault sync can deliver another device's watch progress while this
+		// one is open, and the data file is written whole — writing over it
+		// would drop that progress silently. Merge what is on disk per file
+		// (the further position wins) before writing, and hand the merged map
+		// back to the library so the continue-watching strip shows it now.
+		let onDisk: Partial<PersistedShape> | null = null;
+		try {
+			onDisk = (await this.loadData()) as Partial<PersistedShape> | null;
+		} catch {
+			/* Unreadable → nothing to merge; the write below still succeeds. */
+		}
+		const merged = VideoLibrary.mergeRecords(onDisk?.watch ?? {}, this.watchRecords);
+		if (merged !== this.watchRecords) {
+			this.watchRecords = merged;
+			this.library.load(merged);
+		}
 		await this.saveData({
 			settings: this.settings,
 			downloadScanCache: this.downloadScanCache,

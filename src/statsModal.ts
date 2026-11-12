@@ -53,6 +53,7 @@ export class StatsModal extends Modal {
                 this.renderOverview(summary);
                 this.renderSpeedChart(summary.speedHistory);
                 this.renderSeries(summary);
+                this.renderDevices(summary);
                 this.renderRuns(summary.runs);
                 this.renderActions();
         }
@@ -131,6 +132,28 @@ export class StatsModal extends Modal {
                         const row = list.createDiv({ cls: 'bfm-stats-row' });
                         const main = row.createDiv({ cls: 'bfm-stats-row-main' });
                         main.createDiv({ cls: 'bfm-stats-row-title', text: entry.series });
+                        main.createDiv({
+                                cls: 'bfm-stats-row-meta',
+                                text: `${entry.episodes} episode${entry.episodes === 1 ? '' : 's'} · ${formatBytes(entry.bytes)} · ${formatSpeed(entry.averageSpeed)}`,
+                        });
+                }
+        }
+
+        /**
+         * Per-device totals, only when the log actually spans more than one.
+         * A single device is what the headline totals already describe, and
+         * runs recorded before 4.2.5 carry no label at all — both leave this
+         * section out rather than show a table of one unknown phone.
+         */
+        private renderDevices(summary: ReturnType<StatsStore['summary']>): void {
+                if (summary.devices.length < 2) return;
+                const section = this.bodyEl.createDiv({ cls: 'bfm-stats-section' });
+                section.createDiv({ cls: 'bfm-stats-section-title', text: 'By device' });
+                const list = section.createDiv({ cls: 'bfm-stats-list' });
+                for (const entry of summary.devices) {
+                        const row = list.createDiv({ cls: 'bfm-stats-row' });
+                        const main = row.createDiv({ cls: 'bfm-stats-row-main' });
+                        main.createDiv({ cls: 'bfm-stats-row-title', text: entry.device });
                         main.createDiv({
                                 cls: 'bfm-stats-row-meta',
                                 text: `${entry.episodes} episode${entry.episodes === 1 ? '' : 's'} · ${formatBytes(entry.bytes)} · ${formatSpeed(entry.averageSpeed)}`,

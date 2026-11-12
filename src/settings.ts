@@ -189,11 +189,11 @@ export class AnimeSettingTab extends PluginSettingTab {
                         },
                         {
                                 name: 'Download format',
-                                desc: 'MP4 gives a single playable file and is converted as it downloads. TS writes the raw stream to disk with slightly less work but plays in fewer apps.',
+                                desc: 'MP4 gives a single playable file, converted as it downloads — the right choice for watching, and what the library and repair tools expect. TS keeps the raw stream for archiving or remuxing later; browsers cannot play it.',
                                 control: {
                                         type: 'dropdown',
                                         key: 'downloadFormat',
-                                        options: { mp4: 'MP4 (playable file)', ts: 'TS (raw stream, low memory)' },
+                                        options: { mp4: 'MP4 (playable file)', ts: 'TS (raw stream, archive)' },
                                 },
                         },
                         {

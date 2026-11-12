@@ -45,6 +45,12 @@ export interface DownloadRun {
         /** Epoch milliseconds the run ended. */
         finishedAt: number;
         outcome: RunOutcome;
+        /**
+         * Where the run happened — `Android`, `iOS`, `Mobile` or `Desktop`.
+         * Optional because runs recorded before 4.2.5 have no label; they are
+         * summarised under no device at all rather than a guess.
+         */
+        device?: string;
 }
 
 /** Totals and breakdowns the stats page renders. */
@@ -69,6 +75,12 @@ export interface StatsSummary {
         resumed: number;
         /** Per-series totals, largest first. */
         series: SeriesTotals[];
+        /**
+         * Per-device totals, largest first. Empty when every run is
+         * unlabeled; the page hides the section unless two or more devices
+         * actually appear — one device is what the totals already show.
+         */
+        devices: DeviceTotals[];
         /** Average rates of the most recent runs, oldest first, for the chart. */
         speedHistory: number[];
 }
@@ -80,6 +92,16 @@ export interface SeriesTotals {
         bytes: number;
         seconds: number;
         /** Bytes per second across this series' successful runs. */
+        averageSpeed: number;
+}
+
+/** One device's contribution to the totals. */
+export interface DeviceTotals {
+        device: string;
+        episodes: number;
+        bytes: number;
+        seconds: number;
+        /** Bytes per second across this device's successful runs. */
         averageSpeed: number;
 }
 
@@ -108,6 +130,10 @@ export function summarize(runs: DownloadRun[]): StatsSummary {
         let rateSeconds = 0;
 
         const bySeries = new Map<
+                string,
+                { episodes: number; bytes: number; rateBytes: number; rateSeconds: number }
+        >();
+        const byDevice = new Map<
                 string,
                 { episodes: number; bytes: number; rateBytes: number; rateSeconds: number }
         >();
@@ -143,6 +169,21 @@ export function summarize(runs: DownloadRun[]): StatsSummary {
                         entry.rateSeconds += run.seconds;
                 }
                 bySeries.set(key, entry);
+
+                // Device totals mirror the series ones, over successful runs
+                // that carry a label at all.
+                if (run.device) {
+                        const deviceEntry =
+                                byDevice.get(run.device) ??
+                                { episodes: 0, bytes: 0, rateBytes: 0, rateSeconds: 0 };
+                        deviceEntry.episodes++;
+                        deviceEntry.bytes += run.fileSize || run.bytes;
+                        if (measured) {
+                                deviceEntry.rateBytes += run.bytes;
+                                deviceEntry.rateSeconds += run.seconds;
+                        }
+                        byDevice.set(run.device, deviceEntry);
+                }
         }
 
         const series: SeriesTotals[] = [...bySeries.entries()]
@@ -154,6 +195,16 @@ export function summarize(runs: DownloadRun[]): StatsSummary {
                         averageSpeed: entry.rateSeconds > 0 ? entry.rateBytes / entry.rateSeconds : 0,
                 }))
                 .sort((a, b) => b.bytes - a.bytes || a.series.localeCompare(b.series));
+
+        const devices: DeviceTotals[] = [...byDevice.entries()]
+                .map(([name, entry]) => ({
+                        device: name,
+                        episodes: entry.episodes,
+                        bytes: entry.bytes,
+                        seconds: entry.rateSeconds,
+                        averageSpeed: entry.rateSeconds > 0 ? entry.rateBytes / entry.rateSeconds : 0,
+                }))
+                .sort((a, b) => b.bytes - a.bytes || a.device.localeCompare(b.device));
 
         const speedHistory = ordered
                 .filter((run) => run.outcome === 'done' && run.averageSpeed > 0)
@@ -173,6 +224,7 @@ export function summarize(runs: DownloadRun[]): StatsSummary {
                 peakSpeed,
                 resumed,
                 series,
+                devices,
                 speedHistory,
         };
 }
@@ -207,6 +259,7 @@ function parseRun(value: unknown): DownloadRun | null {
                 resumed: raw.resumed === true,
                 finishedAt: number('finishedAt'),
                 outcome: outcome === 'failed' || outcome === 'cancelled' ? outcome : 'done',
+                device: typeof raw.device === 'string' && raw.device !== '' ? raw.device : undefined,
         };
 }
 
@@ -268,6 +321,7 @@ const CSV_COLUMNS = [
         'seconds',
         'averageSpeed',
         'peakSpeed',
+        'device',
         'finishedAt',
 ] as const;
 
@@ -297,6 +351,7 @@ export function buildStatsCsv(runs: DownloadRun[]): string {
                                 run.seconds,
                                 run.averageSpeed,
                                 run.peakSpeed,
+                                run.device ?? '',
                                 run.finishedAt > 0 ? new Date(run.finishedAt).toISOString() : '',
                         ]
                                 .map(csvField)

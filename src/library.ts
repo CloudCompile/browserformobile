@@ -212,6 +212,45 @@ export class VideoLibrary {
 	}
 
 	/**
+	 * Merge two watch maps the way a vault sync needs: per file, the further
+	 * position wins, and a tie on position goes to whichever saved most
+	 * recently.
+	 *
+	 * The naive alternative is whatever the file already is — last write wins
+	 * on the whole blob — which silently drops a phone's progress when a
+	 * laptop's sync lands afterwards. Records missing `updatedAt` (written by
+	 * older versions) are treated as the oldest, so a real position still
+	 * beats them. Pure: neither input is mutated, and when nothing in
+	 * `incoming` would change `current`, the same object is returned so the
+	 * caller can tell a no-op from a merge.
+	 */
+	static mergeRecords(
+		incoming: Record<string, WatchRecord>,
+		current: Record<string, WatchRecord>,
+	): Record<string, WatchRecord> {
+		let changed = false;
+		const merged: Record<string, WatchRecord> = { ...current };
+		for (const [path, other] of Object.entries(incoming)) {
+			if (!other || typeof other !== 'object') continue;
+			if (!Number.isFinite(other.position) || other.position < 0) continue;
+			const mine = merged[path];
+			if (!mine) {
+				merged[path] = { ...other, updatedAt: Number(other.updatedAt) || 0 };
+				changed = true;
+				continue;
+			}
+			// The further position is the truth about how much was watched; the
+			// timestamp only breaks exact ties.
+			const otherNewer = (Number(other.updatedAt) || 0) > (Number(mine.updatedAt) || 0);
+			if (other.position > mine.position || (other.position === mine.position && otherNewer)) {
+				merged[path] = { ...other, updatedAt: Number(other.updatedAt) || 0 };
+				changed = true;
+			}
+		}
+		return changed ? merged : current;
+	}
+
+	/**
 	 * Rebuild the entry list from the folder.
 	 *
 	 * Each file needs a `stat`, which is a round-trip, so they run with bounded

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildStatsCsv, parseDataExport, StatsStore, type DownloadRun } from '../src/stats';
+import { buildStatsCsv, parseDataExport, summarize, StatsStore, type DownloadRun } from '../src/stats';
 
 /** A run with every field set, so round-trips cannot pass by default. */
 function run(overrides: Partial<DownloadRun> = {}): DownloadRun {
@@ -29,7 +29,7 @@ describe('buildStatsCsv', () => {
                 const csv = buildStatsCsv([newer, older]);
                 const lines = csv.trimEnd().split('\n');
                 expect(lines[0]).toBe(
-                        'id,series,episode,outcome,format,quality,segments,resumed,bytes,fileSize,seconds,averageSpeed,peakSpeed,finishedAt',
+                        'id,series,episode,outcome,format,quality,segments,resumed,bytes,fileSize,seconds,averageSpeed,peakSpeed,device,finishedAt',
                 );
                 expect(lines).toHaveLength(3);
                 expect(lines[1]).toContain('early');
@@ -118,5 +118,26 @@ describe('import applies through the live stores', () => {
                 const parsed = parseDataExport({ version: 1, watch: {}, stats: [run({ id: 'new-1' })] });
                 store.load(parsed?.stats ?? []);
                 expect(store.toJSON().map((entry) => entry.id)).toEqual(['new-1']);
+        });
+});
+
+describe('summarize by device', () => {
+        it('totals successful runs per device', () => {
+                const summary = summarize([
+                        run({ id: 'a', device: 'Android', bytes: 3000, fileSize: 3000 }),
+                        run({ id: 'b', device: 'Android', bytes: 1000, fileSize: 1000 }),
+                        run({ id: 'c', device: 'Desktop', bytes: 2000, fileSize: 2000 }),
+                        run({ id: 'd', device: 'Android', outcome: 'failed' }),
+                ]);
+                expect(summary.devices).toHaveLength(2);
+                const android = summary.devices.find((entry) => entry.device === 'Android');
+                expect(android?.episodes).toBe(2);
+                expect(android?.bytes).toBe(4000);
+                expect(summary.devices.find((entry) => entry.device === 'Desktop')?.bytes).toBe(2000);
+        });
+
+        it('leaves devices empty when no run carries a label', () => {
+                const summary = summarize([run({ id: 'a' }), run({ id: 'b' })]);
+                expect(summary.devices).toEqual([]);
         });
 });
