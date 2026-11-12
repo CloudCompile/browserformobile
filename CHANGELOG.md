@@ -13,6 +13,11 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 4.1.5 — 2026-11-12
+
+- **Subtitle preferences in the player.** A downloaded sidecar now has controls on the player's bar: on or off (remembered), text size **S / M / L**, and a **±0.5 s delay** stepper for tracks that run a beat ahead or behind, clamped to five seconds. The delay moves the track's own cue timings, so native rendering does the work.
+- **Auto-play the next episode.** An off-by-default setting starts the next episode of the series when one finishes, from its own saved position; the final progress record for the finished episode is written first. The player's **Next** button does the same by hand.
+
 ## 4.0.0 — 2026-11-12
 
 The foundations release: no new surfaces, but the pipeline, the platform's
