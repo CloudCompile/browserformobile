@@ -104,6 +104,14 @@ cache is stored in the same local `data.json` as everything else and is never
 sent anywhere. Stream URLs are cached in memory only for 10 minutes: a link saved
 from a previous session is usually dead by the next one.
 
+Alongside the TTL cache there is a **persistent series metadata store**:
+whenever a details page is fetched, the answer is kept until evicted by age or
+size (200 series or 2 MB, oldest first). Details pages open from that copy
+instantly and refresh in the background, the library's grid **and list** show
+posters for anything browsed before, and the catalogue's own recommendation list
+survives an unreachable API. It holds catalogue text and poster URLs — nothing
+from your vault.
+
 Turn caching off with **Cache anime details** in settings, or clear it at any
 time with the **Clear anime cache** command — useful if a title's details were
 corrected upstream, or if a cached stream URL has gone stale.
@@ -481,8 +489,11 @@ same file and never leaves your device; **Clear statistics** deletes it.
 
 Cached anime API responses are stored there too: search results, series details,
 and episode lists, with the stream URLs you have used kept in memory only. This
-data never leaves your device. **Clear anime cache** deletes it, and turning off
-**Cache anime details** stops it being written at all.
+data never leaves your device. The persistent series metadata store keeps the
+same kind of data — details text and poster URLs for series you have browsed —
+in the same file, so details pages, posters, and the catalogue's own
+recommendations still render offline. **Clear anime cache** deletes it, and
+turning off **Cache anime details** stops it being written at all.
 
 The recommendation models are the only feature that can send anything off your
 device, and only when you switch one on:

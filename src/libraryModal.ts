@@ -234,17 +234,33 @@ export class LibraryModal extends Modal {
 			return;
 		}
 
+		const posters = this.callbacks.posters?.() ?? new Map<string, string>();
+
 		for (const item of items) {
 			const row = list.createDiv({ cls: 'bfm-library-item' });
 			if (item.watched) row.addClass('is-watched');
 
 			const preview = row.createDiv({ cls: 'bfm-library-item-preview' });
 			const season = inferSeason(`${item.series} ${item.name}`);
+			// A series browsed before shows its poster in the row, same source
+			// as the grid: a map read, never a network call and never an
+			// adapter touch, so the perf budget holds. A series never browsed
+			// keeps the episode-card look — no fetch is made for a file the
+			// user dropped in by hand.
+			const posterUrl = item.series ? posters.get(item.series.toLowerCase()) : undefined;
 			preview.createDiv({
 				cls: 'bfm-library-item-episode-badge',
 				text: season ? `S${season} E${item.episode || '?'}` : `E${item.episode || '?'}`,
 			});
-			preview.createDiv({ cls: 'bfm-library-item-preview-label', text: 'Episode' });
+			if (posterUrl) {
+				preview.addClass('has-poster');
+				preview.createEl('img', {
+					cls: 'bfm-library-item-poster',
+					attr: { src: posterUrl, alt: '', loading: 'lazy' },
+				});
+			} else {
+				preview.createDiv({ cls: 'bfm-library-item-preview-label', text: 'Episode' });
+			}
 
 			const main = row.createDiv({ cls: 'bfm-library-item-main' });
 			main.createDiv({ cls: 'bfm-library-item-title', text: describeEntry(item) });
