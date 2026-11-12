@@ -175,7 +175,7 @@ segments** stays safe even if the limit returns. When a whole run is throttled
 rather than one segment, the episode is not failed: it is parked at the bottom of
 the queue and retried a minute later, keeping everything already on disk. Other
 episodes get their turn while it waits, and the row shows **Rate limited** with a
-countdown. After ten tries in a row it gives up and fails normally, so it cannot
+countdown. After twelve tries in a row it gives up and fails normally, so it cannot
 retry forever.
 
 ### Series finishers
