@@ -27,6 +27,18 @@ export interface AnimeSettings {
         downloadExternal: boolean;
         /** Filename template supporting {series}, {ep}, {ep:02}, {title}, {ext}. */
         downloadFilenameTemplate: string;
+        /**
+         * Save the stream's subtitle track as a WebVTT file next to the video,
+         * which the player then shows. Off by default: it adds a second set of
+         * requests per episode, and streams without subtitles are unaffected.
+         */
+        downloadSubtitles: boolean;
+        /**
+         * Try dubbed servers first when the default one offers no file. Dub
+         * availability follows the catalogue — many series are subbed only, and
+         * for those this changes nothing.
+         */
+        preferDub: boolean;
         /** Parallel segment requests per episode. */
         downloadSegmentConcurrency: number;
         /** Episodes downloaded at the same time. */
@@ -84,6 +96,12 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         downloadFolder: 'Anime',
         downloadExternal: false,
         downloadFilenameTemplate: DEFAULT_FILENAME_TEMPLATE,
+        // Off by default: subtitles cost a second set of segment requests per
+        // episode, and the sidecar is only useful when the source has a track.
+        downloadSubtitles: false,
+        // Sub first: the fallback walk keeps the default response's audio track,
+        // and most of the catalogue is subbed only.
+        preferDub: false,
         // Benchmarked against the live CDN: throughput plateaus around four to six
         // parallel segments and does not improve above that — the CDN starts
         // answering 429 above roughly four in flight. The pool halves on a 429 and
@@ -167,6 +185,16 @@ export class AnimeSettingTab extends PluginSettingTab {
                                         key: 'downloadFilenameTemplate',
                                         placeholder: DEFAULT_FILENAME_TEMPLATE,
                                 },
+                        },
+                        {
+                                name: 'Download subtitles',
+                                desc: 'Save the stream\u2019s subtitle track as a WebVTT file next to the video; the player shows it automatically. Streams without subtitles download exactly as before. Off by default because it adds a second set of requests per episode.',
+                                control: { type: 'toggle', key: 'downloadSubtitles' },
+                        },
+                        {
+                                name: 'Prefer dub',
+                                desc: 'Try dubbed servers first when the default one offers no downloadable file. Dub availability follows the catalogue \u2014 many series are subbed only, and for those this changes nothing.',
+                                control: { type: 'toggle', key: 'preferDub' },
                         },
                         {
                                 name: 'Parallel segments',

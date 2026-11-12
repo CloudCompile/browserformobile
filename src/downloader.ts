@@ -4,12 +4,14 @@ import { createDestination, sanitizePath, type Destination, type DestinationRequ
 import {
         DownloadError,
         downloadSegmentsStreaming,
+        downloadSubtitleTrack,
         formatBytes,
         formatDuration,
         formatSpeed,
         loadMediaPlaylist,
         RateLimitError,
         type MediaPlaylist,
+        type SubtitleTrackData,
 } from './hls';
 import {
 	encodeIndexHeader,
@@ -171,6 +173,10 @@ export interface DownloaderOptions {
         /** Episodes downloaded at the same time. */
         maxConcurrentJobs: number;
         filenameTemplate: string;
+        /** Save the stream's subtitle track as a WebVTT sidecar. Off by default. */
+        downloadSubtitles: boolean;
+        /** Try dubbed servers first when the default one offers no file. */
+        preferDub: boolean;
         destination: DestinationRequest;
 }
 
@@ -200,6 +206,12 @@ interface PartialState {
         episodeNumber?: number;
         /** Episode title, for the same reason. Absent in v2 sidecars. */
         episodeTitle?: string;
+        /** The subtitle track was fetched during this run, so a resume skips it. */
+        subtitleDone?: boolean;
+        /** Label of the fetched subtitle track. */
+        subtitleName?: string;
+        /** Language tag of the fetched subtitle track. */
+        subtitleLanguage?: string | null;
 }
 
 function partialStatePath(finalPath: string): string {
@@ -262,6 +274,13 @@ export class DownloadManager {
         private readonly trackers = new Map<string, SpeedTracker>();
         /** The playlist of the run, kept so the ETA can use its durations. */
         private readonly playlists = new Map<string, MediaPlaylist>();
+        /**
+         * The subtitle track fetched for a run, when the setting is on and the
+         * stream carries one. An entry with an empty `vtt` is a marker meaning
+         * "already done in an earlier run", carried so a rebuilt sidecar keeps
+         * recording it.
+         */
+        private readonly subtitleTracks = new Map<string, SubtitleTrackData>();
         /** Holds the screen awake while a job runs, so Android does not freeze it. */
         private readonly wakeLock = new ScreenWakeLock();
 
@@ -719,6 +738,7 @@ export class DownloadManager {
                         // live; a deferred job builds fresh ones when it retries.
                         this.trackers.delete(job.id);
                         this.playlists.delete(job.id);
+                        this.subtitleTracks.delete(job.id);
                         if (!deferred) this.recordRun(job, tracker);
                         this.running--;
                         this.scheduleUpdate();
@@ -869,7 +889,7 @@ export class DownloadManager {
                 if (typeof navigator !== 'undefined' && navigator.onLine === false) {
                         throw new DownloadError('No internet connection. Reconnect and resume this download.');
                 }
-                const source = await loadStream(this.options.apiBase, job.episode.id, job.episode.provider);
+                const source = await loadStream(this.options.apiBase, job.episode.id, job.episode.provider, this.options.preferDub);
                 if (signal.aborted) throw new DownloadError('Download cancelled.');
                 if (!source.url || source.variants.length === 0) {
                         throw new DownloadError(
@@ -960,6 +980,43 @@ export class DownloadManager {
                         throw new DownloadError(`${destination.displayPath(path)} already exists.`);
                 }
 
+                // Subtitles are fetched before the video so the sidecar written
+                // during the media download already records them as done, and a
+                // resume skips the refetch. A stream that advertises no subtitle
+                // rendition makes no extra requests at all, and a track the CDN
+                // refuses must not fail an episode that would otherwise download.
+                if (this.options.downloadSubtitles && source.subtitles.length > 0 && !partial?.subtitleDone) {
+                        const rendition = source.subtitles[0];
+                        if (rendition) {
+                                try {
+                                        const track = await downloadSubtitleTrack(rendition, { signal });
+                                        this.subtitleTracks.set(job.id, track);
+                                        this.debug('download.subtitles', {
+                                                id: job.id,
+                                                name: track.name,
+                                                language: track.language,
+                                                segments: track.segments,
+                                                bytes: track.vtt.length,
+                                        });
+                                } catch (error) {
+                                        this.debug('download.subtitles.failed', {
+                                                id: job.id,
+                                                error: error instanceof Error ? error.message : String(error),
+                                        });
+                                }
+                        }
+                } else if (partial?.subtitleDone) {
+                        // Carry the "done" marker across the resume so the rebuilt
+                        // sidecar still records it. The empty `vtt` means nothing
+                        // is written at the end.
+                        this.subtitleTracks.set(job.id, {
+                                name: partial.subtitleName ?? '',
+                                language: partial.subtitleLanguage ?? null,
+                                vtt: '',
+                                segments: 0,
+                        });
+                }
+
                 await this.checkStorageSpace(playlist, resumeBytes);
                 job.total = playlist.segments.length;
                 job.completed = resumeFrom;
@@ -992,8 +1049,38 @@ export class DownloadManager {
                                 : await this.writeMp4(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes);
                 job.fileSize = written;
                 this.debug('download.file-written', { id: job.id, path, bytes: written });
+                await this.writeSubtitles(job, destination, this.subtitleTracks.get(job.id) ?? null);
                 job.partialFound = false;
                 this.stagingPaths.delete(job.id);
+        }
+
+        /**
+         * Write the subtitle sidecar next to the finished video, using the same
+         * filename template with a `vtt` extension. A sidecar already on disk is
+         * left alone rather than rewritten, and nothing is written when the track
+         * was carried over from an earlier run (empty `vtt`) or never fetched.
+         *
+         * Deliberately best-effort: by the time this runs the video is already
+         * finalised, so a sidecar that cannot be written must not report the
+         * whole episode as failed.
+         */
+        private async writeSubtitles(
+                job: DownloadJob,
+                destination: Destination,
+                track: SubtitleTrackData | null,
+        ): Promise<void> {
+                if (!track || !track.vtt) return;
+                const path = buildFileName(this.options.filenameTemplate, job, 'vtt');
+                try {
+                        if (await destination.exists(path)) return;
+                        await destination.write(path, new TextEncoder().encode(track.vtt));
+                        this.debug('download.subtitles.written', { id: job.id, path });
+                } catch (error) {
+                        this.debug('download.subtitles.failed', {
+                                id: job.id,
+                                error: error instanceof Error ? error.message : String(error),
+                        });
+                }
         }
 
         /**
@@ -1079,7 +1166,7 @@ export class DownloadManager {
                 segments: number,
                 bytes: number,
         ): PartialState {
-                return {
+                const state: PartialState = {
                         version: PARTIAL_VERSION,
                         episodeId: job.episode.id,
                         seriesTitle: job.seriesTitle,
@@ -1092,6 +1179,13 @@ export class DownloadManager {
                         episodeNumber: job.episode.number,
                         episodeTitle: job.episode.title,
                 };
+                const subtitle = this.subtitleTracks.get(job.id);
+                if (subtitle) {
+                        state.subtitleDone = true;
+                        state.subtitleName = subtitle.name;
+                        state.subtitleLanguage = subtitle.language;
+                }
+                return state;
         }
 
         /**

@@ -248,7 +248,7 @@ export default class AnimePlugin extends Plugin {
 			this.libraryModal = null;
 		}
 		const modal = new LibraryModal(this.app, this.library, {
-			onPlay: (item) => this.playItem(item),
+			onPlay: (item) => void this.playItem(item),
 			onDelete: (item) => this.deleteItem(item),
 			onRefresh: () => this.refreshLibrary(),
 			onDetails: (series) => this.openDetails(series),
@@ -770,8 +770,33 @@ export default class AnimePlugin extends Plugin {
 		return result;
 	}
 
+	/**
+	 * The WebVTT sidecar for an episode, as a blob URL a `<track>` can load.
+	 *
+	 * The sidecar sits next to the video and shares its name, so the lookup is
+	 * the path with the extension swapped. A vault resource URL would also work
+	 * in principle, but text tracks apply origin rules a resource path does not
+	 * satisfy on every platform, so the file is read and served from a blob
+	 * instead — a few dozen kilobytes, only when the player opens.
+	 */
+	private async subtitleTrackFor(path: string): Promise<string | null> {
+		const sidecar = path.replace(/\.(mp4|ts)$/i, '.vtt');
+		if (sidecar === path) return null;
+		const adapter = this.app.vault.adapter as unknown as {
+			exists(path: string): Promise<boolean>;
+			read(path: string): Promise<string>;
+		};
+		try {
+			if (!(await adapter.exists(sidecar))) return null;
+			const text = await adapter.read(sidecar);
+			return URL.createObjectURL(new Blob([text], { type: 'text/vtt' }));
+		} catch {
+			return null;
+		}
+	}
+
 	/** Play an entry, resuming from its saved position. */
-	playItem(item: LibraryItem): void {
+	async playItem(item: LibraryItem): Promise<void> {
 		if (this.playerModal) {
 			this.playerModal.close();
 			this.playerModal = null;
@@ -783,7 +808,8 @@ export default class AnimePlugin extends Plugin {
 			new Notice('This file is outside the vault and cannot be played.');
 			return;
 		}
-		const modal = new PlayerModal(this.app, item, source, this.library.getProgress(item.path), {
+		const subtitleUrl = await this.subtitleTrackFor(item.path);
+		const modal = new PlayerModal(this.app, item, source, this.library.getProgress(item.path), subtitleUrl, {
 			onProgress: (path, position, duration) => this.recordProgress(path, position, duration),
 			onReset: (path) => {
 				this.library.clearProgress(path);
@@ -800,7 +826,7 @@ export default class AnimePlugin extends Plugin {
 					new Notice(direction === 'next' ? 'This is the last episode.' : 'This is the first episode.');
 					return;
 				}
-				this.playItem(target);
+				void this.playItem(target);
 			},
 			onClosed: () => {
 				this.playerModal = null;
@@ -818,8 +844,19 @@ export default class AnimePlugin extends Plugin {
 	async deleteItem(item: LibraryItem): Promise<void> {
 		const adapter = this.app.vault.adapter as unknown as {
 			remove(path: string): Promise<void>;
+			exists(path: string): Promise<boolean>;
 		};
 		await adapter.remove(item.path);
+		// The subtitle sidecar shares the video's name, so it goes too. Its
+		// removal must never fail the delete of the file itself.
+		const sidecar = item.path.replace(/\.(mp4|ts)$/i, '.vtt');
+		if (sidecar !== item.path) {
+			try {
+				if (await adapter.exists(sidecar)) await adapter.remove(sidecar);
+			} catch {
+				/* Best effort. */
+			}
+		}
 		this.library.clearProgress(item.path);
 		await this.saveWatchRecords();
 	}
@@ -943,6 +980,8 @@ export default class AnimePlugin extends Plugin {
 			segmentConcurrency: this.settings.downloadSegmentConcurrency,
 			maxConcurrentJobs: this.settings.downloadMaxConcurrentJobs,
 			filenameTemplate: this.settings.downloadFilenameTemplate,
+			downloadSubtitles: this.settings.downloadSubtitles,
+			preferDub: this.settings.preferDub,
 			destination: {
 				external: this.settings.downloadExternal,
 				folder: this.settings.downloadFolder,

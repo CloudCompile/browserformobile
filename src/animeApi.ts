@@ -113,16 +113,36 @@ export interface StreamSource {
         iframe: string | null;
         server: string;
         variants: StreamVariant[];
+        /**
+         * Subtitle renditions advertised by the master playlist, in playlist
+         * order. Empty for a stream that carries none, so the downloader makes
+         * no extra requests.
+         */
+        subtitles: SubtitleRendition[];
+}
+
+/** A subtitle rendition from an HLS master playlist's `#EXT-X-MEDIA` lines. */
+export interface SubtitleRendition {
+        /** Human label, e.g. `English`. */
+        name: string;
+        /** BCP-47-ish language tag from `LANGUAGE=`, or null when unlabelled. */
+        language: string | null;
+        /** Media playlist URL of the WebVTT segments. */
+        url: string;
 }
 
 /**
- * Unique server names from the API's `servers` list, subbed tracks first so a
+ * Unique server names from the API's `servers` list, ordered by track type so a
  * fallback keeps the same audio track the default response used. The list
  * repeats a server once per track type, so duplicates are dropped.
+ *
+ * `preferDub` hoists the dubbed servers to the front — a dub preference, not a
+ * guarantee: many series list no dubbed server at all, and those are unaffected.
  */
-function serverNames(servers: unknown): string[] {
+export function serverNames(servers: unknown, preferDub = false): string[] {
         if (!Array.isArray(servers)) return [];
         const subbed: string[] = [];
+        const dubbed: string[] = [];
         const rest: string[] = [];
         const seen = new Set<string>();
         for (const entry of servers) {
@@ -130,10 +150,12 @@ function serverNames(servers: unknown): string[] {
                 const name = asString(record.serverName);
                 if (!name || seen.has(name)) continue;
                 seen.add(name);
-                if (asString(record.type) === 'sub') subbed.push(name);
+                const type = asString(record.type);
+                if (type === 'sub') subbed.push(name);
+                else if (type === 'dub' && preferDub) dubbed.push(name);
                 else rest.push(name);
         }
-        return [...subbed, ...rest];
+        return preferDub ? [...dubbed, ...subbed, ...rest] : [...subbed, ...rest];
 }
 
 /** An error the caller can show verbatim; the message is already user-facing. */
@@ -696,6 +718,63 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
         };
 }
 
+/**
+ * Parse the subtitle renditions of an HLS master playlist.
+ *
+ * Subtitles ride the same `#EXT-X-MEDIA` tag as audio tracks, so only
+ * `TYPE=SUBTITLES` entries are read. Attribute values are quoted and may
+ * contain commas (a name like `English, CC`), so the list is split on commas
+ * outside quotes. A rendition without a URI is skipped: there is nothing to
+ * fetch. Returns them in playlist order — most sources list their default
+ * language first.
+ */
+export function parseSubtitleRenditions(text: string, baseUrl: string): SubtitleRendition[] {
+        const renditions: SubtitleRendition[] = [];
+        for (const line of text.split(/\r?\n/)) {
+                if (!line.startsWith('#EXT-X-MEDIA:')) continue;
+                if (!/(^|[,:])TYPE=SUBTITLES([,\s]|$)/i.test(line)) continue;
+                const attributes = splitAttributes(line.slice('#EXT-X-MEDIA:'.length));
+                const uri = attributes.get('URI');
+                if (!uri) continue;
+                renditions.push({
+                        name: attributes.get('NAME') ?? '',
+                        language: attributes.get('LANGUAGE') || null,
+                        url: resolveUrl(uri, baseUrl),
+                });
+        }
+        return renditions;
+}
+
+/**
+ * Split an attribute list on commas that are not inside quotes, and return the
+ * `KEY=value` pairs as a map. Values keep their quotes stripped; a malformed
+ * pair is skipped rather than shifting the rest.
+ */
+function splitAttributes(text: string): Map<string, string> {
+        const parts: string[] = [];
+        let current = '';
+        let quoted = false;
+        for (const character of text) {
+                if (character === '"') quoted = !quoted;
+                if (character === ',' && !quoted) {
+                        parts.push(current);
+                        current = '';
+                        continue;
+                }
+                current += character;
+        }
+        if (current) parts.push(current);
+        const attributes = new Map<string, string>();
+        for (const part of parts) {
+                const equals = part.indexOf('=');
+                if (equals <= 0) continue;
+                const key = part.slice(0, equals).trim().toUpperCase();
+                const value = part.slice(equals + 1).trim().replace(/^"|"$/g, '');
+                if (key) attributes.set(key, value);
+        }
+        return attributes;
+}
+
 /** Parse an HLS master playlist into its quality variants. */
 export function parseMasterPlaylist(text: string, baseUrl: string): StreamVariant[] {
         const lines = text.split(/\r?\n/);
@@ -725,7 +804,12 @@ export function resolveUrl(uri: string, baseUrl: string): string {
         }
 }
 
-export async function loadStream(base: string, episodeId: string, provider?: string): Promise<StreamSource> {
+export async function loadStream(
+        base: string,
+        episodeId: string,
+        provider?: string,
+        preferDub = false,
+): Promise<StreamSource> {
         // The 18+ source resolves a single direct file through its own route: the
         // provider picks the first playable mirror (HLS preferred) itself, so
         // there is no native server-fallback dance to run here.
@@ -738,12 +822,12 @@ export async function loadStream(base: string, episodeId: string, provider?: str
                 const link = (data?.link ?? {}) as Record<string, unknown>;
                 const url = asString(link.file) || null;
                 if (!data || !url) {
-                        return { url: null, iframe: asString(data?.embed) || null, server: asString(data?.server), variants: [] };
+                        return { url: null, iframe: asString(data?.embed) || null, server: asString(data?.server), variants: [], subtitles: [] };
                 }
                 // HLS resolves to quality variants; a progressive MP4 is a single
                 // variant whose height is unknown until it is probed.
                 if (!/\.m3u8($|\?)/i.test(url)) {
-                        return { url, iframe: null, server: asString(data?.server), variants: [{ height: 0, width: 0, bandwidth: 0, url }] };
+                        return { url, iframe: null, server: asString(data?.server), variants: [{ height: 0, width: 0, bandwidth: 0, url }], subtitles: [] };
                 }
                 const response = await requestUrl({ url, method: 'GET', headers: {}, throw: false });
                 if (response.status >= 400) {
@@ -754,6 +838,7 @@ export async function loadStream(base: string, episodeId: string, provider?: str
                         iframe: null,
                         server: asString(data?.server),
                         variants: parseMasterPlaylist(response.text, url),
+                        subtitles: parseSubtitleRenditions(response.text, url),
                 };
         }
 
@@ -777,7 +862,7 @@ export async function loadStream(base: string, episodeId: string, provider?: str
         let url = asString(((chosen.link ?? {}) as Record<string, unknown>).file) || null;
         if (!url) {
                 const tried = new Set([asString(chosen.server)]);
-                for (const name of serverNames(payload?.results?.servers)) {
+                for (const name of serverNames(payload?.results?.servers, preferDub)) {
                         if (tried.has(name)) continue;
                         tried.add(name);
                         // A single alternate can fail on its own (500, timeout); that
@@ -806,7 +891,7 @@ export async function loadStream(base: string, episodeId: string, provider?: str
         const server = asString(chosen.server);
         // Some servers only expose an embed iframe; there is no file to download.
         if (!url) {
-                return { url: null, iframe, server, variants: [] };
+                return { url: null, iframe, server, variants: [], subtitles: [] };
         }
         const response = await requestUrl({
                 url,
@@ -817,7 +902,7 @@ export async function loadStream(base: string, episodeId: string, provider?: str
         if (response.status >= 400) {
                 throw new AnimeApiError(`The stream CDN returned HTTP ${response.status}.`);
         }
-        return { url, iframe, server, variants: parseMasterPlaylist(response.text, url) };
+        return { url, iframe, server, variants: parseMasterPlaylist(response.text, url), subtitles: parseSubtitleRenditions(response.text, url) };
 }
 
 /**

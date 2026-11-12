@@ -39,6 +39,12 @@ export class PlayerModal extends Modal {
 		private readonly entry: LibraryEntry,
 		private readonly source: string,
 		private readonly progress: WatchRecord | null,
+		/**
+		 * Blob URL of the episode's WebVTT sidecar, when one was downloaded.
+		 * The modal takes ownership and revokes it on close. Null when the
+		 * episode has no sidecar.
+		 */
+		private readonly subtitleUrl: string | null,
 		private readonly callbacks: PlayerCallbacks,
 	) {
 		super(app);
@@ -61,6 +67,7 @@ export class PlayerModal extends Modal {
 		this.videoEl.playsInline = true;
 		this.videoEl.setAttribute('preload', 'metadata');
 		this.videoEl.src = this.source;
+		this.attachSubtitles();
 
 		this.videoEl.addEventListener('loadedmetadata', () => this.resume());
 		this.videoEl.addEventListener('ended', () => {
@@ -106,6 +113,19 @@ export class PlayerModal extends Modal {
 			this.callbacks.onReset(this.entry.path);
 			void this.videoEl.play();
 		});
+	}
+
+	/**
+	 * Attach the downloaded subtitle sidecar, when there is one. The track is
+	 * marked default so the subtitles are simply on, which is the point of
+	 * having downloaded them; a viewer can switch them off in the player.
+	 */
+	private attachSubtitles(): void {
+		if (!this.subtitleUrl) return;
+		const track = this.videoEl.createEl('track', {
+			attr: { kind: 'subtitles', label: 'Subtitles', src: this.subtitleUrl },
+		});
+		track.default = true;
 	}
 
 	/** Seek to the saved position once the length is known. */
@@ -186,6 +206,8 @@ export class PlayerModal extends Modal {
 			this.videoEl.removeAttribute('src');
 			this.videoEl.load();
 		}
+		// The subtitle blob URL was created for this playback only.
+		if (this.subtitleUrl?.startsWith('blob:')) URL.revokeObjectURL(this.subtitleUrl);
 		this.contentEl.empty();
 		this.callbacks.onClosed?.();
 	}

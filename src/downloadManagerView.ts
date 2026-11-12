@@ -405,7 +405,7 @@ export class DownloadManagerView extends ItemView {
 
 		const actions = row.createDiv({ cls: 'bfm-dm-actions' });
 		const playBtn = actions.createEl('button', { cls: 'bfm-dm-btn', text: 'Play' });
-		playBtn.addEventListener('click', () => this.plugin.playItem(item));
+		playBtn.addEventListener('click', () => void this.plugin.playItem(item));
 
 		const repairBtn = actions.createEl('button', { cls: 'bfm-dm-btn', text: 'Repair' });
 		repairBtn.addEventListener('click', () => void this.repairOne(item));
