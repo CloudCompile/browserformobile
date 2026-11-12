@@ -28,6 +28,20 @@ function wakeLockApi(): WakeLockApi | null {
 }
 
 /**
+ * Whether this platform can hold a screen wake lock at all.
+ *
+ * The Screen Wake Lock API is Chromium-only, so iOS — and any WebView without
+ * the API — answers false. Callers use it to pick the honest fallback: there
+ * is no way to keep the screen on programmatically, so the download is paused
+ * when the page is hidden instead of left to stall, and the user is told to
+ * keep the app open rather than promised something the platform cannot do.
+ */
+export function hasWakeLockSupport(): boolean {
+        if (typeof navigator === 'undefined') return false;
+        return wakeLockApi() !== null;
+}
+
+/**
  * Holds at most one screen wake lock while there is something to keep awake.
  * Callers `acquire()` when work starts and `release()` when it stops; the
  * reference count means several downloads share a single lock.

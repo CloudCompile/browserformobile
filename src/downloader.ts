@@ -26,7 +26,7 @@ import { elapsedSeconds, remainingBytesFromBitrate, SpeedTracker } from './perf'
 import type { DownloadRun } from './stats';
 import { TransmuxStream } from './transmux';
 import { generateId } from './utils';
-import { ScreenWakeLock } from './wakelock';
+import { ScreenWakeLock, hasWakeLockSupport } from './wakelock';
 
 /** Bytes coalesced into one write. Appending is costly on mobile. */
 const TS_BATCH_BYTES = 8 * 1024 * 1024;
@@ -355,6 +355,14 @@ export class DownloadManager {
         private readonly subtitleTracks = new Map<string, SubtitleTrackData>();
         /** Holds the screen awake while a job runs, so Android does not freeze it. */
         private readonly wakeLock = new ScreenWakeLock();
+        /**
+         * Where there is no wake lock to hold (iOS), the page-hide fallback:
+         * jobs paused because the view was hidden, resumed on return. Only jobs
+         * this guard paused itself are revived — a job the user paused stays
+         * paused, exactly as if they had tapped pause and never come back.
+         */
+        private readonly suspendPaused = new Set<string>();
+        private suspendGuardAttached = false;
 
         constructor(
                 private readonly app: { vault: { adapter: unknown } },
@@ -533,6 +541,9 @@ export class DownloadManager {
                         this.jobs.push(job);
                         created.push(job);
                 }
+                // The suspend guard is about to matter: this is the moment a run
+                // becomes likely. Idempotent, and a no-op where a wake lock exists.
+                this.attachSuspendGuard();
                 this.scheduleUpdate();
                 this.queueChanged();
                 this.pump();
@@ -839,6 +850,7 @@ export class DownloadManager {
                 // the requests and can let the OS reclaim the app. Hold the screen
                 // on for the duration of the job.
                 this.wakeLock.acquire();
+                this.attachSuspendGuard();
                 job.startedAt = Date.now();
                 job.speed = null;
                 job.eta = null;
@@ -862,6 +874,11 @@ export class DownloadManager {
                                 // the status set by pause() decides which way to go.
                                 if (this.isPaused(job)) {
                                         await this.markPartial(job);
+                                } else if (this.isRequeued(job)) {
+                                        // Already re-queued — a fast resume, or the
+                                        // suspend guard on return from a hidden page.
+                                        // The next run owns the partial from here;
+                                        // touching either would lose bytes.
                                 } else {
                                         job.status = 'cancelled';
                                         // An explicit cancel abandons the download, so
@@ -899,6 +916,10 @@ export class DownloadManager {
                         job.speed = null;
                         job.eta = null;
                         this.controllers.delete(job.id);
+                        // The abort has fully settled, so a suspend-paused job is
+                        // now safe to revive: this is the path that covers a page
+                        // that became visible again before the abort finished.
+                        this.reviveSuspendPaused(job.id);
                         // The tracker and playlist are only needed while the run is
                         // live; a deferred job builds fresh ones when it retries.
                         this.trackers.delete(job.id);
@@ -918,6 +939,16 @@ export class DownloadManager {
          */
         private isPaused(job: DownloadJob): boolean {
                 return job.status === 'paused';
+        }
+
+        /**
+         * Whether the job was re-queued while this run was aborting — a fast
+         * resume, or the suspend guard on return from a hidden page. Read through
+         * a method for the same reason as `isPaused`: the mutation happens
+         * outside this flow, and the compiler narrows from local assignments.
+         */
+        private isRequeued(job: DownloadJob): boolean {
+                return job.status === 'queued';
         }
 
         /**
@@ -1754,6 +1785,64 @@ export class DownloadManager {
                 this.onQueueChanged?.(this.serializeQueue());
         }
 
+        /**
+         * On a platform without a wake lock (iOS), a run the screen suspends
+         * does not fail — it freezes mid-request, the sidecar stops advancing,
+         * and what is on disk and what the job reports drift apart until the
+         * app is killed. Pausing is the honest equivalent of the lock: the run
+         * aborts the way a user pause does, the partial is marked, and nothing
+         * is lost. Attached on the first run, and only where the lock is
+         * missing — elsewhere the lock is the mechanism and the browser's own
+         * drop-on-hide handling applies.
+         */
+        private attachSuspendGuard(): void {
+                if (this.suspendGuardAttached) return;
+                if (hasWakeLockSupport()) return;
+                if (typeof document === 'undefined') return; // No DOM: tests, headless.
+                this.suspendGuardAttached = true;
+                document.addEventListener('visibilitychange', this.onVisibilityChange);
+        }
+
+        private readonly onVisibilityChange = (): void => {
+                if (typeof document === 'undefined') return;
+                if (document.visibilityState === 'hidden') {
+                        for (const job of [...this.jobs]) {
+                                if (job.status !== 'running') continue;
+                                this.suspendPaused.add(job.id);
+                                // The ordinary pause: the run is aborted, the
+                                // staging file kept, the job stays resumable.
+                                this.pause(job.id);
+                        }
+                        return;
+                }
+                for (const id of [...this.suspendPaused]) {
+                        // A run whose abort is still settling is revived by the
+                        // run's own finally, once it is genuinely done.
+                        if (this.controllers.has(id)) continue;
+                        this.reviveSuspendPaused(id);
+                }
+        };
+
+        /**
+         * Resume one suspend-paused job, if it still qualifies. Called both from
+         * the visibility handler and from a run's finally, so the guard never
+         * resumes a run that has not finished aborting — two runs writing one
+         * staging file is the bug this guard exists to prevent.
+         */
+        private reviveSuspendPaused(id: string): void {
+                if (!this.suspendPaused.has(id)) return;
+                if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+                const job = this.jobs.find((entry) => entry.id === id);
+                // Only a job still paused — one the user re-paused from another
+                // surface in the meantime is left alone.
+                if (!job || job.status !== 'paused') {
+                        this.suspendPaused.delete(id);
+                        return;
+                }
+                this.suspendPaused.delete(id);
+                this.resume(id);
+        }
+
         dispose(): void {
                 if (this.updateTimer !== null) {
                         window.clearTimeout(this.updateTimer);
@@ -1761,6 +1850,10 @@ export class DownloadManager {
                 }
                 for (const timer of this.retryTimers) window.clearTimeout(timer);
                 this.retryTimers.clear();
+                if (this.suspendGuardAttached && typeof document !== 'undefined') {
+                        this.suspendGuardAttached = false;
+                        document.removeEventListener('visibilitychange', this.onVisibilityChange);
+                }
                 this.wakeLock.dispose();
                 this.cancelAll();
         }

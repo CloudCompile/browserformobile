@@ -71,13 +71,25 @@ asked to change shape before it is reviewed for content.
 
 ## Cutting a release
 
-Releases are cut by the maintainer following `docs/RELEASE.md` in spirit:
+The manual half is three files, one commit, one tag; everything after the tag
+push is the workflow's job, and re-running it for the same tag updates the
+existing release instead of drafting a duplicate.
 
-1. Bump `version` in `manifest.json` and `package.json`, add the
+1. Bump `version` in `manifest.json` and `package.json`, and add the
    `versions.json` entry (8-space indent, preserved by hand).
-2. One `Release X.Y.Z` commit, one tag named exactly `X.Y.Z` (no leading `v`).
-3. The tag push builds, lints, tests, and drafts a release with assets and
-   notes extracted from `CHANGELOG.md`; publishing is the human step.
+2. Prepend the `CHANGELOG.md` section for the version. The workflow extracts
+   the section matching the tag for the release notes — a tag without a
+   matching `## X.Y.Z` heading publishes with empty notes, so the section is
+   part of the release, not an afterthought.
+3. One `Release X.Y.Z` commit, one tag named exactly `X.Y.Z` (no leading `v`),
+   push both.
+4. The tag push builds, lints, tests, attests provenance, and drafts a release
+   with `main.js`, `manifest.json`, and `styles.css`. Publishing and setting
+   Latest are the human steps.
+5. If the tag must be re-cut (a failed publish, a rebuilt asset): fix, re-tag,
+   push again. The workflow sees the existing release and updates it in place
+   — assets re-uploaded with `--clobber`, notes refreshed — rather than
+   drafting a second one.
 
 A user-facing improvement is a minor bump with a `.5` patch (3.10.5); a plain
 `.0` minor marks structural work.

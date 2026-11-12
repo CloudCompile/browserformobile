@@ -62,7 +62,20 @@ jobs:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   tag="${GITHUB_REF#refs/tags/}"
-                  args=("$tag" --title="$tag" --draft main.js manifest.json)
-                  if [ "${{ steps.styles.outputs.exists }}" = "true" ]; then args+=("styles.css"); fi
-                  if [ "${{ steps.notes.outputs.notes }}" = "true" ]; then args+=(--notes-file=RELEASE_NOTES.md); fi
-                  gh release create "${args[@]}"
+                  assets=(main.js manifest.json)
+                  if [ "${{ steps.styles.outputs.exists }}" = "true" ]; then assets+=("styles.css"); fi
+                  # A tag can be re-pushed (a failed publish, a rebuilt asset). A
+                  # second `gh release create` for the same tag would draft a
+                  # duplicate — how eighteen stale drafts piled up — so an
+                  # existing release is updated in place instead: assets are
+                  # re-uploaded over the old ones and the notes are refreshed.
+                  if gh release view "$tag" > /dev/null 2>&1; then
+                      gh release upload "$tag" "${assets[@]}" --clobber
+                      edit_args=("$tag" --title="$tag")
+                      if [ "${{ steps.notes.outputs.notes }}" = "true" ]; then edit_args+=(--notes-file=RELEASE_NOTES.md); fi
+                      gh release edit "${edit_args[@]}"
+                  else
+                      args=("$tag" --title="$tag" --draft "${assets[@]}")
+                      if [ "${{ steps.notes.outputs.notes }}" = "true" ]; then args+=(--notes-file=RELEASE_NOTES.md); fi
+                      gh release create "${args[@]}"
+                  fi

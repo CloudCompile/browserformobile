@@ -14,6 +14,9 @@ embed a real engine on mobile, so the proxy and iframe rendering it relied on
 was never going to be reliable. What remains is the downloader and the library,
 which do not need one.
 
+**New here?** The [user guide](docs/user-guide.md) walks through installing,
+your first download, watching, and the rest, in the order you will meet them.
+
 ## Features
 
 - **Search and download** from an anime catalogue, with per-episode selection,
@@ -40,6 +43,10 @@ which do not need one.
 
 ## Find anime
 
+
+
+> Walkthrough: [Find anime](docs/user-guide.md#finding-something-to-watch) in the user guide.
+
 Open it from the compass ribbon icon or the **Anime: find anime** command.
 
 Instead of typing a search, browse the catalogue: pick a listing section (most
@@ -55,6 +62,10 @@ the box off and only the normal catalogue is reachable. A restored finder obeys
 the same gate: the adult tab comes back only if the box is still on.
 
 ## Anime downloader
+
+
+
+> Walkthrough: [Anime downloader](docs/user-guide.md#your-first-download) in the user guide.
 
 Open it from the download ribbon icon or the **Open anime downloader**
 command.
@@ -230,6 +241,10 @@ re-fetching the rest.
 
 ### Repairing old downloads
 
+
+
+> Walkthrough: [Repairing old downloads](docs/user-guide.md#repairing-old-downloads) in the user guide.
+
 Files downloaded before 1.1.1 report the wrong length in players that read the
 track headers — Samsung Gallery shows every file as **1:35:15**. mux.js left the
 duration at its "unknown" placeholder, which those players clamp to that value.
@@ -240,6 +255,10 @@ the download window, or the **Repair downloaded videos** command. Both scan the
 download folder and rewrite only the files that need it.
 
 ### Download statistics
+
+
+
+> Walkthrough: [Download statistics](docs/user-guide.md#statistics) in the user guide.
 
 The download window shows the live network speed for the whole queue, and the
 per-episode rows show each run's speed and time remaining. Once a few episodes
@@ -269,6 +288,10 @@ Downloading from it may be illegal where you live, and using it is your
 responsibility. The plugin does not host, index, or vouch for any content.
 
 ## Video library
+
+
+
+> Walkthrough: [Video library](docs/user-guide.md#watching) in the user guide.
 
 The library lists the episodes you have downloaded and plays them inside
 Obsidian. Open it from the film ribbon icon or the **Open video library**
@@ -497,8 +520,13 @@ full notes live on each release. Security-relevant details are in
 
 - **The screen stays awake while a download runs**, so a long episode is not
   frozen when the phone sleeps. This uses the Screen Wake Lock API, which is
-  available in Android's WebView; on iOS it is a no-op and a download can stall
-  if the screen turns off.
+  available in Android's WebView.
+- **On iOS there is no wake-lock support** — the platform exposes no way to
+  keep the screen on programmatically. Instead the plugin pauses the queue when
+  the app is hidden and resumes it on return, so a screen-off download leaves a
+  clean partial with no lost bytes instead of a stalled connection, and the
+  first download of a session shows a one-time hint to keep the app open while
+  a run is going. Keep the screen on manually for the longest episodes.
 - **Batch size follows the device's memory.** Downloads are written in batches
   (16-64 MB) sized from `navigator.deviceMemory`, so a low-memory phone is not
   pushed into an out-of-memory restart by a batch meant for a 4 GB device.
