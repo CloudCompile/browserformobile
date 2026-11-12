@@ -13,6 +13,14 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 3.12.5 — 2026-11-12
+
+- **Reorderable queue.** Queued and paused downloads carry move buttons, so the next episode to fetch is yours to choose. A move swaps with the nearest movable row; running and rate-limit-parked rows keep their places, and a parked row stays at the bottom until it retries.
+- **Resume downloads on launch.** An opt-in setting continues queued downloads and revives paused ones with a partial on disk when Obsidian starts. Devices reporting a metered connection hold the resume until you start it yourself; iOS exposes no connection signal, so there it resumes regardless.
+- **Per-series format and quality.** The episode picker's quality and format dropdowns set the choice for the series being picked, remembered per series, and each queued episode keeps the choice it was queued with — a later change never rewrites what is already waiting.
+- **Grouped long episode lists.** A series longer than 50 episodes picks from collapsible numeric ranges (Episodes 1–50, 51–100, …) with per-group select and clear. The catalogue labels no seasons, so none are invented.
+- **The finder reopens where you left it.** Source tab, section or genre, and page are remembered, with the 18+ tab restored only while its opt-in stands.
+
 ## 3.11.5 — 2026-11-12
 
 - **Continue watching.** A strip above the library list shows half-watched episodes with their position and remaining time, most recently played first; tapping one resumes it.
