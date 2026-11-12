@@ -102,6 +102,16 @@ still downloads the 720p stream.
 Both formats keep memory low; **MP4** is the one to pick for a single playable
 file.
 
+### Subtitles
+
+When the source stream carries a subtitle track, the downloader can save it as a
+**WebVTT** sidecar next to the video — the same filename with the extension
+changed. The player picks the sidecar up automatically and shows the subtitles;
+a viewer can switch them off in the player as usual. The sidecar is off by
+default (**Download subtitles** in settings) because it adds a second set of
+requests per episode. A stream with no subtitle track downloads exactly as
+before, with no extra requests.
+
 ### Where files are saved
 
 A plugin can only write **inside the vault**. On mobile, Obsidian's app exposes
@@ -132,6 +142,11 @@ That is worth remembering for a large library.
 - **Download folder** — where files go, relative to the vault.
 - **Save outside the vault** — desktop only; write to an absolute path.
 - **Filename template** — `{series}`, `{ep}`, `{ep:02}`, `{title}`, `{ext}`.
+- **Download subtitles** — save the stream's subtitle track as a WebVTT sidecar
+  next to the video. Off by default.
+- **Prefer dub** — try dubbed servers first when the default one offers no
+  downloadable file. Dub availability follows the catalogue: many series are
+  subbed only, and for those this changes nothing.
 - **Parallel segments** — segments fetched at once per episode. The default is
   6, which measured around 30 MB/s against the CDN. If the server starts
   refusing requests the download drops this on its own and creeps back up, so
@@ -175,8 +190,8 @@ segments** stays safe even if the limit returns. When a whole run is throttled
 rather than one segment, the episode is not failed: it is parked at the bottom of
 the queue and retried a minute later, keeping everything already on disk. Other
 episodes get their turn while it waits, and the row shows **Rate limited** with a
-countdown. After ten tries in a row it gives up and fails normally, so it cannot
-retry forever.
+countdown. After twelve tries in a row it gives up and fails normally, so it
+cannot retry forever.
 
 ### Series finishers
 
@@ -253,6 +268,10 @@ MP4 files play directly. MPEG-TS files (the low-memory **TS** output) cannot be
 played by a browser engine, so the library says so instead of showing a black
 rectangle. If you want to watch in the library, keep the download format set to
 **MP4**.
+
+When an episode has a subtitle sidecar — see **Download subtitles** in the
+downloader — the player loads it automatically. Deleting an episode deletes its
+sidecar with it.
 
 Only videos inside your vault are listed. Downloads saved outside the vault
 (desktop only) are written where the plugin cannot enumerate them, so they do

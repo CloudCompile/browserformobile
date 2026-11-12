@@ -1,5 +1,6 @@
 import { requestUrl } from 'obsidian';
-import { STREAM_REFERER, resolveUrl } from './animeApi';
+import { STREAM_REFERER, resolveUrl, type SubtitleRendition } from './animeApi';
+import { mapWithConcurrency } from './utils';
 
 /**
  * HLS download engine.
@@ -381,6 +382,104 @@ export async function loadMediaPlaylist(url: string): Promise<MediaPlaylist> {
                 throw new DownloadError('The stream playlist contained no segments.');
         }
         return playlist;
+}
+
+// --- Subtitle tracks -------------------------------------------------------
+
+/** One subtitle cue, as merged from the segment files. */
+export interface VttCue {
+        /** Start timestamp, verbatim from the source, e.g. `00:01:02.500`. */
+        start: string;
+        /** End timestamp, verbatim from the source. */
+        end: string;
+        /** Cue text, which may itself span several lines. */
+        text: string;
+}
+
+/** WebVTT segments fetched at once. Subtitles are tiny next to the video. */
+const SUBTITLE_CONCURRENCY = 4;
+
+/**
+ * Collect the cue blocks of a WebVTT document.
+ *
+ * A downloaded episode arrives as many segment files, each with its own
+ * `WEBVTT` header, so the cues are what survive the merge; headers, `NOTE`,
+ * `STYLE` and `REGION` blocks are dropped. A cue is a timing line plus the text
+ * up to the next blank line. Returns an empty list for a header-only segment.
+ */
+export function parseVttCues(text: string): VttCue[] {
+        const cues: VttCue[] = [];
+        const lines = text.split(/\r?\n/);
+        let index = 0;
+        while (index < lines.length) {
+                const line = lines[index] ?? '';
+                if (!line.includes('-->')) {
+                        index++;
+                        continue;
+                }
+                const timing = line.trim();
+                index++;
+                const body: string[] = [];
+                while (index < lines.length && (lines[index] ?? '').trim() !== '') {
+                        body.push(lines[index] ?? '');
+                        index++;
+                }
+                const cueText = body.join('\n').trim();
+                if (cueText) {
+                        const [startRaw, endRaw] = timing.split('-->');
+                        cues.push({ start: (startRaw ?? '').trim(), end: (endRaw ?? '').trim(), text: cueText });
+                }
+        }
+        return cues;
+}
+
+/** The single WebVTT document for a list of cues, or a bare header for none. */
+export function buildVttDocument(cues: VttCue[]): string {
+        const blocks = cues.map((cue) => `${cue.start} --> ${cue.end}\n${cue.text}`);
+        return blocks.length > 0 ? `WEBVTT\n\n${blocks.join('\n\n')}\n` : 'WEBVTT\n';
+}
+
+/** One subtitle track, merged and ready to write next to the video. */
+export interface SubtitleTrackData {
+        /** Human label from the master playlist, e.g. `English`. */
+        name: string;
+        /** Language tag, or null when the source did not label one. */
+        language: string | null;
+        /** The merged WebVTT document. */
+        vtt: string;
+        /** Segments fetched. */
+        segments: number;
+}
+
+/**
+ * Download one subtitle rendition and merge its segments into a single WebVTT
+ * document.
+ *
+ * The segments go through the same retried, rate-limit-aware fetcher as the
+ * video, at a small concurrency of their own — a subtitle playlist is one file
+ * per video segment, so hundreds of requests are normal and a polite limit
+ * keeps them from earning a 429 that the video fetch would inherit.
+ */
+export async function downloadSubtitleTrack(
+        rendition: SubtitleRendition,
+        options: { signal?: AbortSignal } = {},
+): Promise<SubtitleTrackData> {
+        const playlist = await loadMediaPlaylist(rendition.url);
+        if (playlist.segments.length === 0) {
+                throw new DownloadError('The subtitle playlist contained no segments.');
+        }
+        const segments = await mapWithConcurrency(
+                playlist.segments,
+                SUBTITLE_CONCURRENCY,
+                async (url) => new TextDecoder().decode(await fetchSegment(url, options.signal)),
+        );
+        const cues = segments.flatMap((segment) => parseVttCues(segment));
+        return {
+                name: rendition.name,
+                language: rendition.language,
+                vtt: buildVttDocument(cues),
+                segments: playlist.segments.length,
+        };
 }
 
 /** Concatenate MPEG-TS segments. The result is directly playable as `.ts`. */
