@@ -13,6 +13,12 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 3.10.5 — 2026-11-12
+
+- **Subtitles as sidecar files.** When a stream carries a subtitle track, the downloader can save it as a WebVTT file next to the video and the player shows it automatically. Off by default (**Download subtitles**); the download resumes skip a track already fetched, and a stream with no subtitles makes no extra requests.
+- **Prefer dub.** When the default server offers no downloadable file, the fallback can try dubbed servers first. Dub availability follows the catalogue — many series are subbed only.
+- The README's rate-limit retry count matches the code (twelve, not ten).
+
 ## 3.9.5 — 2026-11-11
 
 - **Export debug log.** The **Export debug log** command copies the plugin's debug log into the download folder as a markdown file, ready to attach to a bug report. The log is flushed first; an existing export is stamped rather than overwritten.
