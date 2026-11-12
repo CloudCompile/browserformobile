@@ -13,6 +13,29 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 4.0.0 — 2026-11-12
+
+The foundations release: no new surfaces, but the pipeline, the platform's
+weakest platform, and the performance wins of 1.11.x are now guarded.
+
+- **The release cannot be duplicated.** Re-pushing a tag updates the existing
+  release in place — assets re-uploaded, notes refreshed — instead of drafting
+  a second one. The whole cutting procedure is documented in CONTRIBUTING.
+- **iOS downloads survive being hidden.** Where the Screen Wake Lock API is
+  missing, hiding the app pauses running downloads the ordinary way — a clean,
+  resumable partial, nothing lost — and returning revives exactly what the
+  guard paused. A one-time hint asks you to keep the app open for the longest
+  episodes, shown only where the platform has no keep-awake support.
+- **A performance budget suite.** A synthetic 700-file library asserts the
+  invariants that once regressed quietly: scans read no file contents,
+  rendering never touches the adapter, a seeded repair pass reads nothing, and
+  wall clock stays under a generous ceiling. A regression fails CI naming the
+  budget it broke.
+- **A user guide.** docs/user-guide.md walks install, the first download,
+  watching, recommendations, statistics, and repair at end-user level; the
+  README links to it from each feature section. (Screenshots are marked
+  placeholders for now.)
+
 ## 3.12.5 — 2026-11-12
 
 - **Reorderable queue.** Queued and paused downloads carry move buttons, so the next episode to fetch is yours to choose. A move swaps with the nearest movable row; running and rate-limit-parked rows keep their places, and a parked row stays at the bottom until it retries.
