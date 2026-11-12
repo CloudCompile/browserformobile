@@ -14,6 +14,10 @@ import { formatSpeed } from './hls';
 import { externalStorageAvailable } from './destination';
 import { repairByteBudget, repairFolder, type RepairLedger } from './doctor';
 import { ConfirmModal } from './modals';
+import { hasWakeLockSupport } from './wakelock';
+
+/** The keep-awake hint shows once per session, on the first download. */
+let keepAwakeHintShown = false;
 
 export interface DownloadModalOptions {
         apiBase: string;
@@ -834,8 +838,28 @@ export class DownloadModal extends Modal {
                                 ? `Queued ${created.length} episode${created.length === 1 ? '' : 's'} from ${series.title} (${resumed} will resume).`
                                 : `Queued ${created.length} episode${created.length === 1 ? '' : 's'} from ${series.title}.`;
                 new Notice(message);
+                this.showKeepAwakeHintOnce();
                 this.stage = 'queue';
                 this.render();
+        }
+
+        /**
+         * The one-time "keep the app open" hint, shown only where the Screen
+         * Wake Lock API is missing (iOS). There is no programmatic way to keep
+         * an iPhone's screen on, so the honest guidance is what to do by hand:
+         * keep the app open while a run is going, and the queue pauses itself
+         * when the app is hidden anyway, resuming on return with nothing lost.
+         * Once per session — a persisted flag would buy nothing over a prompt
+         * the user sees at the moment they start the first download.
+         */
+        private showKeepAwakeHintOnce(): void {
+                if (keepAwakeHintShown) return;
+                keepAwakeHintShown = true;
+                if (hasWakeLockSupport()) return;
+                new Notice(
+                        'This device cannot keep the screen on by itself. Keep the app open while downloading; if it is hidden, the download pauses and continues when you return.',
+                        8000,
+                );
         }
 
         // --- Queue -------------------------------------------------------------

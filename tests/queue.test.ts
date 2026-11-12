@@ -124,6 +124,17 @@ function writeSidecar(manager: DownloadManager, adapter: FakeAdapter, job: Downl
         );
 }
 
+/** A manager with the given jobs pushed, pump kept inert by concurrency 0. */
+function managerWith(
+        statuses: Array<{ id: string; number: number; status: DownloadJob['status'] }>,
+): DownloadManager {
+        const manager = new DownloadManager({ vault: { adapter: new FakeAdapter() } }, OPTIONS, () => {});
+        for (const entry of statuses) {
+                manager.jobs.push(makeJob(entry.id, entry.number, entry.status));
+        }
+        return manager;
+}
+
 describe('reorder', () => {
         beforeEach(() => {
                 // scheduleUpdate and the retry timers go through window; a fake
@@ -134,16 +145,6 @@ describe('reorder', () => {
         afterEach(() => {
                 vi.unstubAllGlobals();
         });
-
-        function managerWith(
-                statuses: Array<{ id: string; number: number; status: DownloadJob['status'] }>,
-        ): DownloadManager {
-                const manager = new DownloadManager({ vault: { adapter: new FakeAdapter() } }, OPTIONS, () => {});
-                for (const entry of statuses) {
-                        manager.jobs.push(makeJob(entry.id, entry.number, entry.status));
-                }
-                return manager;
-        }
 
         it('swaps with the nearest movable neighbour, skipping finished rows', () => {
                 const manager = managerWith([
@@ -280,6 +281,94 @@ describe('autoResumeRestored', () => {
                         vi.unstubAllGlobals();
                 }
         });
+});
+
+describe('suspend guard (no wake lock on the platform)', () => {
+	/** A fake `document` whose visibility the test drives. */
+	function stubDocument(): { setVisibility(state: 'visible' | 'hidden'): void; fire(): void; removed: boolean } {
+		let listener: (() => void) | null = null;
+		let state: 'visible' | 'hidden' = 'visible';
+		const removed = { current: false };
+		vi.stubGlobal('document', {
+			get visibilityState() {
+				return state;
+			},
+			addEventListener(type: string, fn: () => void) {
+				if (type === 'visibilitychange') listener = fn;
+			},
+			removeEventListener() {
+				removed.current = true;
+			},
+		});
+		return {
+			setVisibility(next) {
+				state = next;
+			},
+			fire() {
+				listener?.();
+			},
+			get removed() {
+				return removed.current;
+			},
+		};
+	}
+
+	beforeEach(() => {
+		// No `wakeLock` on the navigator: the guard's whole reason to exist.
+		vi.stubGlobal('navigator', {});
+		vi.stubGlobal('window', { setTimeout: () => 1, clearTimeout: () => {} });
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('pauses a running job on hide and resumes it on return', () => {
+		const doc = stubDocument();
+		const manager = managerWith([{ id: 'a', number: 1, status: 'running' }]);
+		manager.enqueue({ seriesTitle: 'Naruto', episodes: [episode('ep-9', 9)] });
+
+		doc.setVisibility('hidden');
+		doc.fire();
+		// The ordinary pause: still resumable, partial marked by the aborting
+		// run (which does not exist here, so the job just sits paused).
+		expect(manager.jobs.find((job) => job.id === 'a')?.status).toBe('paused');
+
+		doc.setVisibility('visible');
+		doc.fire();
+		expect(manager.jobs.find((job) => job.id === 'a')?.status).toBe('queued');
+	});
+
+	it('leaves a job the user paused alone on return', () => {
+		const doc = stubDocument();
+		const manager = managerWith([
+			{ id: 'a', number: 1, status: 'running' },
+			{ id: 'b', number: 2, status: 'paused' }, // the user's own pause
+		]);
+		manager.enqueue({ seriesTitle: 'Naruto', episodes: [episode('ep-9', 9)] });
+
+		doc.setVisibility('hidden');
+		doc.fire();
+		doc.setVisibility('visible');
+		doc.fire();
+		// `a` was guard-paused, so it is revived; `b` was never running, so the
+		// guard never claimed it — the user's pause stands.
+		expect(manager.jobs.find((job) => job.id === 'a')?.status).toBe('queued');
+		expect(manager.jobs.find((job) => job.id === 'b')?.status).toBe('paused');
+	});
+
+	it('is not attached where a wake lock exists', () => {
+		vi.stubGlobal('navigator', { wakeLock: { request: async () => null } });
+		vi.stubGlobal('document', {
+			visibilityState: 'visible',
+			addEventListener: () => {
+				throw new Error('listener must not be attached with a wake lock');
+			},
+			removeEventListener: () => {},
+		});
+		const manager = managerWith([{ id: 'a', number: 1, status: 'queued' }]);
+		expect(() => manager.enqueue({ seriesTitle: 'Naruto', episodes: [episode('ep-9', 9)] })).not.toThrow();
+	});
 });
 
 describe('isMeteredConnection', () => {
