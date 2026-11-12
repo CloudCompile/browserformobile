@@ -13,6 +13,14 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 3.11.5 — 2026-11-12
+
+- **Continue watching.** A strip above the library list shows half-watched episodes with their position and remaining time, most recently played first; tapping one resumes it.
+- **Poster grid.** The library gains a grid view beside the filters, remembered between sessions. Posters come from catalogue answers already cached on the device; a series never browsed shows a fallback card.
+- **Taste weighs how far you got.** An in-progress episode now counts in proportion to its watch fraction rather than raw seconds, so five minutes of a two-hour film is no longer the same signal as an hour.
+- **Export and import.** New commands write watch progress and the download log to the download folder as JSON and CSV, and read them back behind a confirmation — replacing, not merging.
+- **Not interested.** Recommendations can be dismissed from the card and brought back with one control at the top of the page.
+
 ## 3.10.5 — 2026-11-12
 
 - **Subtitles as sidecar files.** When a stream carries a subtitle track, the downloader can save it as a WebVTT file next to the video and the player shows it automatically. Off by default (**Download subtitles**); the download resumes skip a track already fetched, and a stream with no subtitles makes no extra requests.
