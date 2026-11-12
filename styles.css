@@ -289,7 +289,8 @@
 
 /* Round icon buttons. */
 .bfm-dl-window-close,
-.bfm-dl-job-cancel {
+.bfm-dl-job-cancel,
+.bfm-dl-job-move {
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -305,10 +306,13 @@
 }
 
 .bfm-dl-window-close:hover,
-.bfm-dl-job-cancel:hover {
+.bfm-dl-job-cancel:hover,
+.bfm-dl-job-move:hover:not(:disabled) {
         background: var(--bfm-hover);
         color: var(--text-normal);
 }
+
+.bfm-dl-job-move:disabled { opacity: 0.3; cursor: default; }
 
 .bfm-library-item-play,
 .bfm-library-item-delete,
@@ -1043,6 +1047,53 @@
         border-radius: var(--bfm-radius-m);
         background: var(--background-primary);
 }
+
+/* Group heads in a long episode picker: sticky, so the range stays named
+ * while its rows scroll underneath. */
+.bfm-dl-epgroup-head {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        gap: var(--bfm-space-2);
+        padding: var(--bfm-space-2) var(--bfm-space-3);
+        border-bottom: 1px solid var(--bfm-border);
+        background: var(--background-secondary);
+        cursor: pointer;
+}
+
+.bfm-dl-epgroup-chevron {
+        display: inline-flex;
+        color: var(--text-muted);
+}
+
+.bfm-dl-epgroup-label {
+        flex: 1 1 auto;
+        font-weight: 700;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        color: var(--text-normal);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+.bfm-dl-epgroup-count {
+        flex: 0 0 auto;
+        font-size: 11px;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+}
+
+.bfm-dl-epgroup-head .bfm-dl-epgroup-select {
+        flex: 0 0 auto;
+        padding: 2px 10px;
+        font-size: 11px;
+}
+
+/* A group's first row follows a head, not another row, so no divider. */
+.bfm-dl-epgroup-head + .bfm-dl-episode { border-top: none; }
 
 .bfm-dl-episode {
         display: flex;
@@ -1904,6 +1955,7 @@ body.bfm-glass-on .bfm-recs-card {
 
         .bfm-dl-window-close,
         .bfm-dl-job-cancel,
+        .bfm-dl-job-move,
         .bfm-library-item-play,
         .bfm-library-item-delete,
         .bfm-library-item-info,

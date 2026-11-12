@@ -44,6 +44,14 @@ export interface AnimeSettings {
         /** Episodes downloaded at the same time. */
         downloadMaxConcurrentJobs: number;
         /**
+         * Continue queued and paused downloads when Obsidian starts, instead of
+         * waiting for the queue to be opened. Off by default: an unattended
+         * resume is not what everyone wants on opening a note-taking app. On
+         * devices that report a metered connection the resume is held off
+         * regardless; iOS exposes no signal, so there it always resumes.
+         */
+        autoResumeOnLaunch: boolean;
+        /**
          * Which decision model re-ranks recommendations, if any. `off` uses the
          * catalogue's votes and a text match only.
          */
@@ -109,6 +117,11 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         // safe (it used to stall for minutes) but is rarely any faster.
         downloadSegmentConcurrency: 6,
         downloadMaxConcurrentJobs: 1,
+        // Off by default: resuming automatically on launch downloads without
+        // anyone watching, which is not what everyone wants — and on a metered
+        // connection it can cost money. Opt-in, and held off on a connection the
+        // device reports as metered.
+        autoResumeOnLaunch: false,
         // Off by default: the baseline needs no download, no key and no network, and
         // both model options cost the user something — a 6 MB fetch, or sending
         // their taste profile to a third party.
@@ -205,6 +218,11 @@ export class AnimeSettingTab extends PluginSettingTab {
                                 name: 'Parallel episodes',
                                 desc: 'Episodes downloaded at the same time. Each episode uses the segment limit above, so the total load is the two multiplied together.',
                                 control: { type: 'slider', key: 'downloadMaxConcurrentJobs', min: 1, max: 4, step: 1 },
+                        },
+                        {
+                                name: 'Resume downloads on launch',
+                                desc: 'Continue queued and paused downloads when Obsidian starts, instead of waiting for the queue to be opened. Devices that report a metered connection (data saving, cellular) hold the resume until you start it yourself; iOS exposes no connection signal, so there it always resumes.',
+                                control: { type: 'toggle', key: 'autoResumeOnLaunch' },
                         },
                         {
                                 name: 'Recommendation model',

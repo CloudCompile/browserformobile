@@ -3,12 +3,13 @@ import {
         AnimeApiError,
         loadEpisodes,
         loadAnimeInfo,
+        planEpisodeGroups,
         searchSeries,
         type AnimeInfo,
         type EpisodeSummary,
         type SeriesSummary,
 } from './animeApi';
-import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat } from './downloader';
+import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat, type SeriesPreference, type SeriesPreferenceMap } from './downloader';
 import { formatSpeed } from './hls';
 import { externalStorageAvailable } from './destination';
 import { repairByteBudget, repairFolder, type RepairLedger } from './doctor';
@@ -31,10 +32,22 @@ export interface DownloadModalOptions {
         initialSeries?: SeriesSummary;
         /** Files a previous repair pass cleared, so this one skips them. */
         repairLedger?: RepairLedger;
+        /**
+         * Per-series format/quality overrides recorded earlier, keyed by series
+         * title. The picker shows the effective value (override or global) and
+         * records changes per series instead of rewriting the global options.
+         */
+        seriesPreferences?: SeriesPreferenceMap;
 }
 
 export interface DownloadModalCallbacks {
         onOptionsChanged(options: Partial<DownloadModalOptions>): void;
+        /**
+         * Record a series' format/quality override. Unlike `onOptionsChanged`
+         * this never touches the global settings — it is scoped to the series
+         * being picked.
+         */
+        onSeriesPreference?(series: string, patch: SeriesPreference): void;
         /** Fired when the window closes, so the plugin can drop its reference. */
         onClosed?(): void;
 }
@@ -63,6 +76,13 @@ export class DownloadModal extends Modal {
         private animeInfo: AnimeInfo | null = null;
         private episodes: EpisodeSummary[] = [];
         private chosen = new Set<string>();
+        /**
+         * The format/quality override for the series on screen, seeded from the
+         * recorded preference when the series opens and re-recorded on change.
+         */
+        private seriesOverride: SeriesPreference = {};
+        /** Episode groups the user collapsed in a long picker. */
+        private collapsedGroups = new Set<number>();
         private searchValue = '';
         private busy = false;
         private fullscreen = true;
@@ -435,6 +455,8 @@ export class DownloadModal extends Modal {
                 this.busy = true;
                 this.selected = series;
                 this.animeInfo = null;
+                this.seriesOverride = {};
+                this.collapsedGroups.clear();
                 this.render();
                 try {
                         const info = await loadAnimeInfo(this.options.apiBase, series.id, series.provider);
@@ -447,6 +469,11 @@ export class DownloadModal extends Modal {
                                 poster: info.poster ?? series.poster,
                                 showType: info.showType || series.showType,
                                 adultContent: info.adultContent,
+                        };
+                        // Seed the picker's overrides from the series' recorded
+                        // preference, under its canonical title.
+                        this.seriesOverride = {
+                                ...(this.options.seriesPreferences?.[this.selected.title] ?? {}),
                         };
                         this.stage = 'detail';
                 } catch (error) {
@@ -509,6 +536,7 @@ export class DownloadModal extends Modal {
         }
 
         private renderEpisodeControls(): void {
+                const seriesTitle = this.selected?.title ?? 'this series';
                 const controls = this.bodyEl.createDiv({ cls: 'bfm-dl-controls' });
 
                 const quick = controls.createDiv({ cls: 'bfm-dl-chip-row' });
@@ -580,30 +608,47 @@ export class DownloadModal extends Modal {
                 const options = controls.createDiv({ cls: 'bfm-dl-options' });
                 new Setting(options)
                         .setName('Quality')
-                        .setDesc('The closest available quality is used when the source does not offer the exact one.')
+                        .setDesc(
+                                `The closest available quality is used when the source does not offer the exact one. Applies to ${seriesTitle} only.`,
+                        )
                         .addDropdown((dropdown) => {
                                 for (const choice of QUALITY_CHOICES) {
                                         dropdown.addOption(choice.value, choice.label);
                                 }
-                                dropdown.setValue(String(this.options.quality));
-                                dropdown.onChange((value) => this.updateOption({ quality: Number(value) }));
+                                dropdown.setValue(String(this.seriesOverride.quality ?? this.options.quality));
+                                dropdown.onChange((value) => this.setSeriesPreference({ quality: Number(value) }));
                         });
 
                 new Setting(options)
                         .setName('Format')
                         .setDesc(
                                 Platform.isMobile
-                                        ? 'MP4 is one playable file and converts as it downloads. TS writes the raw stream with slightly less work.'
-                                        : 'MP4 produces a single playable file. TS keeps the raw stream.',
+                                        ? `MP4 is one playable file and converts as it downloads. TS writes the raw stream with slightly less work. Applies to ${seriesTitle} only.`
+                                        : `MP4 produces a single playable file. TS keeps the raw stream. Applies to ${seriesTitle} only.`,
                         )
                         .addDropdown((dropdown) => {
                                 dropdown.addOption('mp4', 'Playable file (mp4)');
                                 dropdown.addOption('ts', 'Raw stream (ts, low memory)');
-                                dropdown.setValue(this.options.format);
+                                dropdown.setValue(this.seriesOverride.format ?? this.options.format);
                                 dropdown.onChange((value) =>
-                                        this.updateOption({ format: value === 'ts' ? 'ts' : 'mp4' }),
+                                        this.setSeriesPreference({ format: value === 'ts' ? 'ts' : 'mp4' }),
                                 );
                         });
+        }
+
+        /**
+         * Record a format/quality override for the series on screen.
+         *
+         * This is scoped to the series — the global settings are untouched, so
+         * queueing one series at 480p does not silently reformat the next. The
+         * override is what this series' jobs are enqueued with, and the caller
+         * persists it for the next visit.
+         */
+        private setSeriesPreference(patch: SeriesPreference): void {
+                const series = this.selected;
+                if (!series) return;
+                this.seriesOverride = { ...this.seriesOverride, ...patch };
+                this.callbacks.onSeriesPreference?.(series.title, this.seriesOverride);
         }
 
         private renderDestinationControls(): void {
@@ -650,7 +695,11 @@ export class DownloadModal extends Modal {
                 this.busy = true;
                 this.render();
                 try {
-                        const missing = await this.manager.missingEpisodes(series.title, this.episodes);
+                        const missing = await this.manager.missingEpisodes(
+                                series.title,
+                                this.episodes,
+                                this.seriesOverride.format ?? this.options.format,
+                        );
                         this.chosen = new Set(missing.map((episode) => episode.id));
                         const have = this.episodes.length - missing.length;
                         new Notice(
@@ -667,7 +716,67 @@ export class DownloadModal extends Modal {
 
         private renderEpisodeList(): void {
                 const list = this.bodyEl.createDiv({ cls: 'bfm-dl-episodes' });
-                for (const episode of this.episodes) {
+                const groups = planEpisodeGroups(this.episodes);
+                // A short series renders exactly as it always did: one flat list.
+                if (!groups) {
+                        this.renderEpisodeRows(list, this.episodes);
+                        return;
+                }
+                // A long one is chunked numerically — the API exposes no season
+                // boundaries, so the labels are honest ranges, not invented
+                // seasons. Each group collapses and carries its own select/clear
+                // beside the global chips above.
+                groups.forEach((group, index) => {
+                        const collapsed = this.collapsedGroups.has(index);
+                        const selected = group.episodes.filter((episode) => this.chosen.has(episode.id)).length;
+                        const head = list.createDiv({ cls: 'bfm-dl-epgroup-head' });
+                        head.setAttribute('role', 'button');
+                        head.setAttribute('tabindex', '0');
+                        head.setAttribute('aria-label', `${group.label}, ${selected} of ${group.episodes.length} selected`);
+                        const chevron = head.createSpan({ cls: 'bfm-dl-epgroup-chevron' });
+                        setIcon(chevron, collapsed ? 'chevron-right' : 'chevron-down');
+                        head.createSpan({ cls: 'bfm-dl-epgroup-label', text: group.label });
+                        head.createSpan({
+                                cls: 'bfm-dl-epgroup-count',
+                                text: `${selected}/${group.episodes.length}`,
+                        });
+                        const toggle = (): void => {
+                                if (collapsed) this.collapsedGroups.delete(index);
+                                else this.collapsedGroups.add(index);
+                                this.render();
+                        };
+                        head.addEventListener('click', (event) => {
+                                if ((event.target as HTMLElement | null)?.closest('button')) return;
+                                toggle();
+                        });
+                        head.addEventListener('keydown', (event) => {
+                                if (event.target !== head) return;
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        toggle();
+                                }
+                        });
+                        const select = head.createEl('button', { cls: 'bfm-dl-chip bfm-dl-epgroup-select', text: 'Select' });
+                        select.setAttribute('aria-label', `Select all of ${group.label}`);
+                        select.addEventListener('click', (event) => {
+                                event.stopPropagation();
+                                for (const episode of group.episodes) this.chosen.add(episode.id);
+                                this.render();
+                        });
+                        const clear = head.createEl('button', { cls: 'bfm-dl-chip bfm-dl-epgroup-select', text: 'Clear' });
+                        clear.setAttribute('aria-label', `Clear all of ${group.label}`);
+                        clear.addEventListener('click', (event) => {
+                                event.stopPropagation();
+                                for (const episode of group.episodes) this.chosen.delete(episode.id);
+                                this.render();
+                        });
+                        if (!collapsed) this.renderEpisodeRows(list, group.episodes);
+                });
+        }
+
+        /** The episode rows themselves, shared by the flat and grouped lists. */
+        private renderEpisodeRows(list: HTMLElement, episodes: EpisodeSummary[]): void {
+                for (const episode of episodes) {
                         const row = list.createDiv({ cls: 'bfm-dl-episode' });
                         const checkbox = row.createEl('input', { attr: { type: 'checkbox' } });
                         checkbox.checked = this.chosen.has(episode.id);
@@ -713,7 +822,12 @@ export class DownloadModal extends Modal {
                 const series = this.selected;
                 if (!series || this.chosen.size === 0) return;
                 const episodes = this.episodes.filter((episode) => this.chosen.has(episode.id));
-                const created = this.manager.enqueue({ seriesTitle: series.title, episodes });
+                const created = this.manager.enqueue({
+                        seriesTitle: series.title,
+                        episodes,
+                        format: this.seriesOverride.format,
+                        quality: this.seriesOverride.quality,
+                });
                 const resumed = created.filter((job) => job.status === 'queued' && job.partialFound).length;
                 const message =
                         resumed > 0
@@ -805,6 +919,24 @@ export class DownloadModal extends Modal {
                 const status = head.createSpan({ cls: 'bfm-dl-job-status', text: describeProgress(job) });
                 if (job.status === 'failed') status.addClass('is-error');
                 if (job.status === 'paused' || job.status === 'waiting') status.addClass('is-paused');
+                if (job.status === 'queued' || job.status === 'paused') {
+                        // Queued and paused rows can be nudged past each other; a
+                        // running, parked, or finished row keeps its place. The
+                        // buttons disable themselves where there is nothing to
+                        // swap with, and a move re-renders the whole queue because
+                        // the rows themselves change order.
+                        for (const direction of ['up', 'down'] as const) {
+                                const move = head.createEl('button', { cls: 'bfm-dl-job-move' });
+                                setIcon(move, direction === 'up' ? 'arrow-up' : 'arrow-down');
+                                move.setAttribute('title', direction === 'up' ? 'Move up' : 'Move down');
+                                move.setAttribute('aria-label', `Move ${job.seriesTitle} episode ${job.episode.number} ${direction === 'up' ? 'up' : 'down'}`);
+                                move.disabled = !this.manager.canReorder(job.id, direction);
+                                move.addEventListener('click', () => {
+                                        this.manager.reorder(job.id, direction);
+                                        this.render();
+                                });
+                        }
+                }
                 if (job.status === 'running' || job.status === 'queued' || job.status === 'waiting') {
                         // A running download can be paused to keep its progress; a
                         // queued one is simply pulled back out of the queue.

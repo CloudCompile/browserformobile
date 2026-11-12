@@ -124,6 +124,16 @@ export interface DownloadJob {
         id: string;
         seriesTitle: string;
         episode: EpisodeSummary;
+        /**
+         * The format and quality this run uses, fixed when the job is enqueued.
+         * A per-series override in the picker sets them; a later change to the
+         * global options never rewrites a queued job, so what a run produces is
+         * what was asked for when it was queued — which is also what the resume
+         * guard holds the sidecar to.
+         */
+        format: OutputFormat;
+        /** Preferred height in pixels for this run. */
+        quality: number;
         status: JobStatus;
         /** Segments downloaded / total, or null before the playlist is known. */
         completed: number | null;
@@ -183,12 +193,74 @@ export interface DownloaderOptions {
 export interface EnqueueRequest {
         seriesTitle: string;
         episodes: EpisodeSummary[];
+        /**
+         * Per-series overrides applied to every episode in this request.
+         * Omitted fields fall back to the manager's global options.
+         */
+        format?: OutputFormat;
+        quality?: number;
 }
 
 export interface PersistedDownloadJob {
         seriesTitle: string;
         episode: EpisodeSummary;
         status: 'queued' | 'paused';
+        /** Recorded with the queue so a restart resumes the same output. */
+        format?: OutputFormat;
+        quality?: number;
+}
+
+/** A format/quality override the picker records for one series. */
+export type SeriesPreference = {
+        format?: OutputFormat;
+        quality?: number;
+};
+
+/** Per-series overrides, keyed by series title. */
+export type SeriesPreferenceMap = Record<string, SeriesPreference>;
+
+/**
+ * Record a per-series override, returning a new map.
+ *
+ * Pure, so the persisted map is produced rather than mutated and a test can
+ * hold it to that. A blank series name is ignored: without a title there is
+ * nothing to key the preference on.
+ */
+export function withSeriesPreference(
+        preferences: SeriesPreferenceMap,
+        series: string,
+        patch: SeriesPreference,
+): SeriesPreferenceMap {
+        const name = series.trim();
+        if (!name) return preferences;
+        return { ...preferences, [name]: { ...(preferences[name] ?? {}), ...patch } };
+}
+
+/** Only these rows the user may reorder; everything else holds its place. */
+function isMovableJob(job: DownloadJob): boolean {
+        return job.status === 'queued' || job.status === 'paused';
+}
+
+/**
+ * Whether the device reports its connection as metered — a link the user pays
+ * per byte for, where an unattended download costs money.
+ *
+ * What is knowable is limited: Chromium exposes `saveData` (Android's data
+ * saver) and sometimes a coarse `type`; iOS exposes nothing at all, so the
+ * answer there is always "not metered". The auto-resume setting documents
+ * this — on an iPhone it means resume regardless.
+ */
+export function isMeteredConnection(connection?: unknown): boolean {
+        if (connection === undefined) {
+                connection =
+                        typeof navigator === 'undefined'
+                                ? undefined
+                                : (navigator as Navigator & { connection?: unknown }).connection;
+        }
+        if (!connection || typeof connection !== 'object') return false;
+        const state = connection as { saveData?: unknown; type?: unknown };
+        if (state.saveData === true) return true;
+        return state.type === 'cellular' || state.type === 'wimax';
 }
 
 /** A partial found on disk, with the identity a resume can be checked against. */
@@ -314,6 +386,8 @@ export class DownloadManager {
                                 seriesTitle: job.seriesTitle,
                                 episode: job.episode,
                                 status: job.status,
+                                format: job.format,
+                                quality: job.quality,
                         }));
         }
 
@@ -338,6 +412,16 @@ export class DownloadManager {
                                 id: generateId(),
                                 seriesTitle: value.seriesTitle,
                                 episode,
+                                // Older persisted queues carry no preference; those
+                                // fall back to the global options as before.
+                                format:
+                                        value.format === 'ts' || value.format === 'mp4'
+                                                ? value.format
+                                                : this.options.format,
+                                quality:
+                                        typeof value.quality === 'number' && Number.isFinite(value.quality)
+                                                ? value.quality
+                                                : this.options.quality,
                                 status: value.status,
                                 completed: null,
                                 total: null,
@@ -408,6 +492,12 @@ export class DownloadManager {
                                 existing.retryAt = null;
                                 existing.rateLimitRetries = 0;
                                 existing.autoRetries = 0;
+                                // Re-record the preference: the user may have changed
+                                // the override since the failure, and the run must
+                                // follow it. The resume guard then discards a partial
+                                // the new format cannot continue.
+                                existing.format = request.format ?? this.options.format;
+                                existing.quality = request.quality ?? this.options.quality;
                                 created.push(existing);
                                 continue;
                         }
@@ -415,6 +505,8 @@ export class DownloadManager {
                                 id: generateId(),
                                 seriesTitle: request.seriesTitle,
                                 episode,
+                                format: request.format ?? this.options.format,
+                                quality: request.quality ?? this.options.quality,
                                 status: 'queued',
                                 completed: null,
                                 total: null,
@@ -532,6 +624,79 @@ export class DownloadManager {
                 this.scheduleUpdate();
                 this.queueChanged();
                 this.pump();
+        }
+
+        /**
+         * Whether `reorder` could move this job in a direction: only queued and
+         * paused rows are movable, and only when another movable row sits on that
+         * side — running, parked, and finished rows are not stepped over or into,
+         * so a parked job keeps its place at the bottom.
+         */
+        canReorder(jobId: string, direction: 'up' | 'down'): boolean {
+                const index = this.jobs.findIndex((job) => job.id === jobId);
+                if (index < 0) return false;
+                const step = direction === 'up' ? -1 : 1;
+                let target = index + step;
+                while (target >= 0 && target < this.jobs.length) {
+                        const other = this.jobs[target];
+                        if (other && isMovableJob(other)) return true;
+                        target += step;
+                }
+                return false;
+        }
+
+        /**
+         * Move a queued or paused job one place up or down the queue, swapping it
+         * with the nearest other movable job. The array order is the run order
+         * (`pump` takes the first queued row) and the persisted order, so a swap
+         * takes effect at once and survives a restart. Returns whether it moved.
+         */
+        reorder(jobId: string, direction: 'up' | 'down'): boolean {
+                const job = this.jobs.find((entry) => entry.id === jobId);
+                if (!job || !isMovableJob(job)) return false;
+                if (!this.canReorder(jobId, direction)) return false;
+                const index = this.jobs.findIndex((entry) => entry.id === jobId);
+                const step = direction === 'up' ? -1 : 1;
+                let target = (index >= 0 ? index : 0) + step;
+                while (target >= 0 && target < this.jobs.length) {
+                        const other = this.jobs[target];
+                        if (other && isMovableJob(other)) break;
+                        target += step;
+                }
+                const other = this.jobs[target];
+                if (!other) return false;
+                this.jobs[index] = other;
+                this.jobs[target] = job;
+                this.scheduleUpdate();
+                this.queueChanged();
+                return true;
+        }
+
+        /**
+         * Continue what a restart interrupted, without waiting for the user to
+         * open the queue and notice.
+         *
+         * Restored queued rows start through the ordinary pump. Restored paused
+         * rows are revived only when a partial is actually on disk — checked with
+         * `markPartial`, since resuming an unstarted download and resuming a
+         * half-written one are the same act to the queue but not to the user's
+         * bandwidth. A connection the device reports as metered is skipped
+         * entirely: the setting must not spend a data plan unattended. Returns
+         * how many paused rows were revived.
+         */
+        async autoResumeRestored(): Promise<number> {
+                if (isMeteredConnection()) return 0;
+                let revived = 0;
+                for (const job of [...this.jobs]) {
+                        if (job.status !== 'queued' && job.status !== 'paused') continue;
+                        await this.markPartial(job);
+                        if (job.status === 'paused' && job.partialFound) {
+                                this.resume(job.id);
+                                revived++;
+                        }
+                }
+                this.pump();
+                return revived;
         }
 
         cancelAll(): void {
@@ -830,8 +995,8 @@ export class DownloadManager {
                         seconds,
                         averageSpeed: tracker?.average ?? 0,
                         peakSpeed: tracker?.peakSpeed ?? 0,
-                        format: this.options.format,
-                        quality: this.options.quality,
+                        format: job.format,
+                        quality: job.quality,
                         segments: job.completed ?? 0,
                         resumed: job.resumed,
                         finishedAt: job.finishedAt ?? Date.now(),
@@ -885,7 +1050,7 @@ export class DownloadManager {
                 signal: AbortSignal,
                 onTick: () => void,
         ): Promise<void> {
-                this.debug('download.execute', { id: job.id, format: this.options.format, quality: this.options.quality });
+                this.debug('download.execute', { id: job.id, format: job.format, quality: job.quality });
                 if (typeof navigator !== 'undefined' && navigator.onLine === false) {
                         throw new DownloadError('No internet connection. Reconnect and resume this download.');
                 }
@@ -898,7 +1063,7 @@ export class DownloadManager {
                                         : 'No downloadable stream was found for this episode.',
                         );
                 }
-                const variant = selectVariant(source.variants, this.options.quality);
+                const variant = selectVariant(source.variants, job.quality);
                 if (!variant) throw new DownloadError('No stream quality was available.');
 
                 const playlist = await loadMediaPlaylist(variant.url);
@@ -929,8 +1094,8 @@ export class DownloadManager {
                 if (partial) {
                         const matches =
                                 partial.episodeId === job.episode.id &&
-                                partial.format === this.options.format &&
-                                partial.quality === this.options.quality &&
+                                partial.format === job.format &&
+                                partial.quality === job.quality &&
                                 partial.totalSegments === playlist.segments.length &&
                                 Math.abs(partial.durationSeconds - playlist.duration) <=
                                         DURATION_TOLERANCE_SECONDS;
@@ -938,7 +1103,7 @@ export class DownloadManager {
                         if (matches && partial.segments > 0 && onDisk !== null && onDisk >= partial.bytes) {
                                 resumeFrom = Math.min(partial.segments, playlist.segments.length);
                                 resumeBytes = partial.bytes;
-                                if (this.options.format === 'mp4') {
+                                if (job.format === 'mp4') {
                                         // A progressive MP4 can only be finished from
                                         // its index, which is what rebuilds the sample
                                         // tables for the media already on disk, and it
@@ -1044,7 +1209,7 @@ export class DownloadManager {
                 };
 
                 const written =
-                        this.options.format === 'ts'
+                        job.format === 'ts'
                                 ? await this.writeTs(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes)
                                 : await this.writeMp4(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes);
                 job.fileSize = written;
@@ -1170,8 +1335,8 @@ export class DownloadManager {
                         version: PARTIAL_VERSION,
                         episodeId: job.episode.id,
                         seriesTitle: job.seriesTitle,
-                        format: this.options.format,
-                        quality: this.options.quality,
+                        format: job.format,
+                        quality: job.quality,
                         totalSegments: playlist.segments.length,
                         durationSeconds: playlist.duration,
                         segments,
@@ -1446,13 +1611,13 @@ export class DownloadManager {
         }
 
         private buildPath(job: DownloadJob): string {
-                const extension = this.options.format === 'mp4' ? 'mp4' : 'ts';
+                const extension = job.format === 'mp4' ? 'mp4' : 'ts';
                 return buildFileName(this.options.filenameTemplate, job, extension);
         }
 
         /** The file path an episode would be saved to, without a job object. */
-        savedPath(episode: EpisodeSummary, seriesTitle: string): string {
-                const extension = this.options.format === 'mp4' ? 'mp4' : 'ts';
+        savedPath(episode: EpisodeSummary, seriesTitle: string, format: OutputFormat = this.options.format): string {
+                const extension = format === 'mp4' ? 'mp4' : 'ts';
                 return buildFileName(this.options.filenameTemplate, { episode, seriesTitle }, extension);
         }
 
@@ -1460,16 +1625,19 @@ export class DownloadManager {
          * Which of these episodes are not already saved, so a series download can
          * fill in the gaps rather than fetching the whole series again. An episode
          * that failed and left a `.part` counts as missing: enqueueing it resumes
-         * from where it stopped rather than starting over.
+         * from where it stopped rather than starting over. A per-series format
+         * override changes the extension the saved file would carry, so the
+         * caller's effective format is checked, not the global one.
          */
         async missingEpisodes(
                 seriesTitle: string,
                 episodes: EpisodeSummary[],
+                format: OutputFormat = this.options.format,
         ): Promise<EpisodeSummary[]> {
                 const destination = this.destinationFor();
                 const missing: EpisodeSummary[] = [];
                 for (const episode of episodes) {
-                        const path = this.savedPath(episode, seriesTitle);
+                        const path = this.savedPath(episode, seriesTitle, format);
                         const active = this.jobs.some(
                                 (job) =>
                                         job.episode.id === episode.id &&
@@ -1514,9 +1682,11 @@ export class DownloadManager {
                         }
                         const partial = await readPartial(destination, finalPath);
                         if (!partial || partial.segments <= 0) continue;
-                        // Only a partial this build could append to is worth
-                        // restoring; a format change makes the bytes meaningless.
-                        if (partial.format !== this.options.format) continue;
+                        // The sidecar records the format and quality the interrupted
+                        // run used, and the restored job finishes in exactly those —
+                        // so a global change since neither orphans the bytes nor
+                        // splices two formats together. An MP4 partial still needs
+                        // its index (checked below) to be finishable.
                         // An MP4 partial without an index cannot be finished — the
                         // sample tables for the media already on disk are rebuilt
                         // from it — so it is not offered as resumable.
@@ -1539,6 +1709,8 @@ export class DownloadManager {
                                 id: generateId(),
                                 seriesTitle: partial.seriesTitle,
                                 episode,
+                                format: partial.format,
+                                quality: partial.quality,
                                 status: 'failed',
                                 completed: partial.segments,
                                 total: partial.totalSegments,

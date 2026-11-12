@@ -1,7 +1,14 @@
 import { Notice, Platform, Plugin, WorkspaceLeaf } from 'obsidian';
 import { AnimeCache, type CachePersistence } from './animeCache';
 import { setAnimeCache } from './animeApi';
-import { DownloadManager, seriesFolderName, type DownloaderOptions, type PersistedDownloadJob } from './downloader';
+import {
+        DownloadManager,
+        seriesFolderName,
+        withSeriesPreference,
+        type DownloaderOptions,
+        type PersistedDownloadJob,
+        type SeriesPreferenceMap,
+} from './downloader';
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
 import { repairByteBudget, repairFolder, RepairLedger } from './doctor';
 import { externalStorageAvailable, sanitizePath } from './destination';
@@ -12,7 +19,7 @@ import { DEFAULT_FILENAME_TEMPLATE, DEFAULT_SETTINGS, AnimeSettingTab, type Anim
 import { StatsStore, buildStatsCsv, parseDataExport, type DataExport, type DownloadRun } from './stats';
 import { StatsModal } from './statsModal';
 import { ConfirmModal, SeriesPickerModal } from './modals';
-import { FindModal } from './findModal';
+import { FindModal, type PersistedFinderState } from './findModal';
 import { DetailsModal } from './detailsModal';
 import { DebugLogger } from './debug';
 import { applyModelScores, collectRecommendations, deriveSeeds } from './recommendService';
@@ -54,6 +61,10 @@ interface PersistedShape {
 	repairLedger?: Record<string, string>;
 	/** Queued and paused downloads to restore after a restart. */
 	downloadQueue?: PersistedDownloadJob[];
+	/** Per-series format/quality overrides recorded by the picker. */
+	seriesPreferences?: SeriesPreferenceMap;
+	/** Where the finder was left, so it reopens on the same listing. */
+	finderState?: PersistedFinderState;
 	/** The library's layout, remembered between sessions. */
 	libraryView?: 'list' | 'grid';
 	/** Recommendation titles the user said they are not interested in. */
@@ -86,6 +97,11 @@ export default class AnimePlugin extends Plugin {
 	private animeCacheRecords: unknown = null;
 	private downloadQueue: PersistedDownloadJob[] = [];
 	private queueSaveTimer: number | null = null;
+	/** Per-series format/quality overrides, keyed by series title. */
+	seriesPreferences: SeriesPreferenceMap = {};
+	/** Where the finder was left, so it reopens on the same listing. */
+	finderState: PersistedFinderState | null = null;
+	private finderSaveTimer: number | null = null;
 	private debugLogger!: DebugLogger;
 	/** The library layout, persisted so the grid is still the grid next time. */
 	libraryView: 'list' | 'grid' = 'list';
@@ -175,6 +191,20 @@ export default class AnimePlugin extends Plugin {
 			(message, details) => this.debug(message, details),
 		);
 		this.downloader.restoreQueue(this.downloadQueue);
+		if (this.settings.autoResumeOnLaunch) {
+			// A convenience must never break or block startup: any failure is
+			// logged and the queue waits in the state the restart left it.
+			void this.downloader.autoResumeRestored().then(
+				(revived) => {
+					if (revived > 0) this.debug('queue.auto-resume', { revived });
+				},
+				(error) => {
+					this.debug('queue.auto-resume.failed', {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				},
+			);
+		}
 
 		this.registerView(VIEW_TYPE_DOWNLOADS, (leaf: WorkspaceLeaf) => new DownloadManagerView(leaf, this));
 
@@ -385,6 +415,18 @@ export default class AnimePlugin extends Plugin {
 		}
 		const modal = new FindModal(this.app, {
 			apiBase: this.settings.animeApiBase,
+			initialState: this.finderState ?? undefined,
+			onStateChange: (state) => {
+				this.finderState = state;
+				// Same shape as the queue save: coalesce the writes, since every
+				// navigation renders twice (busy, then done) and the data file is
+				// written whole.
+				if (this.finderSaveTimer !== null) window.clearTimeout(this.finderSaveTimer);
+				this.finderSaveTimer = window.setTimeout(() => {
+					this.finderSaveTimer = null;
+					void this.saveSettings();
+				}, 500);
+			},
 			onOpenSeries: (series) => this.openDownloader(undefined, series),
 		});
 		this.findModal = modal;
@@ -1201,10 +1243,17 @@ export default class AnimePlugin extends Plugin {
 				initialQuery: query,
 				initialSeries: series,
 				repairLedger: this.repairLedger,
+				seriesPreferences: this.seriesPreferences,
 			},
 			{
 				onOptionsChanged: (patch) => {
 					void this.applyDownloadOptions(patch);
+				},
+				onSeriesPreference: (seriesTitle, patch) => {
+					// Scoped to the series: the global quality and format settings
+					// stay untouched, and the override rides the next queue save.
+					this.seriesPreferences = withSeriesPreference(this.seriesPreferences, seriesTitle, patch);
+					void this.saveSettings();
 				},
 				onClosed: () => {
 					this.downloadModal = null;
@@ -1411,6 +1460,11 @@ export default class AnimePlugin extends Plugin {
 		this.animeCacheRecords = raw?.animeCache ?? null;
 		this.downloadQueue = Array.isArray(raw?.downloadQueue) ? raw.downloadQueue : [];
 		this.downloadScanCache = raw?.downloadScanCache ?? {};
+		this.seriesPreferences =
+			raw?.seriesPreferences && typeof raw.seriesPreferences === 'object'
+				? raw.seriesPreferences
+				: {};
+		this.finderState = this.parseFinderState(raw?.finderState);
 		this.libraryView = raw?.libraryView === 'grid' ? 'grid' : 'list';
 		this.dismissedRecommendations = Array.isArray(raw?.dismissedRecommendations)
 			? raw.dismissedRecommendations.filter((title): title is string => typeof title === 'string')
@@ -1430,9 +1484,33 @@ export default class AnimePlugin extends Plugin {
 			stats: this.stats.toJSON(),
 			animeCache: this.animeCacheRecords,
 			downloadQueue: this.downloader?.serializeQueue?.() ?? this.downloadQueue,
+			seriesPreferences: this.seriesPreferences,
+			finderState: this.finderState,
 			libraryView: this.libraryView,
 			dismissedRecommendations: this.dismissedRecommendations,
 		});
+	}
+
+	/**
+	 * Validate a persisted finder state, or null when it is not one.
+	 *
+	 * Only the view is checked hard — the rest is tolerated loosely, and the
+	 * modal itself re-applies the 18+ gate on restore. A corrupt state costs
+	 * nothing: the finder opens on its front page instead.
+	 */
+	private parseFinderState(value: unknown): PersistedFinderState | null {
+		if (!value || typeof value !== 'object') return null;
+		const state = value as Partial<PersistedFinderState>;
+		if (state.view !== 'sections' && state.view !== 'genres' && state.view !== 'browse') return null;
+		return {
+			source: typeof state.source === 'string' ? state.source : undefined,
+			view: state.view,
+			sectionId: typeof state.sectionId === 'string' ? state.sectionId : null,
+			sectionName: typeof state.sectionName === 'string' ? state.sectionName : '',
+			genreSlug: typeof state.genreSlug === 'string' ? state.genreSlug : null,
+			page: typeof state.page === 'number' && state.page > 0 ? Math.floor(state.page) : 1,
+			adultOptIn: state.adultOptIn === true,
+		};
 	}
 
 }

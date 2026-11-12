@@ -45,12 +45,14 @@ Open it from the compass ribbon icon or the **Anime: find anime** command.
 Instead of typing a search, browse the catalogue: pick a listing section (most
 popular, top airing, top upcoming, recently added, completed, or a format such
 as movies) or **Browse by genre**, then page through the poster grid. Selecting
-a title opens it straight in the downloader, ready for episode selection.
+a title opens it straight in the downloader, ready for episode selection. The
+finder reopens where you left it — the same section or genre, and page.
 
 The **18+** checkbox in the finder reveals a second tab backed by the adult
 source, which has its own sections (monthly releases, all series) and its own
 genre list. It uses the same grid and pager, so the browsing is identical; leave
-the box off and only the normal catalogue is reachable.
+the box off and only the normal catalogue is reachable. A restored finder obeys
+the same gate: the adult tab comes back only if the box is still on.
 
 ## Anime downloader
 
@@ -61,6 +63,16 @@ Search for a series, pick it, then choose episodes. You can select all, select
 none, invert the selection, skip filler, add a numeric range such as 12–24, or
 **Download missing** to fill in only the episodes not already saved.
 Downloads run in the background and keep going if you close the window.
+
+A very long series groups its episode list into collapsible ranges —
+Episodes 1–50, 51–100, and so on — each with its own select and clear beside the
+global ones. The catalogue does not label seasons, so the groups are honest
+number ranges, not invented seasons; a short series lists exactly as before.
+
+Queued downloads can be reordered: queued and paused rows carry move buttons,
+so the next episode to fetch is yours to choose. Running, parked, and finished
+rows keep their places — a rate-limited row stays at the bottom until it
+retries.
 
 The window opens full screen, so a long queue and a long episode list both have
 room. Use the button in the title bar to shrink it back to a popup.
@@ -101,6 +113,16 @@ still downloads the 720p stream.
 
 Both formats keep memory low; **MP4** is the one to pick for a single playable
 file.
+
+### Per-series choices
+
+The quality and format dropdowns in the episode picker set the choice for the
+series you are picking, not for the plugin: grab one long series as TS, or one
+series at 480p, without touching your defaults. The choice is remembered per
+series and rides with its queue entries — episodes queued earlier keep the
+choice they were queued with, so a later change never rewrites what is already
+waiting. **Download missing** also looks for files under the series' own format
+choice.
 
 ### Subtitles
 
@@ -153,6 +175,12 @@ That is worth remembering for a large library.
   raising it is safe.
 - **Parallel episodes** — episodes downloaded at once. The default is 1, which
   is the kindest setting on a phone; raise it on desktop.
+- **Resume downloads on launch** — continue queued and paused downloads when
+  Obsidian starts, instead of waiting for the queue to be opened. Off by
+  default. Devices that report a metered connection (Android's data saver, or a
+  cellular connection type) hold the resume until you start it yourself; iOS
+  exposes no connection signal, so there it resumes regardless — keep the
+  setting off if that is not wanted.
 
 ### Resuming a download
 
