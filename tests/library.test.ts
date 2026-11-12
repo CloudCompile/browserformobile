@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import { VideoLibrary, buildNameRegex, inferSeason, parseEntryName } from '../src/library';
+import { VideoLibrary, buildNameRegex, inferSeason, parseEntryName, type WatchRecord } from '../src/library';
 
 /** A fake vault adapter backed by a plain path -> size map. */
 function fakeAdapter(files: Record<string, number>, options?: { listThrows?: boolean; missingRoot?: boolean }) {
@@ -160,5 +160,68 @@ describe('library scan performance', () => {
                 expect(library.entries).toHaveLength(2);
                 const second = library.entries.find((entry) => entry.name.includes('02'));
                 expect(second?.size).toBe(0);
+        });
+});
+
+describe('mergeRecords', () => {
+        const record = (position: number, updatedAt: number, duration = 1200): WatchRecord => ({
+                position,
+                duration,
+                updatedAt,
+        });
+
+        it('keeps the further position regardless of which side it is on', () => {
+                const current = { 'Anime/A.mp4': record(300, 100) };
+                const merged = VideoLibrary.mergeRecords({ 'Anime/A.mp4': record(900, 50) }, current);
+                expect(merged['Anime/A.mp4']?.position).toBe(900);
+                // And the mirror image: the incoming side is behind.
+                const mergedBack = VideoLibrary.mergeRecords({ 'Anime/A.mp4': record(100, 50) }, {
+                        'Anime/A.mp4': record(300, 100),
+                });
+                expect(mergedBack['Anime/A.mp4']?.position).toBe(300);
+        });
+
+        it('breaks a position tie by recency', () => {
+                const current = { 'Anime/A.mp4': record(500, 100) };
+                const merged = VideoLibrary.mergeRecords({ 'Anime/A.mp4': record(500, 200) }, current);
+                expect(merged['Anime/A.mp4']?.updatedAt).toBe(200);
+                // The same position but older: keep what we have.
+                const kept = VideoLibrary.mergeRecords({ 'Anime/A.mp4': record(500, 50) }, current);
+                expect(kept['Anime/A.mp4']?.updatedAt).toBe(100);
+        });
+
+        it('treats a missing updatedAt as the oldest', () => {
+                const current = { 'Anime/A.mp4': { position: 500, duration: 1200 } as WatchRecord };
+                const merged = VideoLibrary.mergeRecords({ 'Anime/A.mp4': record(500, 7) }, current);
+                expect(merged['Anime/A.mp4']?.updatedAt).toBe(7);
+        });
+
+        it('adopts files it has never seen and keeps the rest', () => {
+                const current = { 'Anime/A.mp4': record(300, 100) };
+                const merged = VideoLibrary.mergeRecords(
+                        { 'Anime/B.mp4': record(50, 5), 'Anime/A.mp4': record(10, 1) },
+                        current,
+                );
+                expect(Object.keys(merged).sort()).toEqual(['Anime/A.mp4', 'Anime/B.mp4']);
+                expect(merged['Anime/A.mp4']?.position).toBe(300);
+                expect(merged['Anime/B.mp4']?.position).toBe(50);
+        });
+
+        it('drops malformed incoming records', () => {
+                const current = { 'Anime/A.mp4': record(300, 100) };
+                const merged = VideoLibrary.mergeRecords(
+                        {
+                                'Anime/B.mp4': record(-5, 10),
+                                'Anime/C.mp4': null as unknown as WatchRecord,
+                        },
+                        current,
+                );
+                expect(Object.keys(merged)).toEqual(['Anime/A.mp4']);
+        });
+
+        it('returns the same object when nothing would change', () => {
+                const current = { 'Anime/A.mp4': record(300, 100) };
+                const same = VideoLibrary.mergeRecords({ 'Anime/A.mp4': record(200, 1) }, current);
+                expect(same).toBe(current);
         });
 });
