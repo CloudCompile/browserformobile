@@ -13,6 +13,31 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.1.5 — 2026-11-17
+
+The details page now covers both sources, and the episode list finally carries
+its own art.
+
+- **One details page for every source.** Before, a page was built only from the
+  MyAnimeList mirror. The 18+ catalogue has no MAL record, so its titles opened
+  to nothing useful. Its own structured details — type, year, status, genres and
+  episode list — are now mapped into the same page. The library's details page
+  falls back to a title search, so a downloaded 18+ series resolves too.
+- **The 18+ blurb is gone.** Every series in that source carried the identical
+  generated sentence ("Watch … hentai online free in HD …"), and its episode
+  count was often stale. It is no longer shown; the status is recovered from it,
+  and the source's own episode list is authoritative for the count.
+- **18+ details show the episodes.** The page renders the real episode list with
+  the source's stills, and tapping one opens the picker with that episode
+  selected. The download button carries the series' source and id, so it opens
+  the provider directly instead of a native search that could never find it.
+- **The downloader's pre-download page is the same full page** — poster and
+  headline numbers, genres, synopsis, cast and music where the source has them,
+  and those 18+ episode cards where it does not.
+- **Offline recommendations work again.** The metadata store read a field the
+  details payload never had, so the fallback list was always empty; it now reads
+  the real one (`recommendations`) and still accepts the older name.
+
 ## 5.0.0 — 2026-11-12
 
 Structural work, hence the `.0`: series metadata becomes a store on disk rather
