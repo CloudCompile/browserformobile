@@ -1,11 +1,25 @@
 import { App, Modal, Notice, setIcon } from 'obsidian';
-import { loadPreview, type AnimePreview, type PreviewCharacter, type PreviewTheme } from './animeApi';
+import {
+        ADULT_PROVIDER,
+        loadSeriesDetails,
+        type AnimePreview,
+        type SeriesDetails,
+        type SeriesSummary,
+} from './animeApi';
 import type { Recommendation } from './recommend';
 import { describeBecause } from './recommendService';
+import { factsFor, renderHero, renderPreviewBlocks, section } from './seriesDetails';
 
 export interface DetailsCallbacks {
-        /** Series name, used to queue episodes through the existing downloader. */
-        onDownload?(series: string): void;
+        /**
+         * Queue a series through the downloader. The summary carries the source
+         * and id, so a title from the 18+ catalogue opens its own provider page
+         * instead of a native search that would never find it. `search` is true
+         * when the catalogue id was not real (the details came only from the
+         * MyAnimeList mirror), in which case the downloader should search by
+         * title instead.
+         */
+        onDownload?(series: SeriesSummary, search: boolean): void;
         /** Open the details page for a recommended title. */
         onOpenRecommendation?(title: string): void;
         onClosed?(): void;
@@ -17,6 +31,12 @@ export interface DetailsModalOptions {
         /** Base URL of the anime API, from the plugin settings. */
         apiBase: string;
         /**
+         * Source the series belongs to, when the caller knows it. The 18+ source
+         * has no MyAnimeList record, so its details come from its own provider
+         * route; without this the page falls back to a title search.
+         */
+        provider?: string;
+        /**
          * The kept details answer from the metadata store, when the series was
          * browsed before. The page paints from it immediately and corrects
          * itself if the background refresh differs — airplane mode included.
@@ -26,27 +46,20 @@ export interface DetailsModalOptions {
         loadRecommendations?: (seed: string) => Promise<Recommendation[]>;
 }
 
-/** Format a number with thousands separators, or an em dash when absent. */
-function count(value: number | null | undefined): string {
-        if (value === null || value === undefined) return '—';
-        return value.toLocaleString();
-}
-
-/** A short "24 min" style duration, or the raw string. */
-function durationText(value: string | null): string {
-        return value ?? '—';
-}
-
 /**
  * The full details page for a series.
  *
- * Everything shown comes from the API's `/api/preview/:id`, which rebuilds the
- * MyAnimeList record: score, rank, studios, cast, staff, themes, relations and
- * the catalogue's own recommendations. Blocks are rendered only when they have
- * content, because a title with no themes or no trailer is normal and an empty
- * heading reads like a bug.
+ * One page for both sources: the native catalogue's MyAnimeList record when it
+ * exists, and the 18+ provider's structured details mapped into the same shape
+ * when it does not. The 18+ provider's generated blurb — the same sentence on
+ * every series — is never shown; the facts grid and the source's own episode
+ * list carry the real information.
+ *
+ * Blocks are rendered only when they have content, because a title with no
+ * themes or no trailer is normal and an empty heading reads like a bug.
  */
 export class DetailsModal extends Modal {
+        private details: SeriesDetails | null = null;
         private preview: AnimePreview | null = null;
         private loading = true;
         private failed: string | null = null;
@@ -89,23 +102,19 @@ export class DetailsModal extends Modal {
 
         private async load(): Promise<void> {
                 try {
-                        this.preview = await loadPreview(this.options.apiBase, this.options.series);
-                        if (!this.preview) this.failed = 'No details are available for this title.';
+                        this.details = await loadSeriesDetails(this.options.apiBase, this.options.series, {
+                                provider: this.options.provider,
+                        });
+                        this.preview = this.details.preview;
                 } catch (error) {
                         // A kept copy is already on screen; an unreachable API
-                        // only matters when there was nothing to show. The
-                        // stale copy is not marked with a banner — it is a
-                        // details page, not an episode list, and nothing in it
-                        // can send the viewer wrong the way a wrong count
-                        // would. When the refresh does differ, the render
-                        // below replaces it silently.
+                        // only matters when there was nothing to show.
                         if (!this.preview) this.failed = error instanceof Error ? error.message : 'Could not load details.';
                 } finally {
                         this.loading = false;
                         // Re-render only when the fresh answer differs from the
                         // one painted from the store — the common case is the
-                        // same payload fetched again, and a repaint of
-                        // identical content is churn the modal can skip.
+                        // same payload fetched again.
                         const serialized = this.preview ? JSON.stringify(this.preview) : null;
                         if (serialized !== this.renderedPreview) {
                                 this.renderedPreview = serialized;
@@ -148,200 +157,54 @@ export class DetailsModal extends Modal {
 
                 const detail = this.preview.detail;
                 this.titleEl.setText(detail.title ?? this.options.series);
-                this.renderHero(detail.image);
-                this.renderFacts();
-                this.renderSynopsis();
-                this.renderTags();
-                this.renderThemes();
-                this.renderCast();
-                this.renderStaff();
-                this.renderRelations();
-                this.renderLinks();
+                renderHero(this.bodyEl, {
+                        poster: detail.image,
+                        title: detail.title ?? this.options.series,
+                        subtitle: detail.titleJapanese,
+                        adult: this.isAdult(),
+                        facts: factsFor(detail),
+                });
+                renderPreviewBlocks(this.bodyEl, this.preview);
+                this.renderDownloadAction();
                 this.renderRecommendations();
         }
 
-        private renderHero(poster: string | null): void {
-                if (!poster) return;
-                const hero = this.bodyEl.createDiv({ cls: 'bfm-details-hero' });
-                hero.createEl('img', { cls: 'bfm-details-poster', attr: { src: poster, alt: '', loading: 'lazy' } });
+        /** True when the details came from the opt-in 18+ source. */
+        private isAdult(): boolean {
+                return (
+                        this.details?.info.adultContent === true ||
+                        this.preview?.source === ADULT_PROVIDER
+                );
         }
 
-        /** The headline numbers: score, rank, episodes, status. */
-        private renderFacts(): void {
-                const detail = this.preview!.detail;
-                const facts: Array<{ label: string; value: string }> = [];
-                if (detail.score !== null) facts.push({ label: 'Score', value: detail.score.toFixed(2) });
-                if (detail.rank !== null) facts.push({ label: 'Ranked', value: `#${count(detail.rank)}` });
-                if (detail.popularity !== null) facts.push({ label: 'Popularity', value: `#${count(detail.popularity)}` });
-                if (detail.episodes !== null) facts.push({ label: 'Episodes', value: String(detail.episodes) });
-                if (detail.type) facts.push({ label: 'Type', value: detail.type });
-                if (detail.status) facts.push({ label: 'Status', value: detail.status });
-                if (detail.duration) facts.push({ label: 'Duration', value: durationText(detail.duration) });
-                if (detail.rating) facts.push({ label: 'Rating', value: detail.rating });
-                if (detail.source) facts.push({ label: 'Source', value: detail.source });
-                if (detail.year !== null) facts.push({ label: 'Year', value: String(detail.year) });
-                if (detail.aired.string) facts.push({ label: 'Aired', value: detail.aired.string });
-                if (detail.broadcast.string) facts.push({ label: 'Broadcast', value: detail.broadcast.string });
-                if (detail.members !== null) facts.push({ label: 'Members', value: count(detail.members) });
-                if (detail.favorites !== null) facts.push({ label: 'Favourites', value: count(detail.favorites) });
-                if (facts.length === 0) return;
-
-                const grid = this.bodyEl.createDiv({ cls: 'bfm-details-facts' });
-                for (const fact of facts) {
-                        const cell = grid.createDiv({ cls: 'bfm-details-fact' });
-                        cell.createDiv({ cls: 'bfm-details-fact-label', text: fact.label });
-                        cell.createDiv({ cls: 'bfm-details-fact-value', text: fact.value });
-                }
-        }
-
-        private renderSynopsis(): void {
-                const synopsis = this.preview!.detail.synopsis;
-                if (!synopsis) return;
-                const section = this.section('Synopsis', 'align-left');
-                section.createDiv({ cls: 'bfm-details-synopsis', text: synopsis });
-        }
-
-        /** Genres, themes and demographics as chips. */
-        private renderTags(): void {
-                const detail = this.preview!.detail;
-                const chips: Array<{ text: string; cls: string }> = [
-                        ...detail.genres.map((genre) => ({ text: genre, cls: 'is-genre' })),
-                        ...detail.themes.map((theme) => ({ text: theme, cls: 'is-theme' })),
-                        ...detail.demographics.map((demo) => ({ text: demo, cls: 'is-demo' })),
-                ];
-                if (chips.length === 0) return;
-                const row = this.bodyEl.createDiv({ cls: 'bfm-details-chips' });
-                for (const chip of chips) {
-                        row.createSpan({ cls: `bfm-details-chip ${chip.cls}`, text: chip.text });
-                }
-        }
-
-        private renderThemes(): void {
-                const themes = this.preview!.themes;
-                if (themes.length === 0) return;
-                const openings = themes.filter((theme) => theme.kind === 'opening');
-                const endings = themes.filter((theme) => theme.kind === 'ending');
-                const other = themes.filter((theme) => theme.kind !== 'opening' && theme.kind !== 'ending');
-                const section = this.section('Music', 'music');
-                for (const [label, list] of [['Openings', openings], ['Endings', endings], ['Other', other]] as Array<[string, PreviewTheme[]]>) {
-                        if (list.length === 0) continue;
-                        section.createDiv({ cls: 'bfm-details-subtitle', text: `${label} (${list.length})` });
-                        const ul = section.createEl('ul', { cls: 'bfm-details-music' });
-                        for (const theme of list) {
-                                const li = ul.createEl('li');
-                                li.createSpan({ cls: 'bfm-details-music-title', text: theme.title ?? 'Unknown' });
-                                if (theme.artist) li.createSpan({ cls: 'bfm-details-music-artist', text: ` — ${theme.artist}` });
-                                if (theme.episodes) li.createSpan({ cls: 'bfm-details-music-eps', text: ` (${theme.episodes})` });
-                        }
-                }
-        }
-
-        private renderCast(): void {
-                const characters = this.preview!.characters;
-                if (characters.length === 0) return;
-                const section = this.section('Cast', 'users');
-                const grid = section.createDiv({ cls: 'bfm-details-cast' });
-                // Main characters first, then by favourites, so the leads are on top.
-                const sorted = [...characters].sort((left, right) => {
-                        const leftMain = left.role === 'Main' ? 1 : 0;
-                        const rightMain = right.role === 'Main' ? 1 : 0;
-                        if (leftMain !== rightMain) return rightMain - leftMain;
-                        return (right.favorites ?? 0) - (left.favorites ?? 0);
+        /** The download hand-off, carrying the source and id with the title. */
+        private renderDownloadAction(): void {
+                if (!this.callbacks.onDownload) return;
+                const actions = section(this.bodyEl, 'Download', 'download');
+                const row = actions.createDiv({ cls: 'bfm-details-actions' });
+                const button = row.createEl('button', { cls: 'mod-cta', text: 'Download episodes' });
+                button.addEventListener('click', () => {
+                        this.callbacks.onDownload?.(this.seriesSummary(), !(this.details?.synthesized ?? false));
+                        this.close();
                 });
-                for (const character of sorted.slice(0, 18)) {
-                        this.renderCharacterCard(grid, character);
-                }
         }
 
-        private renderCharacterCard(grid: HTMLElement, character: PreviewCharacter): void {
-                const card = grid.createDiv({ cls: 'bfm-details-cast-card' });
-                if (character.image) {
-                        card.createEl('img', { cls: 'bfm-details-cast-image', attr: { src: character.image, alt: '', loading: 'lazy' } });
-                } else {
-                        const placeholder = card.createDiv({ cls: 'bfm-details-cast-image is-placeholder' });
-                        setIcon(placeholder, 'user');
-                }
-                const info = card.createDiv({ cls: 'bfm-details-cast-info' });
-                info.createDiv({ cls: 'bfm-details-cast-name', text: character.name ?? 'Unknown' });
-                if (character.role) info.createDiv({ cls: 'bfm-details-cast-role', text: character.role });
-                // The Japanese voice actor is the one MAL records for each character.
-                const voice = character.voiceActors.find((actor) => actor.language === 'Japanese') ?? character.voiceActors[0];
-                if (voice?.name) info.createDiv({ cls: 'bfm-details-cast-voice', text: voice.name });
-        }
-
-        private renderStaff(): void {
-                const staff = this.preview!.staff;
-                if (staff.length === 0) return;
-                const section = this.section('Staff', 'briefcase');
-                const list = section.createDiv({ cls: 'bfm-details-staff' });
-                for (const member of staff.slice(0, 12)) {
-                        const row = list.createDiv({ cls: 'bfm-details-staff-row' });
-                        row.createSpan({ cls: 'bfm-details-staff-name', text: member.name ?? 'Unknown' });
-                        if (member.role) row.createSpan({ cls: 'bfm-details-staff-role', text: member.role });
-                }
-        }
-
-        /** Studios, producers and licensors. */
-        private renderRelations(): void {
-                const detail = this.preview!.detail;
-                const groups: Array<[string, typeof detail.studios]> = [
-                        ['Studios', detail.studios],
-                        ['Producers', detail.producers],
-                        ['Licensors', detail.licensors],
-                ];
-                const rows = groups.filter(([, list]) => list.length > 0);
-                if (rows.length === 0) return;
-                const section = this.section('Production', 'building');
-                for (const [label, list] of rows) {
-                        const row = section.createDiv({ cls: 'bfm-details-company-row' });
-                        row.createSpan({ cls: 'bfm-details-company-label', text: label });
-                        row.createSpan({ cls: 'bfm-details-company-list', text: list.map((company) => company.name).join(', ') });
-                }
-                if (detail.relations.length > 0) {
-                        const related = section.createDiv({ cls: 'bfm-details-company-row' });
-                        related.createSpan({ cls: 'bfm-details-company-label', text: 'Related' });
-                        related.createSpan({
-                                cls: 'bfm-details-company-list',
-                                text: detail.relations
-                                        .slice(0, 8)
-                                        .map((relation) => `${relation.relation ?? ''}: ${relation.title ?? ''}`.trim())
-                                        .join(' · '),
-                        });
-                }
-        }
-
-        /** Streaming and external links, and the download action. */
-        private renderLinks(): void {
-                const detail = this.preview!.detail;
-                const section = this.section('Links', 'link');
-                if (detail.streaming.length > 0) {
-                        const row = section.createDiv({ cls: 'bfm-details-link-row' });
-                        row.createSpan({ cls: 'bfm-details-company-label', text: 'Streaming' });
-                        const list = row.createSpan({ cls: 'bfm-details-company-list' });
-                        detail.streaming.slice(0, 6).forEach((link, index) => {
-                                if (index > 0) list.createSpan({ text: ', ' });
-                                const anchor = list.createEl('a', { text: link.name ?? 'link' });
-                                anchor.href = link.url ?? '#';
-                                anchor.setAttr('target', '_blank');
-                                anchor.setAttr('rel', 'noopener');
-                        });
-                }
-                if (detail.url) {
-                        const row = section.createDiv({ cls: 'bfm-details-link-row' });
-                        row.createSpan({ cls: 'bfm-details-company-label', text: 'MyAnimeList' });
-                        const anchor = row.createEl('a', { text: detail.url });
-                        anchor.href = detail.url;
-                        anchor.setAttr('target', '_blank');
-                        anchor.setAttr('rel', 'noopener');
-                }
-                if (this.callbacks.onDownload) {
-                        const actions = section.createDiv({ cls: 'bfm-details-actions' });
-                        const button = actions.createEl('button', { cls: 'mod-cta', text: 'Download episodes' });
-                        button.addEventListener('click', () => {
-                                this.callbacks.onDownload?.(this.options.series);
-                                this.close();
-                        });
-                }
+        /** Build the summary the downloader opens straight to. */
+        private seriesSummary(): SeriesSummary {
+                const detail = this.preview?.detail;
+                const info = this.details?.info;
+                return {
+                        id: info?.id ?? this.options.series,
+                        title: detail?.title ?? info?.title ?? this.options.series,
+                        japaneseTitle: detail?.titleJapanese ?? info?.japaneseTitle ?? null,
+                        poster: detail?.image ?? info?.poster ?? null,
+                        showType: detail?.type ?? info?.showType ?? 'TV',
+                        sub: 0,
+                        dub: 0,
+                        eps: detail?.episodes ?? info?.episodeCount ?? 0,
+                        adultContent: this.isAdult(),
+                        provider: info?.provider,
+                };
         }
 
         /** The recommendation list, rendered on its own so it can update late. */
@@ -404,14 +267,5 @@ export class DetailsModal extends Modal {
                                 open();
                         });
                 }
-        }
-
-        /** A titled section with an icon. */
-        private section(title: string, icon: string): HTMLElement {
-                const section = this.bodyEl.createDiv({ cls: 'bfm-details-section' });
-                const header = section.createDiv({ cls: 'bfm-details-section-title' });
-                setIcon(header.createSpan({ cls: 'bfm-details-section-icon' }), icon);
-                header.createSpan({ text: title });
-                return section;
         }
 }

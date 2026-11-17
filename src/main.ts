@@ -390,7 +390,7 @@ export default class AnimePlugin extends Plugin {
 	 * Recommendations are produced lazily by the modal, so the page shows the
 	 * details first and fills the recommendation list in when it is ready.
 	 */
-	openDetails(series: string): void {
+	openDetails(series: string, provider?: string): void {
 		const name = (series ?? '').trim();
 		if (!name) return;
 		if (this.detailsModal) {
@@ -402,6 +402,7 @@ export default class AnimePlugin extends Plugin {
 			{
 				series: name,
 				apiBase: this.settings.animeApiBase,
+				provider,
 				// A series browsed before paints from the kept copy at once;
 				// the live fetch still runs and replaces it only if the
 				// catalogue moved on.
@@ -409,7 +410,8 @@ export default class AnimePlugin extends Plugin {
 				loadRecommendations: (seed) => this.recommendFor(seed),
 			},
 			{
-				onDownload: (series) => this.openDownloader(series),
+				onDownload: (picked, search) =>
+					search ? this.openDownloader(picked.title) : this.openDownloader(undefined, picked),
 				onOpenRecommendation: (title) => this.openDetails(title),
 				onClosed: () => {
 					this.detailsModal = null;

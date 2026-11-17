@@ -180,7 +180,15 @@ export class MetadataStore {
 	recommendationsFor(seriesKey: string): Recommendation[] {
 		const entry = this.get(seriesKey);
 		if (!entry) return [];
-		const block = (entry.payload as Record<string, unknown> | null)?.recommended;
+		const payload = entry.payload as Record<string, unknown> | null;
+		// `AnimePreview` calls the catalogue's own list `recommendations`; older
+		// payloads kept it under the provider's `recommended`. Read both, so a
+		// store written before the rename keeps filling the offline section.
+		const block = Array.isArray(payload?.recommendations)
+			? payload.recommendations
+			: Array.isArray(payload?.recommended)
+				? payload.recommended
+				: null;
 		if (!Array.isArray(block)) return [];
 		const items: Recommendation[] = [];
 		for (const row of block) {

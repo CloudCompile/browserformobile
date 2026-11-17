@@ -301,7 +301,11 @@ page and the recommendations.
 - `src/library.ts` / `src/libraryModal.ts` / `src/playerModal.ts` — the offline
   library: filename parsing, the list, and playback with saved position.
 - `src/detailsModal.ts` — the full details page, including the recommendation
-  section.
+  section. It renders through `src/seriesDetails.ts` so the library page and the
+  downloader's pre-download page share one set of blocks.
+- `src/seriesDetails.ts` — the pure DOM blocks of a full details page (hero and
+  facts, chips, synopsis, music, cast, staff, production, links). No state, no
+  requests: callers pass the `AnimePreview` they already have.
 - `src/recommendationsModal.ts` — the recommendations page: a poster grid over
   the whole download history, with per-seed progress while it loads.
 - `src/findModal.ts` — the finder: browse listing sections and genre pages
@@ -398,6 +402,24 @@ page and the recommendations.
 - **Playback is the platform video element.** MPEG-TS cannot be decoded by a
   browser engine, so the library refuses it with a message rather than showing a
   black rectangle. Do not promise TS playback.
+- **One details page, two sources.** `loadSeriesDetails` in `animeApi.ts` is the
+  single entry point for a details page: the native `/api/preview/:id` record
+  merged with `/api/info`, or the 18+ provider's structured `anime` payload
+  mapped into the same `AnimePreview` shape by `previewFromInfo`. It falls back
+  to a title search so a library entry the catalogue lists under another
+  provider (or another id) still resolves. Nothing should call `loadPreview` on
+  a page's behalf.
+- **The 18+ provider's description is boilerplate and must not be shown.**
+  Every series gets "Watch <title> hentai online free in HD with English
+  subtitles. N episodes, Ongoing. Genres: …" — generated from its own fields,
+  and often stale (`so_low` said 3 episodes while its list had 4).
+  `readableSynopsis` drops it, `providerStatus` recovers the one useful fact
+  from it (`status` is otherwise always null), and the episode list wins over
+  the claimed count. Do not render that text as a synopsis.
+- **A details page's download hand-off carries the source.** `onDownload`
+  passes the `SeriesSummary` (provider included) so an 18+ title opens its own
+  provider page; the `search` flag is set when the details came only from the
+  MAL mirror, because its id is not a catalogue id.
 
 ### Build, lint, test
 

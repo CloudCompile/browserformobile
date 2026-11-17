@@ -1,14 +1,17 @@
 import { App, Modal, Notice, Platform, Setting, setIcon } from 'obsidian';
 import {
+        ADULT_PROVIDER,
         AnimeApiError,
         loadEpisodes,
-        loadAnimeInfo,
+        loadSeriesDetails,
         planEpisodeGroups,
         searchSeries,
         type AnimeInfo,
         type EpisodeSummary,
+        type SeriesDetails,
         type SeriesSummary,
 } from './animeApi';
+import { factsFor, renderHero, renderPreviewBlocks, renderSynopsis, section } from './seriesDetails';
 import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat, type SeriesPreference, type SeriesPreferenceMap } from './downloader';
 import { formatSpeed } from './hls';
 import { externalStorageAvailable } from './destination';
@@ -93,6 +96,13 @@ export class DownloadModal extends Modal {
         private stage: Stage = 'search';
         private bodyEl!: HTMLElement;
         private statusEl!: HTMLElement;
+        /**
+         * The full details answer: the MyAnimeList record when there is one, or
+         * the 18+ source's structured fields mapped into the same shape. It
+         * carries the episode art the detail page shows, so the pre-download
+         * page is a real details page rather than a title and a blurb.
+         */
+        private details: SeriesDetails | null = null;
 
         constructor(
                 app: App,
@@ -337,41 +347,38 @@ export class DownloadModal extends Modal {
                         return;
                 }
                 const info = this.animeInfo;
+                const preview = this.details?.preview ?? null;
+                const detail = preview?.detail ?? null;
+                const page = this.bodyEl.createDiv({ cls: 'bfm-dl-detail-page' });
 
-                const container = this.bodyEl.createDiv({ cls: 'bfm-dl-detail' });
-                if (info?.poster || series.poster) {
-                        container.createEl('img', {
-                                cls: 'bfm-dl-poster',
-                                attr: { src: info?.poster || series.poster || '', alt: '', loading: 'lazy' },
-                        });
-                }
-                const box = container.createDiv({ cls: 'bfm-dl-detail-info' });
-                box.createEl('h3', { text: info?.title || series.title });
-                if (info?.japaneseTitle || series.japaneseTitle) {
-                        box.createDiv({ cls: 'bfm-dl-result-meta', text: info?.japaneseTitle || (series.japaneseTitle as string) });
-                }
-                const meta: string[] = [];
-                if (info?.showType || series.showType) meta.push(info?.showType || series.showType);
-                if (info?.duration) meta.push(info.duration);
-                if (info?.status) meta.push(info.status);
-                if (info?.score) meta.push(`Score ${info.score}`);
-                if (meta.length > 0) box.createDiv({ cls: 'bfm-dl-result-meta', text: meta.join(' · ') });
-                if (info?.adultContent) {
-                        box.createSpan({ cls: 'bfm-dl-badge', text: '18+' });
-                }
-                if (info?.genres && info.genres.length > 0) {
-                        box.createDiv({ cls: 'bfm-dl-result-meta', text: `Genres: ${info.genres.join(', ')}` });
-                }
-                if (info?.studios && info.studios.length > 0) {
-                        box.createDiv({ cls: 'bfm-dl-result-meta', text: `Studios: ${info.studios.join(', ')}` });
-                }
-                if (info?.overview) {
-                        box.createEl('p', { cls: 'bfm-dl-hint', text: info.overview });
-                }
+                // One page for every source: the poster and headline numbers are
+                // built from whichever route answered, and the 18+ source's
+                // generated blurb is never shown (the facts and the episode list
+                // say the same things without repeating a template).
+                const title = detail?.title || info?.title || series.title;
+                const japanese = detail?.titleJapanese || info?.japaneseTitle || series.japaneseTitle;
+                // The 18+ browse rows reuse `japaneseTitle` for the episode name;
+                // "Episode 3" is not a subtitle for the series.
+                const subtitle =
+                        japanese &&
+                        japanese.trim().toLowerCase() !== title.trim().toLowerCase() &&
+                        !/^episode\s*\d+$/i.test(japanese.trim())
+                                ? japanese
+                                : null;
+                renderHero(page, {
+                        poster: detail?.image ?? info?.poster ?? series.poster ?? null,
+                        title,
+                        subtitle,
+                        adult: Boolean(info?.adultContent ?? series.adultContent),
+                        facts: detail ? factsFor(detail, this.details?.episodes?.length ?? null) : [],
+                });
+
+                if (preview) renderPreviewBlocks(page, preview);
+                else if (info?.overview) renderSynopsis(page, info.overview);
 
                 // Seasons (clickable to open that season's detail page).
                 if (info?.seasons && info.seasons.length > 0) {
-                        const sec = this.bodyEl.createDiv({ cls: 'bfm-dl-section' });
+                        const sec = page.createDiv({ cls: 'bfm-dl-section' });
                         sec.createEl('h4', { text: 'Seasons' });
                         const list = sec.createDiv({ cls: 'bfm-dl-results' });
                         for (const season of info.seasons) {
@@ -406,7 +413,7 @@ export class DownloadModal extends Modal {
 
                 // Recommended (compact).
                 if (info?.recommended && info.recommended.length > 0) {
-                        const sec = this.bodyEl.createDiv({ cls: 'bfm-dl-section' });
+                        const sec = page.createDiv({ cls: 'bfm-dl-section' });
                         sec.createEl('h4', { text: 'Recommended' });
                         const list = sec.createDiv({ cls: 'bfm-dl-results' });
                         for (const rec of info.recommended.slice(0, 8)) {
@@ -427,7 +434,7 @@ export class DownloadModal extends Modal {
                 if (info?.related) {
                         const groups = Object.entries(info.related).filter(([, v]) => Array.isArray(v) && v.length > 0);
                         if (groups.length > 0) {
-                                const sec = this.bodyEl.createDiv({ cls: 'bfm-dl-section' });
+                                const sec = page.createDiv({ cls: 'bfm-dl-section' });
                                 sec.createEl('h4', { text: 'Related' });
                                 for (const [name, items] of groups) {
                                         const group = sec.createDiv({ cls: 'bfm-dl-related-group' });
@@ -444,8 +451,21 @@ export class DownloadModal extends Modal {
                         }
                 }
 
-                const actions = this.bodyEl.createDiv({ cls: 'bfm-dl-actions' });
-                const viewEpisodes = actions.createEl('button', { cls: 'mod-cta', text: 'View episodes' });
+                // The 18+ catalogue has no cast or seasons to show, so its
+                // episode list is the body of the page: real art, real titles,
+                // and one tap to the picker with that episode selected.
+                if (this.details?.episodes && this.details.episodes.length > 0) {
+                        this.renderDetailEpisodes(page, this.details.episodes);
+                }
+
+                const actions = page.createDiv({ cls: 'bfm-dl-actions' });
+                const viewEpisodes = actions.createEl('button', {
+                        cls: 'mod-cta',
+                        text:
+                                this.details?.episodes && this.details.episodes.length > 0
+                                        ? `Choose from ${this.details.episodes.length} episodes`
+                                        : 'View episodes',
+                });
                 viewEpisodes.addEventListener('click', () => void this.loadEpisodesForSelected());
                 const back = actions.createEl('button', { text: 'Back to search' });
                 back.addEventListener('click', () => {
@@ -454,25 +474,75 @@ export class DownloadModal extends Modal {
                 });
         }
 
+        /** The episode strip on a details page, with each card opening the picker. */
+        private renderDetailEpisodes(host: HTMLElement, episodes: EpisodeSummary[]): void {
+                const sec = section(host, 'Episodes', 'list-video');
+                const grid = sec.createDiv({ cls: 'bfm-dl-episode-grid' });
+                for (const episode of episodes) {
+                        const generic = `Episode ${episode.number}`;
+                        const card = grid.createDiv({ cls: 'bfm-dl-episode-card' });
+                        card.setAttribute('role', 'button');
+                        card.setAttribute('tabindex', '0');
+                        card.setAttribute('aria-label', `Download ${episode.title || generic}`);
+                        const thumb = card.createDiv({ cls: 'bfm-dl-episode-thumb' });
+                        if (episode.poster) {
+                                thumb.createEl('img', {
+                                        cls: 'bfm-dl-episode-thumb-image',
+                                        attr: { src: episode.poster, alt: '', loading: 'lazy' },
+                                });
+                        } else {
+                                thumb.createDiv({ cls: 'bfm-dl-episode-thumb-fallback', text: String(episode.number) });
+                        }
+                        const body = card.createDiv({ cls: 'bfm-dl-episode-body' });
+                        const title = episode.title || generic;
+                        body.createDiv({ cls: 'bfm-dl-episode-title', text: title });
+                        if (episode.number > 0 && title.toLowerCase() !== generic.toLowerCase()) {
+                                body.createDiv({ cls: 'bfm-dl-episode-number', text: generic });
+                        }
+                        const open = () => void this.loadEpisodesForSelected(episode.id);
+                        card.addEventListener('click', open);
+                        card.addEventListener('keydown', (event) => {
+                                if (event.key !== 'Enter' && event.key !== ' ') return;
+                                event.preventDefault();
+                                open();
+                        });
+                }
+        }
+
+
 
         private async openSeries(series: SeriesSummary): Promise<void> {
                 this.busy = true;
                 this.selected = series;
                 this.animeInfo = null;
+                this.details = null;
                 this.seriesOverride = {};
                 this.collapsedGroups.clear();
                 this.render();
                 try {
-                        const info = await loadAnimeInfo(this.options.apiBase, series.id, series.provider);
-                        this.animeInfo = info;
+                        // One details answer for the page: the MAL preview when the
+                        // catalogue has one, or the 18+ source's structured fields.
+                        // The 18+ source's episode list rides along, so the page can
+                        // show the real art instead of its generated blurb.
+                        const details = await loadSeriesDetails(this.options.apiBase, series.id, {
+                                provider: series.provider,
+                                episodes: series.provider === ADULT_PROVIDER,
+                        });
+                        this.details = details;
+                        this.animeInfo = details.info;
+                        const info = details.info;
                         // Prefer API's canonical title/poster where available.
                         this.selected = {
                                 ...series,
-                                title: info.title || series.title,
-                                japaneseTitle: info.japaneseTitle ?? series.japaneseTitle,
-                                poster: info.poster ?? series.poster,
+                                title: info.title || details.preview.detail.title || series.title,
+                                japaneseTitle:
+                                        info.japaneseTitle ??
+                                        details.preview.detail.titleJapanese ??
+                                        series.japaneseTitle,
+                                poster: info.poster ?? details.preview.detail.image ?? series.poster,
                                 showType: info.showType || series.showType,
                                 adultContent: info.adultContent,
+                                eps: info.episodeCount ?? series.eps,
                         };
                         // Seed the picker's overrides from the series' recorded
                         // preference, under its canonical title.
@@ -483,6 +553,7 @@ export class DownloadModal extends Modal {
                 } catch (error) {
                         this.selected = null;
                         this.animeInfo = null;
+                        this.details = null;
                         this.notifyError(error);
                 } finally {
                         this.busy = false;
@@ -490,15 +561,21 @@ export class DownloadModal extends Modal {
                 }
         }
 
-        private async loadEpisodesForSelected(): Promise<void> {
+        private async loadEpisodesForSelected(only?: string): Promise<void> {
                 const series = this.selected;
                 if (!series) return;
                 this.busy = true;
                 this.render();
                 try {
-                        const detail = await loadEpisodes(this.options.apiBase, series.id, series.provider);
-                        this.episodes = detail.episodes;
-                        this.chosen = new Set(detail.episodes.map((episode) => episode.id));
+                        // The 18+ details page already fetched the list; reuse it
+                        // rather than paying for the same call twice.
+                        this.episodes =
+                                this.details?.episodes && this.details.episodes.length > 0
+                                        ? this.details.episodes
+                                        : (await loadEpisodes(this.options.apiBase, series.id, series.provider)).episodes;
+                        this.chosen = only
+                                ? new Set([only])
+                                : new Set(this.episodes.map((episode) => episode.id));
                         this.stage = 'episodes';
                 } catch (error) {
                         this.notifyError(error);

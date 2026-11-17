@@ -24,13 +24,17 @@ function preview(title: string, poster = 'https://cdn.example/poster.jpg'): unkn
 		},
 		characters: [],
 		staff: [],
-		// The real field name: the catalogue's own recommendation list.
-		recommended: [
+		// The real field name on an `AnimePreview` payload.
+		recommendations: [
 			{ id: 9, title: 'Companion Piece', image: 'https://cdn.example/other.jpg', votes: 42 },
 			{ id: null, title: '', image: null, votes: null },
 		],
 		themes: [],
 	};
+}
+/** Older kept payloads carried the same list under the provider's name. */
+function legacyPreview(title: string): unknown {
+	return { detail: { title }, recommended: [{ id: 3, title: 'Legacy Pick', votes: 7 }] };
 }
 function entry(title: string, savedAt: number, bytes = 100): SeriesMetadata {
 	return { key: title.toLowerCase(), title, poster: null, payload: {}, savedAt, bytes };
@@ -90,6 +94,15 @@ describe('MetadataStore', () => {
 		expect(items[0]?.votes).toBe(42);
 		expect(items[0]?.image).toBe('https://cdn.example/other.jpg');
 		expect(items[0]?.because).toEqual(['Naruto']);
+	});
+
+	it('still reads a legacy payload that used the provider name', () => {
+		const store = new MetadataStore();
+		store.set('Naruto', legacyPreview('Naruto'));
+		const items = store.recommendationsFor('naruto');
+		expect(items).toHaveLength(1);
+		expect(items[0]?.title).toBe('Legacy Pick');
+		expect(items[0]?.votes).toBe(7);
 	});
 });
 

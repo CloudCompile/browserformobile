@@ -27,8 +27,8 @@ your first download, watching, and the rest, in the order you will meet them.
 - **Resumable downloads** that continue from the last segment after a failure.
 - **An offline video library** that plays your episodes and remembers where you
   stopped.
-- **A full details page** for any series: synopsis, genres, studios, cast and
-  staff, theme songs, trailer, and airing schedule.
+- **A full details page** for any series, from either source: synopsis, genres,
+  studios, cast and staff, theme songs, trailer, and airing schedule.
 - **A recommendations page** built from your whole download history, as a
   poster grid with a "because you downloaded X" line on every entry, and a
   Details and Download action on each.
@@ -382,6 +382,16 @@ The details page gathers everything the API knows about a series in one place:
 score, rank, popularity, status, season, studio, source material, synopsis,
 genres and themes, opening and ending themes, cast and staff, a link to the
 trailer, and the broadcast schedule.
+
+Both sources get the same page. Titles from the 18+ catalogue have no
+MyAnimeList record, so their details come from the source's own fields — and its
+one-line promotional blurb ("Watch … hentai online free in HD …") is not shown,
+because every series carries the identical sentence. What it does show is the
+source's real episode list, stills included, so the page is the episodes rather
+than a template repeated across the whole catalogue.
+
+The downloader's pre-download page is the same page, so what you read before
+picking episodes is what you would read in your library.
 
 Below the details are **recommendations**. These are seeded from the series you
 are viewing plus everything else you have downloaded, so a series you have

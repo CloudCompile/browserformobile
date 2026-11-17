@@ -924,30 +924,82 @@
         color: var(--text-muted);
 }
 
-.bfm-dl-detail {
-        display: flex;
-        gap: var(--bfm-space-4);
-        align-items: flex-start;
-}
-
-.bfm-dl-detail > .bfm-dl-poster {
-        flex: 0 0 128px;
-        width: 128px;
-        aspect-ratio: 5 / 7;
-}
-
-.bfm-dl-detail-info {
+.bfm-dl-detail-page {
         display: flex;
         flex-direction: column;
-        gap: var(--bfm-space-1);
+        gap: var(--bfm-space-4);
         min-width: 0;
-        flex: 1 1 auto;
 }
 
-.bfm-dl-detail-info h3 {
-        margin: 0;
-        font-size: 17px;
-        line-height: 1.3;
+/* Episode strip on a details page: art, title, one tap to the picker. */
+.bfm-dl-episode-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: var(--bfm-space-3);
+}
+
+.bfm-dl-episode-card {
+        display: flex;
+        flex-direction: column;
+        gap: var(--bfm-space-2);
+        padding: var(--bfm-space-2);
+        border: 1px solid var(--bfm-border);
+        border-radius: var(--bfm-radius-m);
+        background: var(--bfm-surface);
+        cursor: pointer;
+        min-width: 0;
+}
+
+.bfm-dl-episode-card:hover,
+.bfm-dl-episode-card:focus-visible {
+        border-color: var(--bfm-accent);
+}
+
+.bfm-dl-episode-thumb {
+        position: relative;
+        aspect-ratio: 16 / 9;
+        border-radius: var(--bfm-radius-s);
+        overflow: hidden;
+        background: var(--bfm-border);
+}
+
+.bfm-dl-episode-thumb-image {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+}
+
+.bfm-dl-episode-thumb-fallback {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--text-muted);
+}
+
+.bfm-dl-episode-body {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+}
+
+.bfm-dl-episode-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-normal);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+.bfm-dl-episode-number {
+        font-size: 12px;
+        color: var(--text-muted);
 }
 
 .bfm-dl-related-group {
@@ -1501,6 +1553,34 @@
         display: flex;
         gap: var(--bfm-space-4);
         align-items: flex-start;
+}
+
+.bfm-details-hero-info {
+        display: flex;
+        flex-direction: column;
+        gap: var(--bfm-space-3);
+        min-width: 0;
+        flex: 1 1 auto;
+}
+
+.bfm-details-hero-title-row {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: var(--bfm-space-2);
+}
+
+.bfm-details-hero-title {
+        margin: 0;
+        font-size: 19px;
+        line-height: 1.3;
+        color: var(--text-normal);
+}
+
+.bfm-details-hero-sub {
+        margin-top: calc(-1 * var(--bfm-space-2));
+        font-size: 13px;
+        color: var(--text-muted);
 }
 
 .bfm-details-poster {
@@ -2306,13 +2386,9 @@ body.bfm-glass-on .bfm-recs-card {
                 flex-basis: auto;
         }
 
-        .bfm-dl-detail {
-                gap: var(--bfm-space-3);
-        }
-
-        .bfm-dl-detail > .bfm-dl-poster {
-                flex-basis: 96px;
-                width: 96px;
+        .bfm-dl-episode-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: var(--bfm-space-2);
         }
 
         .bfm-dl-results,

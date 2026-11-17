@@ -64,6 +64,11 @@ export interface EpisodeSummary {
         dubbed: boolean;
         /** Streaming source, so a download routes back to the right provider. */
         provider?: string;
+        /**
+         * Episode still, when the source publishes one. Only the 18+ provider
+         * does; the native catalogue's episode rows carry no art.
+         */
+        poster?: string | null;
 }
 
 export interface SeriesDetail {
@@ -141,6 +146,10 @@ export interface AnimeInfo {
         provider?: string;
         /** Episode count for sources whose detail page reports it directly. */
         episodeCount?: number | null;
+        /** First broadcast year when the source reports one. */
+        year?: number | null;
+        /** Age rating, when the source reports one. */
+        rating?: string | null;
 }
 
 export interface SearchResult {
@@ -622,6 +631,7 @@ export async function loadEpisodes(base: string, seriesId: string, provider?: st
                                         subbed: true,
                                         dubbed: false,
                                         provider: ADULT_PROVIDER,
+                                        poster: asString(record.poster) || null,
                                 };
                         })
                         .filter((episode) => episode.id);
@@ -672,6 +682,7 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
                         throw new AnimeApiError('The anime API returned no details for this series.');
                 }
                 const episodes = asNumber(data.episodes);
+                const year = asNumber(data.year);
                 return {
                         adultContent: true,
                         id: asString(data.slug) || seriesId,
@@ -681,11 +692,11 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
                         poster: asString(data.poster) || null,
                         showType: asString(data.type) || 'TV',
                         duration: null,
-                        status: asString(data.status) || null,
+                        status: asString(data.status) || providerStatus(asString(data.description)),
                         score: null,
                         genres: Array.isArray(data.genres) ? data.genres.map((g) => String(g)).filter(Boolean) : [],
                         studios: Array.isArray(data.studios) ? data.studios.map((s) => String(s)).filter(Boolean) : [],
-                        overview: asString(data.description) || null,
+                        overview: readableSynopsis(asString(data.description)),
                         metadata: {},
                         seasons: [],
                         recommended: [],
@@ -693,6 +704,8 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
                         popular: [],
                         provider: ADULT_PROVIDER,
                         episodeCount: episodes > 0 ? episodes : null,
+                        year: year > 0 ? year : null,
+                        rating: asString(data.rating) || null,
                 };
         }
 
@@ -1325,7 +1338,287 @@ export async function loadPreview(base: string, seriesId: string): Promise<Anime
         };
         // Feed the persistent store here, so a details page browsed once
         // renders offline forever after. The sink is fire-and-forget: a slow
-        // or failing store must never delay the answer just fetched.
-        metadataSink?.(seriesId, preview);
+        // or failing store must never delay the answer just fetched. The key is
+        // the display title rather than the route id, because that is what the
+        // library and the details page look up (provider ids are slugs, and the
+        // catalogue's own ids are numeric).
+        metadataSink?.(preview.detail.title?.trim() || seriesId, preview);
         return preview;
+}
+
+// ---------------------------------------------------------------------------
+// Full series details across sources
+//
+// The `/api/preview/:id` route is a MyAnimeList mirror. The 18+ source has no
+// such record, so its details come from `/api/providers/hentaimama/anime` and
+// are mapped into the same shape. That keeps one details page for every source
+// instead of a second renderer.
+// ---------------------------------------------------------------------------
+
+/**
+ * True for the 18+ provider's generated blurb.
+ *
+ * Every series gets the same sentence — "Watch <title> hentai online free in HD
+ * with English subtitles. N episodes, Ongoing. Genres: …" — so it is noise on a
+ * details page, not a synopsis. It is also frequently stale (the episode count
+ * in it disagrees with the source's own episode list), which is exactly what a
+ * details page must not do.
+ */
+export function isProviderTemplate(text: string | null | undefined): boolean {
+        return (
+                typeof text === 'string' &&
+                /^\s*Watch\s+.+?\s+hentai\s+online\s+free\s+in\s+HD\s+with\s+English\s+subtitles\./i.test(text)
+        );
+}
+
+/** The text shown as a synopsis, or null when there is nothing worth showing. */
+export function readableSynopsis(text: string | null | undefined): string | null {
+        const trimmed = typeof text === 'string' ? text.trim() : '';
+        if (!trimmed || isProviderTemplate(trimmed)) return null;
+        return trimmed;
+}
+
+/**
+ * Recover the airing status the 18+ provider buries in its generated blurb.
+ * The provider's structured `status` field is always null, so this is the only
+ * signal it publishes; the blurb itself is then discarded.
+ */
+export function providerStatus(text: string | null | undefined): string | null {
+        if (!isProviderTemplate(text)) return null;
+        const match = (text as string).match(/English subtitles\.\s*\d+\s+episodes?,\s*([^.]+)\./i);
+        const status = match?.[1]?.trim();
+        return status || null;
+}
+
+/** Parse a score string, or null when it is absent or not a number. */
+function scoreValue(value: string | null | undefined): number | null {
+        if (!value) return null;
+        const parsed = Number.parseFloat(value);
+        return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Build the `AnimePreview` shape from source-level details.
+ *
+ * Used for the 18+ source, whose detail route has structured fields but no MAL
+ * record, and as the fallback when the preview route answers nothing for a
+ * native title. Every optional block is empty rather than invented.
+ */
+export function previewFromInfo(info: AnimeInfo): AnimePreview {
+        const malId = Number.parseInt(info.dataId ?? '', 10);
+        return {
+                source: info.provider ?? 'native',
+                malId: Number.isFinite(malId) ? malId : null,
+                detail: {
+                        id: Number.isFinite(malId) ? malId : null,
+                        url: null,
+                        title: info.title,
+                        titleEnglish: null,
+                        titleJapanese: info.japaneseTitle,
+                        image: info.poster,
+                        images: null,
+                        synopsis: readableSynopsis(info.overview),
+                        type: info.showType || null,
+                        episodes: info.episodeCount ?? null,
+                        status: info.status,
+                        score: scoreValue(info.score),
+                        scoredBy: null,
+                        members: null,
+                        favorites: null,
+                        rank: null,
+                        popularity: null,
+                        duration: info.duration,
+                        rating: info.rating ?? null,
+                        source: null,
+                        season: null,
+                        year: info.year ?? null,
+                        aired: { from: null, to: null, string: null },
+                        broadcast: { day: null, time: null, timezone: null, string: null },
+                        trailer: { youtubeId: null, url: null, embedUrl: null },
+                        genres: info.genres,
+                        themes: [],
+                        demographics: [],
+                        studios: info.studios.map((name) => ({ id: 0, name, url: null })),
+                        producers: [],
+                        licensors: [],
+                        relations: [],
+                        streaming: [],
+                        externalLinks: [],
+                },
+                characters: [],
+                staff: [],
+                recommendations: [],
+                themes: [],
+        };
+}
+
+/** Build source-level details from a preview, for when the info route failed. */
+export function infoFromPreview(preview: AnimePreview, id: string): AnimeInfo {
+        const detail = preview.detail;
+        return {
+                adultContent: preview.source === ADULT_PROVIDER,
+                id,
+                dataId: detail.id !== null ? String(detail.id) : null,
+                title: detail.title,
+                japaneseTitle: detail.titleJapanese,
+                poster: detail.image,
+                showType: detail.type ?? 'Unknown',
+                duration: detail.duration,
+                status: detail.status,
+                score: detail.score !== null ? detail.score.toFixed(2) : null,
+                genres: detail.genres,
+                studios: detail.studios.map((studio) => studio.name),
+                overview: detail.synopsis,
+                metadata: {},
+                seasons: [],
+                recommended: [],
+                related: {},
+                popular: [],
+                provider: preview.source === ADULT_PROVIDER ? ADULT_PROVIDER : undefined,
+                episodeCount: detail.episodes,
+                year: detail.year,
+                rating: detail.rating,
+        };
+}
+
+/** Normalize a title for the fallback match against a search result. */
+function normalizedTitle(text: string): string {
+        return (text ?? '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .trim();
+}
+
+/** Find an exact title in the aggregate search, preferring the 18+ source. */
+async function findSeriesByTitle(
+        base: string,
+        title: string,
+        provider?: string,
+): Promise<SeriesSummary | null> {
+        const wanted = normalizedTitle(title);
+        if (!wanted) return null;
+        try {
+                const found = await searchSeries(base, title, { includeAdult: true });
+                const pool = provider ? found.series.filter((entry) => entry.provider === provider) : found.series;
+                const exact = pool.find((entry) => normalizedTitle(entry.title) === wanted);
+                if (exact) return exact;
+                // A library title can carry a suffix the provider drops (or vice
+                // versa). A starts-with match is still specific enough to be safe,
+                // and only the 18+ source is matched this loosely.
+                if (provider === ADULT_PROVIDER) {
+                        return pool.find((entry) => normalizedTitle(entry.title).startsWith(wanted)) ?? null;
+                }
+                return null;
+        } catch {
+                return null;
+        }
+}
+
+export interface LoadSeriesDetailsOptions {
+        /** Force a source, e.g. when the series was opened from the finder. */
+        provider?: string;
+        /**
+         * Fetch the episode list too. The downloader's details page uses it to
+         * show real episode art; the library's details page does not need it.
+         */
+        episodes?: boolean;
+}
+
+/** Everything a details page renders, from whichever source answered. */
+export interface SeriesDetails {
+        preview: AnimePreview;
+        info: AnimeInfo;
+        /** The episode list when it was requested and could be fetched. */
+        episodes: EpisodeSummary[] | null;
+        /**
+         * True when `info` was rebuilt from the preview because the catalogue's
+         * own detail route failed. A caller that needs a real catalogue id (the
+         * downloader) must search by title instead of trusting `info.id`.
+         */
+        synthesized: boolean;
+}
+
+/** The 18+ source's details, with its episode list when requested. */
+async function loadAdultDetails(base: string, series: string, withEpisodes: boolean): Promise<SeriesDetails> {
+        let info = await loadAnimeInfo(base, series, ADULT_PROVIDER).catch(() => null);
+        if (!info) {
+                const match = await findSeriesByTitle(base, series, ADULT_PROVIDER);
+                if (match) info = await loadAnimeInfo(base, match.id, ADULT_PROVIDER).catch(() => null);
+        }
+        if (!info) throw new AnimeApiError('The anime API returned no details for this series.');
+
+        const episodes = withEpisodes
+                ? await loadEpisodes(base, info.id, ADULT_PROVIDER)
+                                .then((list) => list.episodes)
+                                .catch(() => null)
+                : null;
+        // The provider's own episode count can lag its list (it reported 3 for a
+        // four-episode series); the list is authoritative when it is present.
+        if (episodes && episodes.length > 0) info = { ...info, episodeCount: episodes.length };
+
+        const preview = previewFromInfo(info);
+        metadataSink?.(preview.detail.title?.trim() || series, preview);
+        return { preview, info, episodes, synthesized: false };
+}
+
+/** The native route, falling back to whichever half answered. */
+async function loadNativeDetails(base: string, series: string, withEpisodes: boolean): Promise<SeriesDetails> {
+        const [previewOutcome, infoOutcome] = await Promise.allSettled([
+                loadPreview(base, series),
+                loadAnimeInfo(base, series),
+        ]);
+        let preview = previewOutcome.status === 'fulfilled' ? previewOutcome.value : null;
+        let info = infoOutcome.status === 'fulfilled' ? infoOutcome.value : null;
+        const infoFromApi = info !== null;
+        const previewFromApi = preview !== null;
+
+        // The preview is the MAL mirror and sometimes needs a title rather than
+        // the catalogue's numeric id. Retry by title before synthesizing.
+        if (!preview && info?.title && info.title !== series) {
+                preview = await loadPreview(base, info.title).catch(() => null);
+        }
+        if (!preview && info) preview = previewFromInfo(info);
+        if (!info && preview) info = infoFromPreview(preview, series);
+        if (!preview || !info) {
+                // A title from the library can belong to another provider. One
+                // search is enough to find it; a miss is reported as no details.
+                const match = await findSeriesByTitle(base, series);
+                if (match && (match.provider === ADULT_PROVIDER || match.id !== series)) {
+                        return loadSeriesDetails(base, match.id, { provider: match.provider, episodes: withEpisodes });
+                }
+                throw new AnimeApiError('The anime API returned no details for this series.');
+        }
+
+        const episodes = withEpisodes
+                ? await loadEpisodes(base, info.id || series, info.provider)
+                                .then((list) => list.episodes)
+                                .catch(() => null)
+                : null;
+        if (episodes && episodes.length > 0) {
+                info = { ...info, episodeCount: episodes.length };
+                preview = { ...preview, detail: { ...preview.detail, episodes: episodes.length } };
+        } else if (info.episodeCount && preview.detail.episodes === null) {
+                preview = { ...preview, detail: { ...preview.detail, episodes: info.episodeCount } };
+        }
+        if (!previewFromApi) metadataSink?.(preview.detail.title?.trim() || series, preview);
+        return { preview, info, episodes, synthesized: !infoFromApi };
+}
+
+/**
+ * Load everything a full details page needs, across both sources.
+ *
+ * One call for the page: the native route, or the 18+ provider mapped into the
+ * same shape, and a fallback that resolves a library title the catalogue lists
+ * under another provider. The two halves are fetched together, so a page still
+ * renders when only one of the preview/info routes answers.
+ */
+export async function loadSeriesDetails(
+        base: string,
+        series: string,
+        options: LoadSeriesDetailsOptions = {},
+): Promise<SeriesDetails> {
+        if (options.provider === ADULT_PROVIDER) {
+                return loadAdultDetails(base, series, options.episodes === true);
+        }
+        return loadNativeDetails(base, series, options.episodes === true);
 }
