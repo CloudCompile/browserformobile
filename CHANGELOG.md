@@ -13,6 +13,29 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.2.5 — 2026-11-22
+
+The catalogue API was rebuilt on MyAnimeList data, and this release follows it.
+
+- **Search and browse show real metadata again.** The new list rows are flat, so
+  every result came back with no type and zero episodes. Episode rows also
+  renamed their number field, which made every episode number zero — ranges,
+  "download missing", filenames and progress all depend on it. Both shapes are
+  read now, so answers cached before the change still work.
+- **Downloads work again.** The streaming CDN moved and rejects the old referer
+  with HTTP 403. The API publishes the referer its current CDN expects; the
+  downloader forwards it for the manifest, every segment and every subtitle.
+- **Subtitles download again.** Captions moved out of the HLS playlist into
+  separate WebVTT tracks, which are now read as whole documents rather than
+  mistaken for segment playlists.
+- **The 18+ tab works again.** The catalogue's aggregate search no longer fans
+  out to the adult source, so the opt-in search asks that provider directly,
+  and the adult flag is read from the field it moved to.
+- **Genres match the catalogue.** The list comes from the catalogue's own index
+  — 76 genres, adult-only entries kept behind the 18+ gate — and browses
+  through the filter route, which resolves every genre the fixed legacy routes
+  no longer answer.
+
 ## 5.1.5 — 2026-11-17
 
 The details page now covers both sources, and the episode list finally carries
