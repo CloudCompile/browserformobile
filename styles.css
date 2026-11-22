@@ -272,21 +272,6 @@
 
 .bfm-recs-refresh:disabled { opacity: 0.4; cursor: default; }
 
-/* Inline text buttons (links that are buttons). */
-.bfm-find-genre-link {
-        align-self: flex-start;
-        min-height: 28px;
-        padding: 0;
-        background: none;
-        border: none;
-        color: var(--bfm-accent);
-        font-size: 14px;
-        font-weight: 500;
-        cursor: pointer;
-}
-
-.bfm-find-genre-link:hover { text-decoration: underline; }
-
 /* Round icon buttons. */
 .bfm-dl-window-close,
 .bfm-dl-job-cancel,
@@ -1306,38 +1291,488 @@
         display: flex;
         flex-direction: column;
         gap: var(--bfm-space-3);
+        min-height: 0;
 }
 
+.bfm-find-content {
+        display: flex;
+        flex-direction: column;
+        gap: var(--bfm-space-3);
+        min-height: 0;
+}
+
+/* Source switch: compact tabs plus the 18+ opt-in, not a full-width bar. */
+.bfm-find-bar {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--bfm-space-2);
+        flex: 0 0 auto;
+}
+
+.bfm-find-tabs { flex: 0 1 auto; }
+
+.bfm-find-tab {
+        flex: 0 0 auto;
+        min-width: 104px;
+}
+
+.bfm-find-adult {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--bfm-space-2);
+        min-height: 34px;
+        margin-left: auto;
+        padding: 0 var(--bfm-space-3);
+        border: 1px solid var(--bfm-border);
+        border-radius: var(--bfm-radius-pill);
+        background: var(--background-primary);
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: border-color var(--bfm-transition), background var(--bfm-transition), color var(--bfm-transition);
+}
+
+.bfm-find-adult:hover {
+        border-color: var(--bfm-border-hover);
+        color: var(--text-normal);
+}
+
+.bfm-find-adult.is-on {
+        border-color: var(--background-modifier-error);
+        background: var(--background-modifier-error);
+        color: var(--text-error);
+}
+
+.bfm-find-adult input {
+        margin: 0;
+        accent-color: var(--text-error);
+}
+
+.bfm-find-intro {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+}
+
+.bfm-find-intro-title {
+        font-size: 15px;
+        font-weight: 650;
+        color: var(--text-normal);
+}
+
+.bfm-find-intro-text {
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: var(--text-muted);
+}
+
+/* Section tiles: icon, label, one-line description, chevron. */
 .bfm-find-sections {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-        gap: var(--bfm-space-2);
+        grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+        gap: 10px;
 }
 
 .bfm-find-section {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        padding: var(--bfm-space-3);
+        gap: var(--bfm-space-3);
+        padding: 12px 14px;
         border: 1px solid var(--bfm-border);
         border-radius: var(--bfm-radius-m);
         background: var(--bfm-surface);
         cursor: pointer;
-        transition: border-color var(--bfm-transition), background var(--bfm-transition), transform var(--bfm-transition);
+        text-align: left;
+        transition: border-color var(--bfm-transition), background var(--bfm-transition), transform var(--bfm-transition), box-shadow var(--bfm-transition);
 }
 
-.bfm-find-section:hover {
+.bfm-find-modal .bfm-find-section:hover,
+.bfm-find-modal .bfm-find-section:focus-visible {
         border-color: var(--bfm-accent);
         background: var(--bfm-hover);
         transform: translateY(-1px);
+        box-shadow: var(--bfm-shadow-2);
+}
+
+.bfm-find-section-icon {
+        flex: 0 0 38px;
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
+        border-radius: 10px;
+        background: var(--background-modifier-hover);
+        color: var(--bfm-accent);
+}
+
+.bfm-find-section-icon svg {
+        width: 19px;
+        height: 19px;
+}
+
+.bfm-find-section-copy {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
 }
 
 .bfm-find-section-title {
+        font-size: 13.5px;
+        font-weight: 600;
+        line-height: 1.3;
+        color: var(--text-normal);
+}
+
+.bfm-find-section-meta {
+        display: -webkit-box;
+        overflow: hidden;
+        font-size: 11.5px;
+        line-height: 1.3;
+        color: var(--text-muted);
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+}
+
+.bfm-find-section-chevron {
+        flex: 0 0 auto;
+        display: flex;
+        color: var(--text-faint);
+}
+
+.bfm-find-section-chevron svg {
+        width: 16px;
+        height: 16px;
+}
+
+.bfm-find-genre-entry {
+        display: flex;
+        align-items: center;
+        gap: var(--bfm-space-3);
+        width: 100%;
+        min-height: 60px;
+        padding: 12px 14px;
+        border: 1px solid var(--bfm-border);
+        border-radius: var(--bfm-radius-m);
+        background:
+                linear-gradient(135deg, var(--background-modifier-hover), transparent 60%),
+                var(--bfm-surface);
+        color: var(--text-normal);
+        text-align: left;
+        cursor: pointer;
+        transition: border-color var(--bfm-transition), transform var(--bfm-transition), box-shadow var(--bfm-transition);
+}
+
+.bfm-find-genre-entry:hover {
+        border-color: var(--bfm-accent);
+        transform: translateY(-1px);
+        box-shadow: var(--bfm-shadow-2);
+}
+
+.bfm-find-genre-entry .bfm-find-section-icon {
+        background: var(--bfm-accent);
+        color: var(--text-on-accent);
+}
+
+/* Browse toolbar: sticks to the top while the poster grid scrolls. */
+.bfm-find-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 4;
+        display: flex;
+        align-items: center;
+        gap: var(--bfm-space-3);
+        margin-top: -2px;
+        padding: var(--bfm-space-2) 0 10px;
+        border-bottom: 1px solid var(--bfm-border);
+        background: var(--background-primary);
+}
+
+body.bfm-glass-on .bfm-find-toolbar {
+        background: transparent;
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+}
+
+.bfm-find-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        flex: 0 0 auto;
+        min-height: 36px;
+        padding: 0 var(--bfm-space-3) 0 var(--bfm-space-2);
+}
+
+.bfm-find-back-icon { display: flex; }
+
+.bfm-find-back-icon svg {
+        width: 16px;
+        height: 16px;
+}
+
+.bfm-find-browse-title {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-width: 0;
+}
+
+.bfm-find-heading {
+        overflow: hidden;
+        font-size: 16px;
+        font-weight: 650;
+        line-height: 1.25;
+        letter-spacing: -0.01em;
+        color: var(--text-normal);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+.bfm-find-browse-meta {
+        overflow: hidden;
+        font-size: 11.5px;
+        color: var(--text-muted);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+.bfm-find-source-chip {
+        flex: 0 0 auto;
+        padding: 3px 9px;
+        border-radius: var(--bfm-radius-pill);
+        background: var(--text-error);
+        color: var(--text-on-accent);
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+}
+
+/* Poster cards: artwork edge to edge, badges over it, title and facts below. */
+.bfm-find-grid { gap: var(--bfm-space-3); }
+
+.bfm-find-card {
+        padding: 0;
+        gap: 0;
+        border: 1px solid var(--bfm-border);
+        border-radius: var(--bfm-radius-m);
+        background: var(--bfm-surface);
+}
+
+.bfm-find-card:hover,
+.bfm-find-card:focus-visible {
+        border-color: var(--bfm-accent);
+        transform: translateY(-3px);
+        box-shadow: var(--bfm-shadow-2);
+}
+
+.bfm-find-poster-wrap {
+        position: relative;
+        flex: 0 0 auto;
+        width: 100%;
+        aspect-ratio: 5 / 7;
+        overflow: hidden;
+        background: linear-gradient(160deg, var(--background-modifier-hover), var(--background-secondary));
+}
+
+.bfm-find-poster {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        aspect-ratio: auto;
+        border-radius: 0;
+        object-fit: cover;
+        opacity: 0;
+        transition: opacity 240ms ease, transform 400ms ease;
+}
+
+.bfm-find-poster.is-loaded { opacity: 1; }
+
+.bfm-find-card:hover .bfm-find-poster { transform: scale(1.035); }
+
+.bfm-find-poster-placeholder {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: var(--text-faint);
+}
+
+.bfm-find-poster-placeholder svg {
+        width: 28px;
+        height: 28px;
+        opacity: 0.65;
+}
+
+.bfm-find-badges {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        left: 8px;
+        z-index: 2;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        pointer-events: none;
+}
+
+.bfm-find-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 20px;
+        padding: 1px 7px;
+        border-radius: 6px;
+        background: rgba(10, 10, 14, 0.72);
+        color: #fff;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+}
+
+.bfm-find-badge.is-adult {
+        margin-left: auto;
+        background: var(--text-error);
+        color: var(--text-on-accent);
+}
+
+.bfm-find-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        padding: 10px 12px 12px;
+        min-width: 0;
+}
+
+.bfm-find-card-meta {
+        overflow: hidden;
+        font-size: 11.5px;
+        line-height: 1.3;
+        color: var(--text-muted);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+/* Pager */
+.bfm-find-pager {
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 2px;
+        padding-top: 4px;
+}
+
+.bfm-find-pager-step {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+}
+
+.bfm-find-pager-icon { display: flex; }
+
+.bfm-find-pager-icon svg {
+        width: 16px;
+        height: 16px;
+}
+
+.bfm-find-pager-status {
+        font-variant-numeric: tabular-nums;
+}
+
+.bfm-find-pager-status strong {
+        color: var(--text-normal);
+        font-weight: 650;
+}
+
+/* Loading skeletons, so a slow page keeps its shape. */
+.bfm-find-skeleton {
+        overflow: hidden;
+        border: 1px solid var(--bfm-border);
+        border-radius: var(--bfm-radius-m);
+        background: var(--bfm-surface);
+}
+
+.bfm-find-skeleton-poster {
+        aspect-ratio: 5 / 7;
+        background: var(--background-modifier-hover);
+        animation: bfm-find-pulse 1.6s ease-in-out infinite;
+}
+
+.bfm-find-skeleton-line {
+        height: 9px;
+        margin: 11px 12px 0;
+        border-radius: 4px;
+        background: var(--background-modifier-hover);
+        animation: bfm-find-pulse 1.6s ease-in-out infinite;
+}
+
+.bfm-find-skeleton-line.is-short {
+        width: 52%;
+        margin-bottom: 13px;
+        animation-delay: 120ms;
+}
+
+.bfm-find-genre-skeleton {
+        display: inline-block;
+        width: 92px;
+        height: 36px;
+        border-radius: var(--bfm-radius-pill);
+        background: var(--background-modifier-hover);
+        animation: bfm-find-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes bfm-find-pulse {
+        0%, 100% { opacity: 0.5; }
+        50% { opacity: 1; }
+}
+
+/* Empty and failed states. */
+.bfm-find-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--bfm-space-2);
+        padding: 36px var(--bfm-space-4) 28px;
+        color: var(--text-muted);
+        text-align: center;
+}
+
+.bfm-find-state-icon {
+        display: flex;
+        color: var(--text-faint);
+}
+
+.bfm-find-state-icon svg {
+        width: 30px;
+        height: 30px;
+}
+
+.bfm-find-state-title {
         font-size: 14px;
         font-weight: 600;
         color: var(--text-normal);
 }
 
+.bfm-find-state-text {
+        max-width: 42ch;
+        font-size: 12.5px;
+        line-height: 1.5;
+}
+
+.bfm-find-state button {
+        min-height: 36px;
+        margin-top: var(--bfm-space-1);
+        padding: 0 18px;
+        border-radius: var(--bfm-radius-m);
+        cursor: pointer;
+}
+
+/* Genre chips */
 .bfm-find-genres {
         display: flex;
         flex-wrap: wrap;
@@ -1345,34 +1780,22 @@
 }
 
 .bfm-find-genre {
-        min-height: 32px;
-        padding: 0 var(--bfm-space-3);
+        min-height: 36px;
+        padding: 0 14px;
         border: 1px solid var(--bfm-border);
         border-radius: var(--bfm-radius-pill);
-        background: var(--bfm-surface);
+        background: var(--background-primary);
         color: var(--text-normal);
-        font-size: 13px;
+        font-size: 12.5px;
+        font-weight: 500;
         cursor: pointer;
-        transition: border-color var(--bfm-transition), background var(--bfm-transition);
+        transition: border-color var(--bfm-transition), background var(--bfm-transition), transform var(--bfm-transition);
 }
 
 .bfm-find-genre:hover {
         border-color: var(--bfm-accent);
         background: var(--bfm-hover);
-}
-
-.bfm-find-browse-header {
-        display: flex;
-        align-items: center;
-        gap: var(--bfm-space-3);
-}
-
-.bfm-find-heading { font-size: 15px; }
-
-.bfm-find-hint {
-        margin: 0;
-        font-size: 13px;
-        color: var(--text-muted);
+        transform: translateY(-1px);
 }
 
 /* ------------------------------------------------------------------ library */
@@ -2055,11 +2478,15 @@ body.bfm-glass-on .bfm-recs-card {
         .bfm-find-tab,
         .bfm-dl-chip,
         .bfm-find-genre,
+        .bfm-find-adult,
+        .bfm-find-section,
+        .bfm-find-genre-entry,
         .bfm-dm-btn,
         .bfm-dm-toolbar > button,
         .bfm-recs-refresh,
         .bfm-player-restart,
         .bfm-find-back,
+        .bfm-find-state button,
         .bfm-dl-pager button,
         .bfm-find-pager button,
         .bfm-dl-resume button,
@@ -2098,11 +2525,15 @@ body.bfm-glass-on .bfm-recs-card {
 
 @media (prefers-reduced-motion: reduce) {
         .bfm-details-spinner,
-        .bfm-recs-refresh.is-busy { animation: none; }
+        .bfm-recs-refresh.is-busy,
+        .bfm-find-skeleton-poster,
+        .bfm-find-skeleton-line,
+        .bfm-find-genre-skeleton { animation: none; }
 
         .bfm-dl-result,
         .bfm-find-card,
         .bfm-find-section,
+        .bfm-find-poster,
         .bfm-recs-card,
         .bfm-details-rec-card {
                 transition: none;
@@ -2117,6 +2548,8 @@ body.bfm-glass-on .bfm-recs-card {
         .bfm-details-rec-card:focus-visible {
                 transform: none;
         }
+
+        .bfm-find-card:hover .bfm-find-poster { transform: none; }
 }
 
 /* --------------------------------------------------------- visual refresh */
@@ -2326,7 +2759,6 @@ body.bfm-glass-on .bfm-recs-card {
 .bfm-dl-status,
 .bfm-stats-note,
 .bfm-dm-hint,
-.bfm-find-hint,
 .bfm-dl-hint {
         color: var(--text-muted);
 }
@@ -2397,6 +2829,25 @@ body.bfm-glass-on .bfm-recs-card {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
                 gap: var(--bfm-space-2);
         }
+
+        .bfm-find-sections {
+                grid-template-columns: 1fr;
+                gap: var(--bfm-space-2);
+        }
+
+        .bfm-find-toolbar {
+                gap: var(--bfm-space-2);
+        }
+
+        .bfm-find-heading { font-size: 15px; }
+
+        .bfm-find-card-body { padding: 8px 10px 10px; }
+
+        .bfm-find-badge { font-size: 9.5px; }
+
+        .bfm-find-pager { gap: var(--bfm-space-2); }
+
+        .bfm-find-pager button { padding: 0 var(--bfm-space-3); }
 
         .bfm-stats-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -20,6 +20,7 @@ function makeJob(id: string, number: number, status: DownloadJob['status'], seri
                 id,
                 seriesTitle: series,
                 episode: episode(id, number),
+                adult: false,
                 format: 'mp4',
                 quality: 720,
                 status,

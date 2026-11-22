@@ -2,6 +2,7 @@ import { App, Modal, Notice, Platform, Setting, setIcon } from 'obsidian';
 import {
         ADULT_PROVIDER,
         AnimeApiError,
+        isAdultReference,
         loadEpisodes,
         loadSeriesDetails,
         planEpisodeGroups,
@@ -230,7 +231,7 @@ export class DownloadModal extends Modal {
                         }
                 });
 
-                // 18+ toggle re-runs the search with rated=R_PLUS.
+                // 18+ toggle re-runs the search with the catalogue's opt-in.
                 const filterRow = this.bodyEl.createDiv({ cls: 'bfm-dl-search-filters' });
                 const adultLabel = filterRow.createEl('label', { cls: 'bfm-dl-search-filter' });
                 const adultCheckbox = adultLabel.createEl('input', { attr: { type: 'checkbox' } });
@@ -526,7 +527,9 @@ export class DownloadModal extends Modal {
                         // show the real art instead of its generated blurb.
                         const details = await loadSeriesDetails(this.options.apiBase, series.id, {
                                 provider: series.provider,
-                                episodes: series.provider === ADULT_PROVIDER,
+                                // `hm:` series fetch their episode list from the same
+                                // native details call, so the downloader can reuse it.
+                                episodes: series.provider === ADULT_PROVIDER || isAdultReference(series.id),
                         });
                         this.details = details;
                         this.animeInfo = details.info;
@@ -906,6 +909,9 @@ export class DownloadModal extends Modal {
                 const created = this.manager.enqueue({
                         seriesTitle: series.title,
                         episodes,
+                        // `/api/stream` only offers the adult chain to a request
+                        // that opts in; the series' flag is that opt-in.
+                        adult: Boolean(series.adultContent),
                         format: this.seriesOverride.format,
                         quality: this.seriesOverride.quality,
                 });

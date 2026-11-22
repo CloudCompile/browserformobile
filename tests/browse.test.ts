@@ -46,7 +46,7 @@ describe('browseSection', () => {
                 expect(page.series[0]).toMatchObject({ id: 'one-piece-81553', title: 'One Piece', sub: 1180 });
         });
 
-        it('reads the 18+ shape and asks the provider route when the source is hentaimama', async () => {
+        it('reads the 18+ browse feed with hm: references', async () => {
                 mockedRequestUrl.mockImplementation(
                         respondWith({
                                 results: {
@@ -54,13 +54,12 @@ describe('browseSection', () => {
                                         page: 1,
                                         data: [
                                                 {
-                                                        id: '81435',
-                                                        slug: 'so_low',
-                                                        episode: 'so_low-episode-4',
+                                                        id: 'hm:so_low',
+                                                        data_id: '81435',
                                                         title: 'So_low – Episode 4',
                                                         poster: 'p.webp',
-                                                        type: 'Episode',
-                                                        episodes: null,
+                                                        showType: 'Episode',
+                                                        eps: null,
                                                 },
                                         ],
                                 },
@@ -68,13 +67,13 @@ describe('browseSection', () => {
                 );
                 const page = await browseSection('https://api', 'monthly', 1, 'hentaimama');
                 expect(mockedRequestUrl.mock.calls[0][0].url).toBe(
-                        'https://api/api/providers/hentaimama/browse?section=monthly&page=1',
+                        'https://api/api/adult/browse?section=monthly&page=1',
                 );
                 expect(page.totalPages).toBe(48);
                 expect(page.series[0]).toMatchObject({
-                        id: 'so_low',
+                        id: 'hm:so_low',
                         adultContent: true,
-                        provider: 'hentaimama',
+                        provider: undefined,
                 });
         });
 });
@@ -88,11 +87,11 @@ describe('browseGenre', () => {
                 );
         });
 
-        it('uses the provider browse route with the 18+ source', async () => {
+        it('uses the adult browse feed with the 18+ source', async () => {
                 mockedRequestUrl.mockImplementation(respondWith({ results: { totalPages: 1, data: [] } }));
                 await browseGenre('https://api', 'uncensored', 1, 'hentaimama');
                 expect(mockedRequestUrl.mock.calls[0][0].url).toBe(
-                        'https://api/api/providers/hentaimama/browse?genre=uncensored&page=1',
+                        'https://api/api/adult/browse?genre=uncensored&page=1',
                 );
         });
 });
@@ -128,7 +127,7 @@ describe('loadGenres', () => {
                 expect(genres).toEqual(NATIVE_GENRES);
         });
 
-        it('scrapes the 18+ genre list from the provider route', async () => {
+        it('reads the 18+ source\u2019s own genre list', async () => {
                 mockedRequestUrl.mockImplementation(
                         respondWith({
                                 results: {
@@ -140,7 +139,7 @@ describe('loadGenres', () => {
                         }),
                 );
                 const genres = await loadGenres('https://api', 'hentaimama');
-                expect(mockedRequestUrl.mock.calls[0][0].url).toBe('https://api/api/providers/hentaimama/genres');
+                expect(mockedRequestUrl.mock.calls[0][0].url).toBe('https://api/api/adult/genres');
                 expect(genres).toEqual([
                         { slug: 'uncensored', name: 'Uncensored' },
                         { slug: '3d', name: '3D' },

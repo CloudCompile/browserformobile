@@ -141,7 +141,7 @@ describe('loadSeriesDetails', () => {
 
         it('resolves an 18+ title from a stale id through the search route', async () => {
                 stage(
-                        '/api/search?keyword=So_low&page=1&rated=R_PLUS',
+                        '/api/search?keyword=So_low&page=1&includeAdult=1',
                         {
                                 success: true,
                                 results: {
@@ -163,6 +163,60 @@ describe('loadSeriesDetails', () => {
                 const details = await loadSeriesDetails(BASE, 'So_low', { provider: 'hentaimama' });
                 expect(details.info.id).toBe('so_low');
                 expect(details.preview.detail.title).toBe('So_low');
+        });
+
+        it('uses the native info route for an hm: series, not the MAL preview', async () => {
+                // The preview route would resolve `so_low` to an unrelated MAL title;
+                // an hm: series must never take that answer.
+                stage('/api/preview/hm%3Aso_low', nativePreview());
+                stage('/api/info?id=hm%3Aso_low', {
+                        success: true,
+                        results: {
+                                data: {
+                                        id: 'hm:so_low',
+                                        data_id: '81435',
+                                        title: 'So_low',
+                                        japanese_title: 'So_low',
+                                        poster: 'https://img/so_low.webp',
+                                        showType: 'TV',
+                                        animeInfo: {
+                                                Overview: '',
+                                                Genre: ['Uncensored'],
+                                                Studios: [],
+                                                Status: 'Ongoing',
+                                                Episodes: '4/4',
+                                                adultContent: true,
+                                                rating: 'Rx - Hentai',
+                                                tvInfo: { showType: 'TV', eps: 4 },
+                                        },
+                                },
+                                seasons: [],
+                        },
+                });
+                stage('/api/episodes/hm%3Aso_low', {
+                        success: true,
+                        results: {
+                                totalEpisodes: 1,
+                                episodes: [
+                                        {
+                                                key: 'hm:so_low:1',
+                                                id: 'hm:so_low:1',
+                                                number: 1,
+                                                title: 'Episode 1',
+                                                subbed: true,
+                                                dubbed: false,
+                                                filler: false,
+                                        },
+                                ],
+                        },
+                });
+
+                const details = await loadSeriesDetails(BASE, 'hm:so_low', { episodes: true });
+                expect(details.info.adultContent).toBe(true);
+                expect(details.preview.detail.title).toBe('So_low');
+                expect(details.preview.detail.image).toBe('https://img/so_low.webp');
+                expect(details.episodes?.[0]?.id).toBe('hm:so_low:1');
+                expect(details.synthesized).toBe(false);
         });
 
         it('merges the native preview and info routes', async () => {
@@ -188,7 +242,7 @@ describe('loadSeriesDetails', () => {
 
         it('falls back to the 18+ source when neither native route knows a title', async () => {
                 stage(
-                        '/api/search?keyword=So_low&page=1&rated=R_PLUS',
+                        '/api/search?keyword=So_low&page=1&includeAdult=1',
                         {
                                 success: true,
                                 results: {

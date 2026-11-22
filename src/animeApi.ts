@@ -363,10 +363,20 @@ async function fetchJson(base: string, path: string): Promise<unknown> {
 }
 
 /**
- * The opt-in 18+ streaming source. Its ids are slugs and it is reached through
- * `/api/providers/hentaimama/...` rather than the native `/api/*` routes.
+ * The opt-in 18+ streaming source. Its own catalogue ids use the `hm:`
+ * namespace and answer the native routes; only the legacy provider routes need
+ * this name. `ADULT_PROVIDER` is still what a series opened from an older
+ * search carries, so those entries keep resolving through their provider.
  */
 export const ADULT_PROVIDER = 'hentaimama';
+
+/** The `hm:` namespace of the 18+ source's own catalogue. */
+const ADULT_REFERENCE_PREFIX = 'hm:';
+
+/** True for an `hm:<slug>` series id or an `hm:<slug>:<n>` episode id. */
+export function isAdultReference(id: string): boolean {
+        return (id ?? '').trim().toLowerCase().startsWith(ADULT_REFERENCE_PREFIX);
+}
 
 /**
  * Pull the adult source's hits out of an aggregate search's `sources` array and
@@ -401,47 +411,6 @@ function collectAdultSources(sources: unknown): SeriesSummary[] {
         return out;
 }
 
-/**
- * Search the opt-in 18+ catalogue directly.
- *
- * The catalogue API no longer fans `/api/search` out to the adult provider, so
- * the opt-in box has to ask that provider for itself. Its rows are series
- * cards already (`slug`, `title`, `episodes`, …), so they map straight into
- * `SeriesSummary`. A failure is an empty list: an 18+ search must never break
- * the ordinary one.
- */
-async function searchAdultProvider(base: string, keyword: string): Promise<SeriesSummary[]> {
-        try {
-                const payload = (await getJson(
-                        base,
-                        `/api/providers/${ADULT_PROVIDER}/search?keyword=${encodeURIComponent(keyword)}`,
-                )) as { results?: { data?: unknown } };
-                const rows = payload?.results?.data;
-                if (!Array.isArray(rows)) return [];
-                return rows
-                        .map((row): SeriesSummary | null => {
-                                const entry = (row ?? {}) as Record<string, unknown>;
-                                const id = asString(entry.slug) || asString(entry.id);
-                                if (!id) return null;
-                                return {
-                                        id,
-                                        title: asString(entry.title),
-                                        japaneseTitle: asString(entry.japaneseTitle) || null,
-                                        poster: asString(entry.poster) || null,
-                                        showType: asString(entry.type) || 'TV',
-                                        sub: 0,
-                                        dub: 0,
-                                        eps: asNumber(entry.episodes),
-                                        adultContent: true,
-                                        provider: ADULT_PROVIDER,
-                                };
-                        })
-                        .filter((series): series is SeriesSummary => series !== null);
-        } catch {
-                return [];
-        }
-}
-
 export async function searchSeries(
         base: string,
         keyword: string,
@@ -458,7 +427,9 @@ export async function searchSeries(
                 const params: string[] = [];
                 params.push(`keyword=${encodeURIComponent(query)}`);
                 params.push(`page=${encodeURIComponent(String(p))}`);
-                if (includeAdult) params.push('rated=R_PLUS');
+                // The catalogue's own opt-in flag. It also folds in the titles
+                // only the 18+ source carries, as `hm:` rows in `data`.
+                if (includeAdult) params.push('includeAdult=1');
                 return `/api/search?${params.join('&')}`;
         };
 
@@ -474,11 +445,12 @@ export async function searchSeries(
                                         const record = row as Record<string, unknown>;
                                         const info = (record.tvInfo ?? {}) as Record<string, unknown>;
                                         const fields = summaryFields(record);
+                                        const id = asString(record.id);
                                         const japaneseTitle =
                                                 asString(record.japanese_title) || asString(record.japaneseTitle);
                                         const poster = asString(record.poster) || asString(record.image);
                                         return {
-                                                id: asString(record.id),
+                                                id,
                                                 title: asString(record.title),
                                                 japaneseTitle: japaneseTitle || null,
                                                 poster: poster || null,
@@ -486,18 +458,22 @@ export async function searchSeries(
                                                 sub: fields.sub,
                                                 dub: fields.dub,
                                                 eps: fields.eps,
+                                                // `hm:` rows are adult-only titles the MAL
+                                                // mirror does not carry, so the id itself is
+                                                // the flag. MAL rows keep their explicit one.
                                                 adultContent:
-                                                        typeof record.adultContent === 'boolean'
-                                                                ? record.adultContent
-                                                                : typeof info.adultContent === 'boolean'
-                                                                        ? info.adultContent
-                                                                        : undefined,
+                                                        isAdultReference(id) ||
+                                                        record.adultContent === true ||
+                                                        info.adultContent === true
+                                                                ? true
+                                                                : undefined,
                                         };
                                 })
                                 .filter((seriesItem) => seriesItem.id)
                         : [];
-                // Adult sources (hentaimama) are opt-in and never appear in `data`;
-                // they arrive in `sources` when the caller asked for 18+ results.
+                // Older builds fanned the opt-in search out to the 18+ provider and
+                // returned its hits under `sources`. Current builds append them to
+                // `data` as `hm:` rows. Read both so a cached answer still works.
                 const extra = includeAdult ? collectAdultSources(raw?.results?.sources) : [];
                 const totalPageNumber = asNumber(raw?.results?.totalPage);
                 const overPage = !Array.isArray(rows) && totalPageNumber === 0 && page > 1;
@@ -505,31 +481,20 @@ export async function searchSeries(
                 return { series: [...series, ...extra], totalPages, overPage };
         };
 
-        // The adult catalogue has no paging of its own, so its hits ride along
-        // with page 1 only; repeating them on every page would duplicate rows.
-        const withAdult = async (series: SeriesSummary[], totalPages: number) => {
-                if (!includeAdult || page !== 1) return { series, totalPages };
-                const adult = await searchAdultProvider(base, query);
-                if (adult.length === 0) return { series, totalPages };
-                const seen = new Set(series.map((entry) => `${entry.provider ?? ''}:${entry.id}`));
-                const extra = adult.filter((entry) => !seen.has(`${ADULT_PROVIDER}:${entry.id}`));
-                return { series: [...series, ...extra], totalPages };
-        };
-
         const firstResponse = await getJson(base, buildUrl(page));
         const first = parsePayload(firstResponse);
-        if (!first.overPage) return withAdult(first.series, first.totalPages);
+        if (!first.overPage) return { series: first.series, totalPages: first.totalPages };
 
         // Page exceeded the available range. Re-fetch page 1 to learn the real
         // total, then fetch the last valid page so the caller lands on real
         // results instead of an empty \"Page 1 of 1\".
         const pageOneResponse = await getJson(base, buildUrl(1));
         const pageOne = parsePayload(pageOneResponse);
-        if (!pageOne.series.length) return withAdult([], Math.max(1, pageOne.totalPages));
+        if (!pageOne.series.length) return { series: [], totalPages: Math.max(1, pageOne.totalPages) };
         const target = Math.max(1, pageOne.totalPages);
         const lastResponse = await getJson(base, buildUrl(target));
         const last = parsePayload(lastResponse);
-        return withAdult(last.series, last.totalPages);
+        return { series: last.series, totalPages: last.totalPages };
 }
 
 /** One page of a browse listing (a section or a genre), from either source. */
@@ -555,7 +520,7 @@ export async function browseSection(
         if (source === ADULT_PROVIDER) {
                 const payload = (await getJson(
                         base,
-                        `/api/providers/${ADULT_PROVIDER}/browse?section=${encodeURIComponent(section)}&page=${page}`,
+                        `/api/adult/browse?section=${encodeURIComponent(section)}&page=${page}`,
                 )) as { results?: { data?: unknown; totalPages?: unknown; page?: unknown } };
                 return adultPage(payload?.results);
         }
@@ -576,7 +541,7 @@ export async function browseGenre(
         if (source === ADULT_PROVIDER) {
                 const payload = (await getJson(
                         base,
-                        `/api/providers/${ADULT_PROVIDER}/browse?genre=${encodeURIComponent(slug)}&page=${page}`,
+                        `/api/adult/browse?genre=${encodeURIComponent(slug)}&page=${page}`,
                 )) as { results?: { data?: unknown; totalPages?: unknown; page?: unknown } };
                 return adultPage(payload?.results);
         }
@@ -626,7 +591,7 @@ const GATED_GENRE_SLUGS = new Set(['hentai', 'erotica']);
  */
 export async function loadGenres(base: string, source?: string): Promise<GenreRef[]> {
         if (source === ADULT_PROVIDER) {
-                const payload = (await getJson(base, `/api/providers/${ADULT_PROVIDER}/genres`)) as {
+                const payload = (await getJson(base, '/api/adult/genres')) as {
                         results?: { data?: unknown };
                 };
                 const rows = payload?.results?.data;
@@ -733,19 +698,27 @@ function adultPage(results: unknown): BrowsePage {
         const series = rows
                 .map((row): SeriesSummary | null => {
                         const entry = (row ?? {}) as Record<string, unknown>;
-                        const id = asString(entry.slug) || asString(entry.id);
+                        // Current rows are already `hm:` references in the contract
+                        // shape (`showType`, `eps`, `japanese_title`). An older cached
+                        // response still carries the provider's `slug`/`type` fields.
+                        const id = asString(entry.id) || asString(entry.slug);
                         if (!id) return null;
+                        const fields = summaryFields(entry);
+                        const native = isAdultReference(id);
                         return {
                                 id,
                                 title: asString(entry.title),
-                                japaneseTitle: asString(entry.japaneseTitle) || null,
-                                poster: asString(entry.poster) || null,
-                                showType: asString(entry.type) || 'TV',
-                                sub: 0,
-                                dub: 0,
-                                eps: asNumber(entry.episodes),
+                                japaneseTitle:
+                                        asString(entry.japanese_title) ||
+                                        asString(entry.japaneseTitle) ||
+                                        null,
+                                poster: asString(entry.poster) || asString(entry.image) || null,
+                                showType: fields.showType || 'TV',
+                                sub: fields.sub,
+                                dub: fields.dub,
+                                eps: fields.eps || asNumber(entry.episodes),
                                 adultContent: true,
-                                provider: ADULT_PROVIDER,
+                                provider: native ? undefined : ADULT_PROVIDER,
                         };
                 })
                 .filter((series): series is SeriesSummary => series !== null);
@@ -1115,6 +1088,8 @@ export async function loadStream(
         episodeId: string,
         provider?: string,
         preferDub = false,
+        /** Opt the request into the 18+ playback chain (a MAL-indexed title). */
+        includeAdult = false,
 ): Promise<StreamSource> {
         // The 18+ source resolves a single direct file through its own route: the
         // provider picks the first playable mirror (HLS preferred) itself, so
@@ -1150,9 +1125,13 @@ export async function loadStream(
                 };
         }
 
+        // Adult titles the MAL mirror indexes stream only when the caller opts
+        // in; without this the API answers 502 and the job fails for nothing.
+        // `hm:` episode ids are an opt-in on their own and ignore the flag.
+        const adultQuery = includeAdult ? '&includeAdult=1' : '';
         const payload = (await getJson(
                 base,
-                `/api/stream?id=${encodeURIComponent(episodeId)}`,
+                `/api/stream?id=${encodeURIComponent(episodeId)}${adultQuery}`,
         )) as { results?: { streamingLink?: Record<string, unknown>; servers?: unknown } };
         const link = payload?.results?.streamingLink;
         if (!link) {
@@ -1179,7 +1158,7 @@ export async function loadStream(
                         try {
                                 const attempt = (await getJson(
                                         base,
-                                        `/api/stream?id=${encodeURIComponent(episodeId)}&server=${encodeURIComponent(name)}`,
+                                        `/api/stream?id=${encodeURIComponent(episodeId)}${adultQuery}&server=${encodeURIComponent(name)}`,
                                 )) as { results?: { streamingLink?: Record<string, unknown> } };
                                 const candidate = attempt?.results?.streamingLink;
                                 const candidateUrl =
@@ -1775,8 +1754,12 @@ async function loadAdultDetails(base: string, series: string, withEpisodes: bool
 
 /** The native route, falling back to whichever half answered. */
 async function loadNativeDetails(base: string, series: string, withEpisodes: boolean): Promise<SeriesDetails> {
+        // `hm:` ids are the 18+ source's own catalogue. The preview route is a
+        // MAL mirror and resolves those slugs to an unrelated title, so the info
+        // route alone supplies the page.
+        const adultReference = isAdultReference(series);
         const [previewOutcome, infoOutcome] = await Promise.allSettled([
-                loadPreview(base, series),
+                adultReference ? Promise.resolve(null) : loadPreview(base, series),
                 loadAnimeInfo(base, series),
         ]);
         let preview = previewOutcome.status === 'fulfilled' ? previewOutcome.value : null;
@@ -1786,7 +1769,7 @@ async function loadNativeDetails(base: string, series: string, withEpisodes: boo
 
         // The preview is the MAL mirror and sometimes needs a title rather than
         // the catalogue's numeric id. Retry by title before synthesizing.
-        if (!preview && info?.title && info.title !== series) {
+        if (!preview && !adultReference && info?.title && info.title !== series) {
                 preview = await loadPreview(base, info.title).catch(() => null);
         }
         if (!preview && info) preview = previewFromInfo(info);

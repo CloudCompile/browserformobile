@@ -1,5 +1,5 @@
 import type { EpisodeSummary } from './animeApi';
-import { loadStream, selectVariant } from './animeApi';
+import { isAdultReference, loadStream, selectVariant } from './animeApi';
 import { createDestination, sanitizePath, type Destination, type DestinationRequest } from './destination';
 import {
         DownloadError,
@@ -27,6 +27,11 @@ import type { DownloadRun } from './stats';
 import { TransmuxStream } from './transmux';
 import { generateId } from './utils';
 import { ScreenWakeLock, hasWakeLockSupport } from './wakelock';
+
+/** `hm:` episodes are adult by construction, and the id is their opt-in. */
+function isAdultEpisode(episodeId: string): boolean {
+        return isAdultReference(episodeId);
+}
 
 /** Bytes coalesced into one write. Appending is costly on mobile. */
 const TS_BATCH_BYTES = 8 * 1024 * 1024;
@@ -125,6 +130,11 @@ export interface DownloadJob {
         seriesTitle: string;
         episode: EpisodeSummary;
         /**
+         * The series is adult, so `/api/stream` must be asked with the opt-in.
+         * Fixed when the job is enqueued; `hm:` episodes imply it themselves.
+         */
+        adult: boolean;
+        /**
          * The format and quality this run uses, fixed when the job is enqueued.
          * A per-series override in the picker sets them; a later change to the
          * global options never rewrites a queued job, so what a run produces is
@@ -193,6 +203,8 @@ export interface DownloaderOptions {
 export interface EnqueueRequest {
         seriesTitle: string;
         episodes: EpisodeSummary[];
+        /** The series is adult; the stream request must opt in. */
+        adult?: boolean;
         /**
          * Per-series overrides applied to every episode in this request.
          * Omitted fields fall back to the manager's global options.
@@ -204,6 +216,8 @@ export interface EnqueueRequest {
 export interface PersistedDownloadJob {
         seriesTitle: string;
         episode: EpisodeSummary;
+        /** Recorded so a restored adult job still opts into its stream. */
+        adult?: boolean;
         status: 'queued' | 'paused';
         /** Recorded with the queue so a restart resumes the same output. */
         format?: OutputFormat;
@@ -278,6 +292,8 @@ interface PartialState {
         episodeNumber?: number;
         /** Episode title, for the same reason. Absent in v2 sidecars. */
         episodeTitle?: string;
+        /** The run needs the 18+ playback opt-in when it resumes. */
+        adult?: boolean;
         /** The subtitle track was fetched during this run, so a resume skips it. */
         subtitleDone?: boolean;
         /** Label of the fetched subtitle track. */
@@ -393,6 +409,7 @@ export class DownloadManager {
                         .map((job) => ({
                                 seriesTitle: job.seriesTitle,
                                 episode: job.episode,
+                                adult: job.adult,
                                 status: job.status,
                                 format: job.format,
                                 quality: job.quality,
@@ -420,6 +437,7 @@ export class DownloadManager {
                                 id: generateId(),
                                 seriesTitle: value.seriesTitle,
                                 episode,
+                                adult: value.adult === true || isAdultEpisode(episode.id),
                                 // Older persisted queues carry no preference; those
                                 // fall back to the global options as before.
                                 format:
@@ -506,6 +524,7 @@ export class DownloadManager {
                                 // the new format cannot continue.
                                 existing.format = request.format ?? this.options.format;
                                 existing.quality = request.quality ?? this.options.quality;
+                                existing.adult = request.adult === true || isAdultEpisode(episode.id);
                                 created.push(existing);
                                 continue;
                         }
@@ -513,6 +532,7 @@ export class DownloadManager {
                                 id: generateId(),
                                 seriesTitle: request.seriesTitle,
                                 episode,
+                                adult: request.adult === true || isAdultEpisode(episode.id),
                                 format: request.format ?? this.options.format,
                                 quality: request.quality ?? this.options.quality,
                                 status: 'queued',
@@ -1085,7 +1105,13 @@ export class DownloadManager {
                 if (typeof navigator !== 'undefined' && navigator.onLine === false) {
                         throw new DownloadError('No internet connection. Reconnect and resume this download.');
                 }
-                const source = await loadStream(this.options.apiBase, job.episode.id, job.episode.provider, this.options.preferDub);
+                const source = await loadStream(
+                        this.options.apiBase,
+                        job.episode.id,
+                        job.episode.provider,
+                        this.options.preferDub,
+                        job.adult,
+                );
                 if (signal.aborted) throw new DownloadError('Download cancelled.');
                 if (!source.url || source.variants.length === 0) {
                         throw new DownloadError(
@@ -1379,6 +1405,7 @@ export class DownloadManager {
                         bytes,
                         episodeNumber: job.episode.number,
                         episodeTitle: job.episode.title,
+                        adult: job.adult,
                 };
                 const subtitle = this.subtitleTracks.get(job.id);
                 if (subtitle) {
@@ -1749,6 +1776,7 @@ export class DownloadManager {
                                 id: generateId(),
                                 seriesTitle: partial.seriesTitle,
                                 episode,
+                                adult: partial.adult === true || isAdultEpisode(episode.id),
                                 format: partial.format,
                                 quality: partial.quality,
                                 status: 'failed',
