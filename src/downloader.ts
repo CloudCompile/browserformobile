@@ -1097,7 +1097,7 @@ export class DownloadManager {
                 const variant = selectVariant(source.variants, job.quality);
                 if (!variant) throw new DownloadError('No stream quality was available.');
 
-                const playlist = await loadMediaPlaylist(variant.url);
+                const playlist = await loadMediaPlaylist(variant.url, source.headers);
                 this.debug('download.playlist', { id: job.id, segments: playlist.segments.length, duration: playlist.duration });
                 if (signal.aborted) throw new DownloadError('Download cancelled.');
                 // Kept for the duration of the run so the speed tracker can turn a
@@ -1185,7 +1185,10 @@ export class DownloadManager {
                         const rendition = source.subtitles[0];
                         if (rendition) {
                                 try {
-                                        const track = await downloadSubtitleTrack(rendition, { signal });
+                                        const track = await downloadSubtitleTrack(rendition, {
+                                                signal,
+                                                headers: source.headers,
+                                        });
                                         this.subtitleTracks.set(job.id, track);
                                         this.debug('download.subtitles', {
                                                 id: job.id,
@@ -1241,8 +1244,8 @@ export class DownloadManager {
 
                 const written =
                         job.format === 'ts'
-                                ? await this.writeTs(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes)
-                                : await this.writeMp4(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes);
+                                ? await this.writeTs(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes, source.headers)
+                                : await this.writeMp4(job, destination, path, playlist, signal, onProgress, resumeFrom, resumeBytes, source.headers);
                 job.fileSize = written;
                 this.debug('download.file-written', { id: job.id, path, bytes: written });
                 await this.writeSubtitles(job, destination, this.subtitleTracks.get(job.id) ?? null);
@@ -1319,6 +1322,7 @@ export class DownloadManager {
                 onProgress: (progress: { completed: number; bytes: number }) => void,
                 resumeFrom: number,
                 resumeBytes: number,
+                headers: Record<string, string>,
         ): Promise<number> {
                 const part = partialStatePath(path);
                 // Resuming appends to the existing staging file; a fresh run
@@ -1335,6 +1339,7 @@ export class DownloadManager {
                                         batchBytes: this.batchBytesFor(playlist),
                                         resumeFrom,
                                         resumeBytes,
+                                        headers,
                                 },
                                 async (_index, data, writtenThrough) => {
                                         await writer.write(data);
@@ -1408,6 +1413,7 @@ export class DownloadManager {
                 onProgress: (progress: { completed: number; bytes: number }) => void,
                 resumeFrom: number,
                 resumeBytes: number,
+                headers: Record<string, string>,
         ): Promise<number> {
                 const written = await this.stageSegments(
                         job,
@@ -1418,6 +1424,7 @@ export class DownloadManager {
                         onProgress,
                         resumeFrom,
                         resumeBytes,
+                        headers,
                 );
                 await destination.rename(partialStatePath(path), path);
                 await destination.remove(partialMetaPath(path));
@@ -1468,6 +1475,7 @@ export class DownloadManager {
                 onProgress: (progress: { completed: number; bytes: number }) => void,
                 resumeFrom: number,
                 resumeBytes: number,
+                headers: Record<string, string>,
         ): Promise<number> {
                 const part = partialStatePath(path);
                 const index = partialIndexPath(path);
@@ -1531,6 +1539,7 @@ export class DownloadManager {
                                                 batchBytes: this.batchBytesFor(playlist),
                                                 resumeFrom,
                                                 resumeBytes,
+                                                headers,
                                         },
                                         async (_index, chunk, writtenThrough) => {
                                                 segments = writtenThrough;

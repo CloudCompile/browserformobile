@@ -2,10 +2,12 @@ import { requestUrl } from 'obsidian';
 import type { AnimeCache } from './animeCache';
 
 /**
- * Client for the anime-api instance at animeapi.cjhauser.me, which fronts the
- * aniwaves.ru catalogue. Four endpoints exist (no schema endpoint): /api/search,
- * /api/info, /api/episodes/:id, /api/stream; shapes were derived by probing the
- * live service (see review/animeapi-coverage.md).
+ * Client for the anime-api instance at animeapi.cjhauser.me. The catalogue is
+ * MyAnimeList data behind /api/search, /api/info, /api/episodes/:id,
+ * /api/preview/:id and /api/stream; streaming still resolves on the scraped
+ * mirrors the API fronts. Rows are read tolerantly because the service has
+ * changed shape once already (flat `showType`/`eps` now, `tvInfo` before, and
+ * `number` now where episode rows used to carry `episode_no`).
  */
 export const DEFAULT_API_BASE = 'https://animeapi.cjhauser.me';
 
@@ -171,6 +173,12 @@ export interface StreamSource {
         url: string | null;
         iframe: string | null;
         server: string;
+        /**
+         * Request headers the CDN requires for the manifest and its segments.
+         * The API publishes the player origin its current CDN expects, and that
+         * origin moves with the CDN, so a hardcoded referer 403s once it does.
+         */
+        headers: Record<string, string>;
         variants: StreamVariant[];
         /**
          * Subtitle renditions advertised by the master playlist, in playlist
@@ -234,6 +242,85 @@ function asNumber(value: unknown): number {
                 return Number.isFinite(parsed) ? parsed : 0;
         }
         return 0;
+}
+
+/**
+ * The display fields of a catalogue row, across both shapes the API has served.
+ *
+ * List and search rows are flat now (`showType`, `eps`, no sub/dub counts),
+ * while `/api/info` still nests a small `tvInfo` under `animeInfo` and cached
+ * payloads from before the change used `tvInfo` everywhere. Reading every form
+ * keeps old cache entries and the current service on one parser.
+ */
+function summaryFields(record: Record<string, unknown>): {
+        showType: string;
+        sub: number;
+        dub: number;
+        eps: number;
+} {
+        const info = (record.tvInfo ?? {}) as Record<string, unknown>;
+        const animeInfo = (record.animeInfo ?? {}) as Record<string, unknown>;
+        const nested = (animeInfo.tvInfo ?? {}) as Record<string, unknown>;
+        return {
+                showType: asString(record.showType) || asString(info.showType) || asString(nested.showType),
+                sub: asNumber(info.sub) || asNumber(nested.sub),
+                dub: asNumber(info.dub) || asNumber(nested.dub),
+                eps: asNumber(record.eps) || asNumber(info.eps) || asNumber(nested.eps),
+        };
+}
+
+/**
+ * The request headers a stream's CDN needs, defaulting the old player origin.
+ * The API's `Referer` is authoritative; anything else it publishes is kept, so
+ * a CDN that starts demanding another header needs no client change.
+ */
+function requestHeaders(value: unknown): Record<string, string> {
+        const headers: Record<string, string> = {};
+        if (value && typeof value === 'object') {
+                for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+                        const text = asString(raw);
+                        if (key && text) headers[key] = text;
+                }
+        }
+        if (!Object.keys(headers).some((key) => key.toLowerCase() === 'referer')) {
+                headers.Referer = STREAM_REFERER;
+        }
+        return headers;
+}
+
+/**
+ * Caption tracks published beside the stream rather than inside the HLS
+ * playlist. The current CDN serves one whole WebVTT file per track (and a
+ * `thumbnails` track that is not a subtitle), so they map into the same
+ * rendition shape the playlist parser produces. The downloader detects a
+ * document instead of a segment playlist.
+ */
+/**
+ * A stream's subtitles: its playlist's own renditions when it has any, and the
+ * separate caption tracks only when it does not. Preferring one source keeps a
+ * stream that publishes both from downloading the same captions twice.
+ */
+function playlistSubtitles(playlist: string, url: string, tracks: unknown): SubtitleRendition[] {
+        const renditions = parseSubtitleRenditions(playlist, url);
+        return renditions.length > 0 ? renditions : tracksAsSubtitles(tracks);
+}
+
+function tracksAsSubtitles(value: unknown): SubtitleRendition[] {
+        if (!Array.isArray(value)) return [];
+        const renditions: SubtitleRendition[] = [];
+        for (const row of value) {
+                const track = (row ?? {}) as Record<string, unknown>;
+                const kind = asString(track.kind).toLowerCase();
+                if (kind && kind !== 'captions' && kind !== 'subtitles') continue;
+                const url = asString(track.file) || asString(track.url);
+                if (!url) continue;
+                renditions.push({
+                        name: asString(track.label) || 'Subtitles',
+                        language: asString(track.language) || null,
+                        url,
+                });
+        }
+        return renditions;
 }
 
 /**
@@ -314,6 +401,47 @@ function collectAdultSources(sources: unknown): SeriesSummary[] {
         return out;
 }
 
+/**
+ * Search the opt-in 18+ catalogue directly.
+ *
+ * The catalogue API no longer fans `/api/search` out to the adult provider, so
+ * the opt-in box has to ask that provider for itself. Its rows are series
+ * cards already (`slug`, `title`, `episodes`, …), so they map straight into
+ * `SeriesSummary`. A failure is an empty list: an 18+ search must never break
+ * the ordinary one.
+ */
+async function searchAdultProvider(base: string, keyword: string): Promise<SeriesSummary[]> {
+        try {
+                const payload = (await getJson(
+                        base,
+                        `/api/providers/${ADULT_PROVIDER}/search?keyword=${encodeURIComponent(keyword)}`,
+                )) as { results?: { data?: unknown } };
+                const rows = payload?.results?.data;
+                if (!Array.isArray(rows)) return [];
+                return rows
+                        .map((row): SeriesSummary | null => {
+                                const entry = (row ?? {}) as Record<string, unknown>;
+                                const id = asString(entry.slug) || asString(entry.id);
+                                if (!id) return null;
+                                return {
+                                        id,
+                                        title: asString(entry.title),
+                                        japaneseTitle: asString(entry.japaneseTitle) || null,
+                                        poster: asString(entry.poster) || null,
+                                        showType: asString(entry.type) || 'TV',
+                                        sub: 0,
+                                        dub: 0,
+                                        eps: asNumber(entry.episodes),
+                                        adultContent: true,
+                                        provider: ADULT_PROVIDER,
+                                };
+                        })
+                        .filter((series): series is SeriesSummary => series !== null);
+        } catch {
+                return [];
+        }
+}
+
 export async function searchSeries(
         base: string,
         keyword: string,
@@ -345,17 +473,19 @@ export async function searchSeries(
                                 .map((row) => {
                                         const record = row as Record<string, unknown>;
                                         const info = (record.tvInfo ?? {}) as Record<string, unknown>;
-                                        const japaneseTitle = asString(record.japanese_title);
-                                        const poster = asString(record.poster);
+                                        const fields = summaryFields(record);
+                                        const japaneseTitle =
+                                                asString(record.japanese_title) || asString(record.japaneseTitle);
+                                        const poster = asString(record.poster) || asString(record.image);
                                         return {
                                                 id: asString(record.id),
                                                 title: asString(record.title),
                                                 japaneseTitle: japaneseTitle || null,
                                                 poster: poster || null,
-                                                showType: asString(info.showType),
-                                                sub: asNumber(info.sub),
-                                                dub: asNumber(info.dub),
-                                                eps: asNumber(info.eps),
+                                                showType: fields.showType,
+                                                sub: fields.sub,
+                                                dub: fields.dub,
+                                                eps: fields.eps,
                                                 adultContent:
                                                         typeof record.adultContent === 'boolean'
                                                                 ? record.adultContent
@@ -375,20 +505,31 @@ export async function searchSeries(
                 return { series: [...series, ...extra], totalPages, overPage };
         };
 
+        // The adult catalogue has no paging of its own, so its hits ride along
+        // with page 1 only; repeating them on every page would duplicate rows.
+        const withAdult = async (series: SeriesSummary[], totalPages: number) => {
+                if (!includeAdult || page !== 1) return { series, totalPages };
+                const adult = await searchAdultProvider(base, query);
+                if (adult.length === 0) return { series, totalPages };
+                const seen = new Set(series.map((entry) => `${entry.provider ?? ''}:${entry.id}`));
+                const extra = adult.filter((entry) => !seen.has(`${ADULT_PROVIDER}:${entry.id}`));
+                return { series: [...series, ...extra], totalPages };
+        };
+
         const firstResponse = await getJson(base, buildUrl(page));
         const first = parsePayload(firstResponse);
-        if (!first.overPage) return { series: first.series, totalPages: first.totalPages };
+        if (!first.overPage) return withAdult(first.series, first.totalPages);
 
         // Page exceeded the available range. Re-fetch page 1 to learn the real
         // total, then fetch the last valid page so the caller lands on real
         // results instead of an empty \"Page 1 of 1\".
         const pageOneResponse = await getJson(base, buildUrl(1));
         const pageOne = parsePayload(pageOneResponse);
-        if (!pageOne.series.length) return { series: [], totalPages: Math.max(1, pageOne.totalPages) };
+        if (!pageOne.series.length) return withAdult([], Math.max(1, pageOne.totalPages));
         const target = Math.max(1, pageOne.totalPages);
         const lastResponse = await getJson(base, buildUrl(target));
         const last = parsePayload(lastResponse);
-        return { series: last.series, totalPages: last.totalPages };
+        return withAdult(last.series, last.totalPages);
 }
 
 /** One page of a browse listing (a section or a genre), from either source. */
@@ -439,14 +580,50 @@ export async function browseGenre(
                 )) as { results?: { data?: unknown; totalPages?: unknown; page?: unknown } };
                 return adultPage(payload?.results);
         }
+        // The catalogue's `/api/genre/<slug>` routes are a fixed legacy list, so
+        // any genre added since answers 404. The filter controller resolves the
+        // same slug against the live genre index, so it covers every genre the
+        // catalogue advertises, with the same list shape and paging.
         const payload = (await getJson(
                 base,
-                `/api/genre/${encodeURIComponent(slug)}?page=${page}`,
+                `/api/filter?genre=${encodeURIComponent(slug)}&page=${page}`,
         )) as { results?: { data?: unknown; totalPages?: unknown; page?: unknown } };
         return nativePage(payload?.results, page);
 }
 
-/** The genre list for the source: the 18+ source is scraped, the native one is fixed. */
+/**
+ * Genre slugs the catalogue indexes by name. Its `genre.idFor` tries the
+ * original name first and this slug second, so slugifying the published names
+ * is enough to address `/api/genre/<slug>` without hardcoding an id table.
+ */
+function genreSlug(name: string): string {
+        return name
+                .normalize('NFKD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .replace(/['’`]/g, '')
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '')
+                .slice(0, 80);
+}
+
+/**
+ * Genre names the native (non-opted-in) tab must not advertise. The catalogue's
+ * own index includes them, but the plugin only opens that door through the 18+
+ * checkbox, and a public genre page would bypass it. Ecchi stays, matching the
+ * list this plugin has always shown.
+ */
+const GATED_GENRE_SLUGS = new Set(['hentai', 'erotica']);
+
+/**
+ * The genre list for the source.
+ *
+ * The 18+ source is scraped; the native one is the catalogue's own index from
+ * the home payload. That list is authoritative — the old hardcoded names went
+ * stale when the catalogue moved and some (`cars`, `dementia`, …) now match
+ * nothing — so it is read per source and sorted for a stable grid. The bundled
+ * list remains as the offline fallback when the home call fails.
+ */
 export async function loadGenres(base: string, source?: string): Promise<GenreRef[]> {
         if (source === ADULT_PROVIDER) {
                 const payload = (await getJson(base, `/api/providers/${ADULT_PROVIDER}/genres`)) as {
@@ -461,6 +638,22 @@ export async function loadGenres(base: string, source?: string): Promise<GenreRe
                                 })
                                 .filter((genre) => genre.slug && genre.name)
                         : [];
+        }
+
+        try {
+                const payload = (await getJson(base, '/api')) as { results?: { genres?: unknown } };
+                const names = payload?.results?.genres;
+                if (Array.isArray(names)) {
+                        const genres = names
+                                .map((name) => asString(name))
+                                .filter(Boolean)
+                                .map((name) => ({ slug: genreSlug(name), name }))
+                                .filter((genre) => genre.slug && !GATED_GENRE_SLUGS.has(genre.slug))
+                                .sort((left, right) => left.name.localeCompare(right.name));
+                        if (genres.length > 0) return genres;
+                }
+        } catch {
+                // Fall back to the bundled list: browsing still works offline.
         }
         return NATIVE_GENRES.map((genre) => ({ ...genre }));
 }
@@ -511,16 +704,16 @@ export const NATIVE_GENRES: GenreRef[] = [
 ];
 
 function toNativeSummary(record: Record<string, unknown>): SeriesSummary {
-        const info = (record.tvInfo ?? {}) as Record<string, unknown>;
+        const fields = summaryFields(record);
         return {
                 id: asString(record.id),
                 title: asString(record.title),
-                japaneseTitle: asString(record.japanese_title) || null,
-                poster: asString(record.poster) || null,
-                showType: asString(info.showType) || 'Unknown',
-                sub: asNumber(info.sub),
-                dub: asNumber(info.dub),
-                eps: asNumber(info.eps),
+                japaneseTitle: asString(record.japanese_title) || asString(record.japaneseTitle) || null,
+                poster: asString(record.poster) || asString(record.image) || null,
+                showType: fields.showType || 'Unknown',
+                sub: fields.sub,
+                dub: fields.dub,
+                eps: fields.eps,
         };
 }
 
@@ -651,10 +844,13 @@ export async function loadEpisodes(base: string, seriesId: string, provider?: st
         }
         const episodes = rows.map((row) => {
                 const record = row as Record<string, unknown>;
+                // `number` is the current field; `episode_no` is what the
+                // previous catalogue served and what older cache entries hold.
+                const number = asNumber(record.number) || asNumber(record.episode_no);
                 return {
                         id: asString(record.id),
-                        number: asNumber(record.episode_no),
-                        title: asString(record.title),
+                        number,
+                        title: asString(record.title) || `Episode ${number}`,
                         filler: Boolean(record.filler),
                         subbed: Boolean(record.subbed),
                         dubbed: Boolean(record.dubbed),
@@ -741,15 +937,16 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
                 const id = asString(record.id);
                 if (!id) return null;
                 const info = (record.tvInfo ?? {}) as Record<string, unknown>;
+                const fields = summaryFields(record);
                 return {
                         id,
                         title: asString(record.title),
-                        japaneseTitle: asString(record.japanese_title) || null,
-                        poster: asString(record.poster) || null,
-                        showType: asString(record.showType) || asString(info.showType) || 'Unknown',
-                        sub: asNumber(info.sub),
-                        dub: asNumber(info.dub),
-                        eps: asNumber(info.eps),
+                        japaneseTitle: asString(record.japanese_title) || asString(record.japaneseTitle) || null,
+                        poster: asString(record.poster) || asString(record.image) || null,
+                        showType: fields.showType || 'Unknown',
+                        sub: fields.sub,
+                        dub: fields.dub,
+                        eps: fields.eps,
                         // Mirror search path so adult-content badges stay consistent in
                         // detail view's recommended/related/popular lists. The backend only
                         // surfaces adultContent on the search payload; related entries fall
@@ -804,7 +1001,9 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
                         : [];
 
         return {
-                adultContent: Boolean(data.adultContent),
+                // The catalogue nests the authoritative flag under `animeInfo`;
+                // older payloads carried it at the top level. Either is valid.
+                adultContent: Boolean(data.adultContent ?? animeInfo.adultContent),
                 id: asString(data.id) || seriesId,
                 dataId: asString(data.data_id) || null,
                 title: asString(data.title) || null,
@@ -928,15 +1127,16 @@ export async function loadStream(
                 const data = payload?.results?.data;
                 const link = (data?.link ?? {}) as Record<string, unknown>;
                 const url = asString(link.file) || null;
+                const headers = requestHeaders(data?.headers);
                 if (!data || !url) {
-                        return { url: null, iframe: asString(data?.embed) || null, server: asString(data?.server), variants: [], subtitles: [] };
+                        return { url: null, iframe: asString(data?.embed) || null, server: asString(data?.server), variants: [], subtitles: [], headers };
                 }
                 // HLS resolves to quality variants; a progressive MP4 is a single
                 // variant whose height is unknown until it is probed.
                 if (!/\.m3u8($|\?)/i.test(url)) {
-                        return { url, iframe: null, server: asString(data?.server), variants: [{ height: 0, width: 0, bandwidth: 0, url }], subtitles: [] };
+                        return { url, iframe: null, server: asString(data?.server), variants: [{ height: 0, width: 0, bandwidth: 0, url }], subtitles: [], headers };
                 }
-                const response = await requestUrl({ url, method: 'GET', headers: {}, throw: false });
+                const response = await requestUrl({ url, method: 'GET', headers, throw: false });
                 if (response.status >= 400) {
                         throw new AnimeApiError(`The stream CDN returned HTTP ${response.status}.`);
                 }
@@ -945,7 +1145,8 @@ export async function loadStream(
                         iframe: null,
                         server: asString(data?.server),
                         variants: parseMasterPlaylist(response.text, url),
-                        subtitles: parseSubtitleRenditions(response.text, url),
+                        subtitles: playlistSubtitles(response.text, url, data?.tracks),
+                        headers,
                 };
         }
 
@@ -996,20 +1197,31 @@ export async function loadStream(
 
         const iframe = asString(chosen.iframe) || null;
         const server = asString(chosen.server);
+        // The API publishes the headers its CDN demands and the player origin
+        // moves with the CDN, so forward its answer verbatim. The old hardcoded
+        // referer now earns a 403 on both the manifest and every segment.
+        const headers = requestHeaders(chosen.headers);
         // Some servers only expose an embed iframe; there is no file to download.
         if (!url) {
-                return { url: null, iframe, server, variants: [], subtitles: [] };
+                return { url: null, iframe, server, variants: [], subtitles: [], headers };
         }
         const response = await requestUrl({
                 url,
                 method: 'GET',
-                headers: { Referer: STREAM_REFERER },
+                headers,
                 throw: false,
         });
         if (response.status >= 400) {
                 throw new AnimeApiError(`The stream CDN returned HTTP ${response.status}.`);
         }
-        return { url, iframe, server, variants: parseMasterPlaylist(response.text, url), subtitles: parseSubtitleRenditions(response.text, url) };
+        return {
+                url,
+                iframe,
+                server,
+                variants: parseMasterPlaylist(response.text, url),
+                subtitles: playlistSubtitles(response.text, url, chosen.tracks),
+                headers,
+        };
 }
 
 /**

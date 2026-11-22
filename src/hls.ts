@@ -49,6 +49,12 @@ export interface DownloadOptions {
         resumeFrom?: number;
         /** Bytes already on disk, added to the progress total of a resumed download. */
         resumeBytes?: number;
+        /**
+         * Headers the CDN demands, as published by the stream API. The player
+         * origin moves with the CDN, so this must not be hardcoded; the old
+         * echovideo referer is only the fallback when the API publishes none.
+         */
+        headers?: Record<string, string>;
 }
 
 /**
@@ -157,12 +163,16 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
         });
 }
 
-async function fetchText(url: string): Promise<string> {
+function requestHeaders(headers?: Record<string, string>): Record<string, string> {
+        return headers && Object.keys(headers).length > 0 ? headers : { Referer: STREAM_REFERER };
+}
+
+async function fetchText(url: string, headers?: Record<string, string>): Promise<string> {
         const response = await withTimeout(
                 requestUrl({
                         url,
                         method: 'GET',
-                        headers: { Referer: STREAM_REFERER },
+                        headers: requestHeaders(headers),
                         throw: false,
                 }),
                 REQUEST_TIMEOUT_MS,
@@ -182,6 +192,7 @@ async function fetchSegment(
         url: string,
         signal?: AbortSignal,
         onRateLimit?: () => void,
+        headers?: Record<string, string>,
 ): Promise<Uint8Array> {
         let lastError: unknown = null;
         let rateLimited = false;
@@ -192,7 +203,7 @@ async function fetchSegment(
                                 requestUrl({
                                         url,
                                         method: 'GET',
-                                        headers: { Referer: STREAM_REFERER },
+                                        headers: requestHeaders(headers),
                                         throw: false,
                                 }),
                                 REQUEST_TIMEOUT_MS,
@@ -321,7 +332,7 @@ export async function downloadSegmentsStreaming(
                         if (index >= total) return;
                         const url = playlist.segments[index];
                         if (!url) return;
-                        const data = await fetchSegment(url, internal.signal, onRateLimit);
+                        const data = await fetchSegment(url, internal.signal, onRateLimit, options.headers);
                         completed++;
                         bytes += data.byteLength;
                         options.onProgress?.({ completed, total, bytes });
@@ -375,8 +386,8 @@ export async function downloadSegmentsStreaming(
 }
 
 /** Resolve a media playlist URL for a chosen variant. */
-export async function loadMediaPlaylist(url: string): Promise<MediaPlaylist> {
-        const text = await fetchText(url);
+export async function loadMediaPlaylist(url: string, headers?: Record<string, string>): Promise<MediaPlaylist> {
+        const text = await fetchText(url, headers);
         const playlist = parseMediaPlaylist(text, url);
         if (playlist.segments.length === 0) {
                 throw new DownloadError('The stream playlist contained no segments.');
@@ -487,16 +498,35 @@ export interface SubtitleTrackData {
  */
 export async function downloadSubtitleTrack(
         rendition: SubtitleRendition,
-        options: { signal?: AbortSignal } = {},
+        options: { signal?: AbortSignal; headers?: Record<string, string> } = {},
 ): Promise<SubtitleTrackData> {
-        const playlist = await loadMediaPlaylist(rendition.url);
+        const text = await fetchText(rendition.url, options.headers);
+        // A track can be one whole WebVTT document rather than an HLS media
+        // playlist; the current CDN serves it that way, so reading it as a
+        // playlist would treat every cue line as a segment URL.
+        if (!/#EXTINF:/.test(text)) {
+                const cues = parseVttCues(text);
+                if (cues.length === 0) {
+                        throw new DownloadError('The subtitle track contained no cues.');
+                }
+                return {
+                        name: rendition.name,
+                        language: rendition.language,
+                        vtt: buildVttDocument(cues),
+                        segments: 1,
+                };
+        }
+        const playlist = parseMediaPlaylist(text, rendition.url);
         if (playlist.segments.length === 0) {
                 throw new DownloadError('The subtitle playlist contained no segments.');
         }
         const segments = await mapWithConcurrency(
                 playlist.segments,
                 SUBTITLE_CONCURRENCY,
-                async (url) => new TextDecoder().decode(await fetchSegment(url, options.signal)),
+                async (url) =>
+                        new TextDecoder().decode(
+                                await fetchSegment(url, options.signal, undefined, options.headers),
+                        ),
         );
         const cues = segments.flatMap((segment) => parseVttCues(segment));
         return {
