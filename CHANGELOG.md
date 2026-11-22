@@ -13,6 +13,27 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.3.5 — 2026-11-22
+
+The catalogue's 18+ source became an opt-in part of the API, and the finder was
+rebuilt around the way people actually browse.
+
+- **The 18+ source uses the catalogue's own routes.** Opt-in search now reads
+  the `hm:` rows the API appends, details and episodes come from the native
+  routes, and the finder's 18+ tab browses `/api/adult` and its own genre list.
+  Entries saved by an older version still resolve through their provider.
+- **Adult playback opts in explicitly.** The API only offers adult streams to a
+  request carrying `includeAdult=1`, so the downloader now carries the series'
+  adult flag into every job, persisted queue entry and resume sidecar. Without
+  it, those episodes failed with a 502. `hm:` episodes opt in by their id.
+- **`hm:` details no longer borrow a MAL preview.** The preview route resolves
+  those slugs to an unrelated title; the info route supplies the page instead.
+- **The finder has a new surface.** Section tiles with icons and descriptions, a
+  sticky browse toolbar, poster cards with type/episode/18+ badges and artwork
+  fallbacks, loading skeletons, empty and failed states with retry, and a
+  clearer pager. The 18+ opt-in is labelled **Show 18+**, and the whole view is
+  keyboard accessible and sized for touch.
+
 ## 5.2.5 — 2026-11-22
 
 The catalogue API was rebuilt on MyAnimeList data, and this release follows it.
