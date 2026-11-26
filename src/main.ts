@@ -13,7 +13,7 @@ import {
 import { DownloadModal, type DownloadModalOptions } from './downloadModal';
 import { repairByteBudget, repairFolder, RepairLedger } from './doctor';
 import { externalStorageAvailable, sanitizePath } from './destination';
-import { VideoLibrary, watchFraction, type LibraryItem, type WatchRecord } from './library';
+import { VideoLibrary, watchFraction, type LibraryEntry, type LibraryItem, type WatchRecord } from './library';
 import { LibraryModal } from './libraryModal';
 import { PlayerModal } from './playerModal';
 import { DEFAULT_FILENAME_TEMPLATE, DEFAULT_SETTINGS, AnimeSettingTab, type AnimeSettings } from './settings';
@@ -47,6 +47,12 @@ import {
 } from './recommend';
 import { requestUrl } from 'obsidian';
 import { DownloadManagerView, VIEW_TYPE_DOWNLOADS } from './downloadManagerView';
+import { BROWSER_VIEW_TYPE } from './browser/config';
+import { BrowserDownloadManager, type BrowserDownloadJob, type BrowserDownloadRequest } from './browser/downloads';
+import { BrowserEngine } from './browser/engine';
+import { CdnDownloadModal } from './browser/dialogs';
+import type { BrowserBookmark } from './browser/media';
+import { BrowserView } from './browser/view';
 
 interface PersistedShape {
 	settings?: Partial<AnimeSettings>;
@@ -66,6 +72,8 @@ interface PersistedShape {
 	seriesPreferences?: SeriesPreferenceMap;
 	/** Where the finder was left, so it reopens on the same listing. */
 	finderState?: PersistedFinderState;
+	/** Pages saved with the browser's star. */
+	browserBookmarks?: BrowserBookmark[];
 	/** The library's layout, remembered between sessions. */
 	libraryView?: 'list' | 'grid';
 	/** Recommendation titles the user said they are not interested in. */
@@ -88,6 +96,12 @@ export default class AnimePlugin extends Plugin {
 	private detailsModal: DetailsModal | null = null;
 	private recommendationsModal: RecommendationsModal | null = null;
 	private findModal: FindModal | null = null;
+	/** The embedded browser's native request/document layer. */
+	browserEngine!: BrowserEngine;
+	/** File downloads started by the browser, kept separate from anime jobs. */
+	browserDownloads!: BrowserDownloadManager;
+	/** Bookmarks shown on the browser home page and in its menu. */
+	browserBookmarks: BrowserBookmark[] = [];
 	/** Re-ranks recommendations with a decision model, when one is enabled. */
 	private localRanker: TinyDecideRanker | null = null;
 	private hostedRanker: JevRanker | null = null;
@@ -214,7 +228,20 @@ export default class AnimePlugin extends Plugin {
 			);
 		}
 
+		this.browserDownloads = new BrowserDownloadManager(
+			this.app,
+			() => this.settings.browserDownloadFolder,
+			() => this.settings.browserUserAgent,
+			(message, details) => this.debug(message, details),
+		);
+		this.browserEngine = new BrowserEngine(this);
+		this.browserEngine.install();
+		this.registerView(BROWSER_VIEW_TYPE, (leaf: WorkspaceLeaf) => new BrowserView(leaf, this));
 		this.registerView(VIEW_TYPE_DOWNLOADS, (leaf: WorkspaceLeaf) => new DownloadManagerView(leaf, this));
+
+		this.addRibbonIcon('globe', 'Open browser', () => {
+			void this.openBrowser();
+		});
 
 		this.addRibbonIcon('download', 'Download anime', () => {
 			this.openDownloader();
@@ -296,6 +323,8 @@ export default class AnimePlugin extends Plugin {
 		}
 		setMetadataSink(null);
 		this.animeCache.dispose();
+		this.browserEngine?.uninstall();
+		this.browserDownloads?.dispose();
 		this.downloader.dispose();
 		this.playerModal?.close();
 		this.statsModal?.close();
@@ -475,6 +504,59 @@ export default class AnimePlugin extends Plugin {
 		});
 		this.findModal = modal;
 		modal.open();
+	}
+
+	/** Open the embedded browser, reusing its leaf when it is already open. */
+	async openBrowser(): Promise<BrowserView> {
+		const existing = this.app.workspace.getLeavesOfType(BROWSER_VIEW_TYPE)[0];
+		if (existing) {
+			await this.app.workspace.revealLeaf(existing);
+			return existing.view as unknown as BrowserView;
+		}
+		const leaf = this.app.workspace.getLeaf('tab');
+		await leaf.setViewState({ type: BROWSER_VIEW_TYPE, active: true });
+		await this.app.workspace.revealLeaf(leaf);
+		return leaf.view as unknown as BrowserView;
+	}
+
+	/** Ask for a direct file URL and hand it to the browser download queue. */
+	openBrowserDownload(options: { url?: string; referer?: string; folder?: string } = {}): void {
+		new CdnDownloadModal(this.app, {
+			initialUrl: options.url,
+			referer: options.referer,
+			folder: options.folder ?? this.settings.browserDownloadFolder,
+			onSubmit: (request) => {
+				try {
+					const job = this.enqueueBrowserDownload(request);
+					new Notice(`Queued ${job.filename}.`);
+				} catch (error) {
+					new Notice(error instanceof Error ? error.message : 'That download could not be queued.');
+				}
+			},
+		}).open();
+	}
+
+	/** Queue one browser download; the manager serialises and reports it. */
+	enqueueBrowserDownload(request: BrowserDownloadRequest): BrowserDownloadJob {
+		return this.browserDownloads.enqueue(request);
+	}
+
+	/** Add or remove a page from the browser's bookmarks. Returns true when added. */
+	toggleBrowserBookmark(title: string, url: string): boolean {
+		const index = this.browserBookmarks.findIndex((bookmark) => bookmark.url === url);
+		if (index >= 0) {
+			this.browserBookmarks.splice(index, 1);
+			void this.saveSettings();
+			return false;
+		}
+		this.browserBookmarks.push({ title: title.trim() || url, url });
+		void this.saveSettings();
+		return true;
+	}
+
+	removeBrowserBookmark(url: string): void {
+		this.browserBookmarks = this.browserBookmarks.filter((bookmark) => bookmark.url !== url);
+		void this.saveSettings();
 	}
 
 	/**
@@ -958,6 +1040,28 @@ export default class AnimePlugin extends Plugin {
 	}
 
 	/** Play an entry, resuming from its saved position. */
+	/** Play a file downloaded through the browser in the same native player. */
+	async playBrowserFile(path: string, title = ''): Promise<void> {
+		const name = path.split('/').pop() || path;
+		const extension = /\.([a-z0-9]+)$/i.exec(name)?.[1]?.toLowerCase() ?? '';
+		const entry: LibraryEntry = {
+			path,
+			name,
+			series: '',
+			episode: 0,
+			title: title || name,
+			ext: extension,
+			size: 0,
+			modified: 0,
+		};
+		const item: LibraryItem = {
+			...entry,
+			progress: this.library.getProgress(path),
+			watched: false,
+		};
+		await this.playItem(item);
+	}
+
 	async playItem(item: LibraryItem): Promise<void> {
 		if (this.playerModal) {
 			this.playerModal.close();
@@ -1482,6 +1586,28 @@ export default class AnimePlugin extends Plugin {
 				this.openRecommendations();
 			},
 		});
+
+		this.addCommand({
+			id: 'open-browser',
+			name: 'Open browser',
+			callback: () => {
+				void this.openBrowser();
+			},
+		});
+
+		this.addCommand({
+			id: 'new-browser-tab',
+			name: 'New browser tab',
+			callback: () => {
+				void this.openBrowser().then((view) => view.newTab());
+			},
+		});
+
+		this.addCommand({
+			id: 'download-file-from-url',
+			name: 'Download file from URL',
+			callback: () => this.openBrowserDownload(),
+		});
 	}
 
 	/**
@@ -1565,6 +1691,12 @@ export default class AnimePlugin extends Plugin {
 				? raw.seriesPreferences
 				: {};
 		this.finderState = this.parseFinderState(raw?.finderState);
+		this.browserBookmarks = Array.isArray(raw?.browserBookmarks)
+			? raw.browserBookmarks.filter(
+					(entry): entry is BrowserBookmark =>
+						typeof entry?.url === 'string' && typeof entry.title === 'string',
+				)
+			: [];
 		this.libraryView = raw?.libraryView === 'grid' ? 'grid' : 'list';
 		this.dismissedRecommendations = Array.isArray(raw?.dismissedRecommendations)
 			? raw.dismissedRecommendations.filter((title): title is string => typeof title === 'string')
@@ -1603,6 +1735,7 @@ export default class AnimePlugin extends Plugin {
 			downloadQueue: this.downloader?.serializeQueue?.() ?? this.downloadQueue,
 			seriesPreferences: this.seriesPreferences,
 			finderState: this.finderState,
+			browserBookmarks: this.browserBookmarks,
 			libraryView: this.libraryView,
 			dismissedRecommendations: this.dismissedRecommendations,
 		});

@@ -18,8 +18,9 @@ Everything a first-run user needs, in the order they will meet it. The
 2. Turn off **Restricted mode** if it is on.
 3. Choose **Browse**, search for **Anime for Mobile**, and select **Install**,
    then **Enable**.
-4. The plugin adds two ribbon icons — a compass to find anime, and a download
-   arrow for the downloader. Both are also commands in the command palette.
+4. The plugin adds ribbon icons — a compass to find anime, a globe for the
+   browser, and a download arrow for the downloader. All are also commands in
+   the command palette.
 
 Manual installation (a release ZIP, or a sideload): copy `main.js`,
 `manifest.json`, and `styles.css` into
@@ -43,6 +44,34 @@ The finder reopens where you left it: same section or genre, same page.
 
 > 📱 **Screenshot placeholder** — *the finder's poster grid, with a section
 > picker at the top.*
+
+## Browsing and saving media
+
+Open the browser from the globe ribbon icon or **Open browser**. It has tabs, an
+address bar that searches when the text is not a URL, bookmarks, a home page,
+and a download tray at the bottom.
+
+- Type an address or a search and press Enter. Back, forward, reload, new tab and
+  bookmark are in the toolbar; the menu has the rest.
+- Open an image, video or audio link directly and it plays in the native player
+  instead of the page iframe.
+- Use the download icon in the toolbar to see the images, videos, audio and media
+  links found on the page. Choose what to save, or play a video first.
+- To save a direct CDN link, use **Download file from URL** from the browser menu
+  or the command palette. The file is saved to **Browser download folder**.
+- If a video refuses to play because the site protects it, choose **Download and
+  play**. The browser downloads it with the page's headers and opens the finished
+  file in the library player.
+
+An HLS playlist (`.m3u8`) is downloaded and converted to MP4. Encrypted and
+fragmented HLS streams are not supported; the browser says so instead of saving
+a file that will not play.
+
+The browser is not a full engine. Pages that need service workers, extension
+APIs, cross-origin frames or their original player script may not work.
+
+> 📱 **Screenshot placeholder** — *the browser with two tabs, a page and the
+> media picker open.*
 
 ## Your first download
 

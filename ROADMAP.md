@@ -82,9 +82,10 @@ Real ideas, promoted when there is a version to put them in.
 
 ## Non-goals
 
-- **A built-in web browser.** Removed in 3.0.0 and not coming back: Obsidian
-  mobile cannot host a real engine, and the proxy rendering it relied on was
-  never reliable. The downloader and library do not need one.
+- **A full browser engine.** The 5.4.5 browser is a cleaned-page browser over
+  native HTTP, not an embedded engine. Do not replace it with a WebView, and do
+  not expect service workers or extension APIs; the downloader and library stay
+  independent of it.
 - **Playback of formats the platform cannot decode.** No bundled codecs; the
   library tells the user rather than showing a black rectangle.
 - **Anything that widens what the recommendation models send.** The hosted

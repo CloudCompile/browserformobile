@@ -106,4 +106,6 @@ reproducible. Attach the exported file, not a screenshot of it.
 Check [ROADMAP.md](ROADMAP.md) first — if it is listed, add a thumbs-up on the
 issue rather than a new one; if it is not, open one and it will be triaged into
 a milestone or the backlog. Anything that widens what the plugin sends to the
-hosted model, or reintroduces an embedded browser, is a non-goal.
+hosted model is a non-goal. The 5.4.5 browser uses the native HTTP and
+cleaned-page design; do not replace it with a WebView or make the downloader and
+library depend on it.

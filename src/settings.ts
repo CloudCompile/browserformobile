@@ -1,6 +1,11 @@
 import { App, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
 import { DEFAULT_API_BASE } from './animeApi';
 import type AnimePlugin from './main';
+import {
+        BROWSER_ENGINES,
+        DEFAULT_BROWSER_UA,
+        type BrowserSearchEngine,
+} from './browser/config';
 
 import { DEFAULT_SERVER_BASE, DEFAULT_SERVER_MODEL, LOCAL_MODELS } from './llm';
 
@@ -23,6 +28,14 @@ export interface AnimeSettings {
         downloadFormat: 'mp4' | 'ts';
         /** Vault-relative folder, or an absolute path when `downloadExternal`. */
         downloadFolder: string;
+        /** Folder for files saved from the browser, relative to the vault. */
+        browserDownloadFolder: string;
+        /** User agent the embedded browser sends. */
+        browserUserAgent: string;
+        /** Search engine used by the browser address bar and home page. */
+        browserSearchEngine: BrowserSearchEngine;
+        /** Inline remote styles, scripts and fonts into browser pages. */
+        browserInline: boolean;
         /** Save outside the vault. Desktop only; ignored on mobile. */
         downloadExternal: boolean;
         /** Filename template supporting {series}, {ep}, {ep:02}, {title}, {ext}. */
@@ -110,6 +123,10 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         // MP4 is what users expect to play; TS is offered for low-memory mobile runs.
         downloadFormat: 'mp4',
         downloadFolder: 'Anime',
+        browserDownloadFolder: 'Browser',
+        browserUserAgent: DEFAULT_BROWSER_UA,
+        browserSearchEngine: 'ddg',
+        browserInline: true,
         downloadExternal: false,
         downloadFilenameTemplate: DEFAULT_FILENAME_TEMPLATE,
         // Off by default: subtitles cost a second set of segment requests per
@@ -200,6 +217,32 @@ export class AnimeSettingTab extends PluginSettingTab {
                                 name: 'Download folder',
                                 desc: 'Folder for downloaded files, relative to the vault. On mobile the vault is the only location a plugin can write to.',
                                 control: { type: 'text', key: 'downloadFolder', placeholder: 'Anime' },
+                        },
+                        {
+                                name: 'Browser download folder',
+                                desc: 'Folder for images, videos and files saved from the browser, relative to the vault. Keep it separate from your anime library if you do not want browser media scanned there.',
+                                control: { type: 'text', key: 'browserDownloadFolder', placeholder: 'Browser' },
+                        },
+                        {
+                                name: 'Browser search engine',
+                                desc: 'Used by the browser address bar and its home page.',
+                                control: {
+                                        type: 'dropdown',
+                                        key: 'browserSearchEngine',
+                                        options: Object.fromEntries(
+                                                Object.entries(BROWSER_ENGINES).map(([key, value]) => [key, value.name]),
+                                        ),
+                                },
+                        },
+                        {
+                                name: 'Browser user agent',
+                                desc: 'Sent with every browser request. Use a desktop string if a site serves a mobile layout you do not want.',
+                                control: { type: 'text', key: 'browserUserAgent', placeholder: DEFAULT_BROWSER_UA },
+                        },
+                        {
+                                name: 'Inline browser styles and scripts',
+                                desc: 'Fetch remote stylesheets, scripts and fonts natively and embed them, because a page in the browser inherits the app content security policy. Turn this off only to test a rendering problem.',
+                                control: { type: 'toggle', key: 'browserInline' },
                         },
                         {
                                 name: 'Save outside the vault',

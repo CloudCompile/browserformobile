@@ -3,22 +3,24 @@
 Search, download and watch anime from inside Obsidian, on iOS and Android.
 
 Obsidian has no video or catalogue tooling of its own, and on mobile the app
-cannot host a full browser engine. This plugin does the parts that work well
-natively instead: it searches a catalogue, downloads episodes in the background
-with resume, keeps an offline library that plays them back, and shows a full
-details page for each series with recommendations drawn from what you have
-already downloaded.
+cannot host a full browser engine. The embedded browser therefore uses native
+HTTP and cleaned pages rather than a WebView: it can browse sites, find media,
+and save images, videos and direct file links, while the downloader, library and
+details pages do the parts that need real files on disk.
 
-It was a web browser in an earlier life. That part is gone — a plugin cannot
-embed a real engine on mobile, so the proxy and iframe rendering it relied on
-was never going to be reliable. What remains is the downloader and the library,
-which do not need one.
+The browser began as this plugin's original feature, was removed in 3.0.0, and
+returns in 5.4.5 beside the downloader. It is not a full engine: pages that
+depend on service workers, extension APIs, cross-origin frames, or scripts the
+cleaned document cannot run may render incompletely.
 
 **New here?** The [user guide](docs/user-guide.md) walks through installing,
 your first download, watching, and the rest, in the order you will meet them.
 
 ## Features
 
+- **An embedded browser** with tabs, bookmarks, a home page, native image,
+  video and audio playback, and saving from any direct CDN link. HLS playlists
+  are converted to MP4.
 - **Search and download** from an anime catalogue, with per-episode selection,
   ranges, skip-filler, and "download missing".
 - **Find and browse** the catalogue without a search: pick a listing section
@@ -60,6 +62,40 @@ source, which has its own sections (monthly releases, all series) and its own
 genre list. It uses the same grid and pager, so the browsing is identical; leave
 the box off and only the normal catalogue is reachable. A restored finder obeys
 the same gate: the adult tab comes back only if the box is still on.
+
+## Embedded browser
+
+
+
+> Walkthrough: [Browsing and saving media](docs/user-guide.md#browsing-and-saving-media) in the user guide.
+
+Open it from the globe ribbon icon or the **Open browser** command. It has tabs,
+back and forward, reload, bookmarks, a home page and a download tray.
+
+- **Pages are fetched natively.** Android uses CapacitorHttp; desktop falls back
+  to Obsidian's `requestUrl`, so CORS does not block a page. The HTML is cleaned,
+  its CSP is removed, and remote stylesheets, scripts and fonts are fetched and
+  embedded because the app's CSP blocks them inside an iframe.
+- **Media is playable.** A direct image, audio or video URL opens in a native
+  element. The toolbar's media button lists images, videos, audio and media
+  links found in the page, including requests the page made itself, and offers
+  **Play** or **Download**.
+- **Saving works from a URL.** Use **Download file from URL**, the browser menu,
+  or a link with a `download` attribute to save a direct image, video, audio
+  file, archive or other CDN link. Downloads go to **Browser download folder**
+  (default `Browser/`), with Referer and user-agent headers for
+  hotlink-protected files, retry, cancel and progress in the tray.
+- **HLS becomes MP4.** An `.m3u8` playlist is downloaded and converted to a
+  progressive MP4. Encrypted and fragmented HLS streams are refused with a
+  message rather than saved as an unplayable file.
+- **Video fallback.** If a CDN refuses direct playback, **Download and play**
+  saves the file with the page's headers and opens the finished file in the
+  native player. Completed video downloads also have a **Play** button in the
+  tray.
+
+The browser is a convenience surface, not a replacement for a system browser:
+service workers, extension APIs, cross-origin frames, and sites that need their
+original player script may not work.
 
 ## Anime downloader
 
@@ -475,6 +511,13 @@ error, so recommendations always appear.
 ## Settings
 
 - **Anime API endpoint** — the catalogue used for search, details, and streams.
+- **Browser download folder** — where the browser saves media, relative to the
+  vault. Defaults to `Browser/`.
+- **Browser search engine** — DuckDuckGo, Brave, Google, Bing or Startpage.
+- **Browser user agent** — the user agent sent with browser requests.
+- **Inline browser styles and scripts** — fetch remote resources natively and
+  embed them in the page. On by default; turn it off only to test a rendering
+  problem.
 - **Cache anime details** — store API responses locally so repeat lookups are
   instant. On by default.
 - **Download quality** — preferred height; the closest available is used.
@@ -505,8 +548,15 @@ in the same file, so details pages, posters, and the catalogue's own
 recommendations still render offline. **Clear anime cache** deletes it, and
 turning off **Cache anime details** stops it being written at all.
 
-The recommendation models are the only feature that can send anything off your
-device, and only when you switch one on:
+The browser makes the network requests you navigate to: page loads, inline
+resources and downloads go directly to those sites, with a browser user agent
+and the page as Referer for downloads. The plugin sends no browsing history,
+page text or files to its authors; bookmarks and the download log stay in
+`data.json`. A page you open can run its own scripts, with the same risks as
+visiting it in a browser, so treat it like one.
+
+The recommendation models are the only other feature that can send anything off
+your device, and only when you switch one on:
 
 - **Local** runs on your device. Nothing is sent.
 - **Hosted** sends your download history and the candidate titles to TypeSafe.
@@ -514,11 +564,11 @@ device, and only when you switch one on:
 
 ## Commands
 
-All actions are available from the command palette: open the anime downloader,
-open the video library, open the download manager, open download statistics,
-open the recommendations page, open a series' details page, repair downloaded
-videos, clear the anime cache, and export or import your watch progress and
-statistics.
+All actions are available from the command palette: open the browser, open a new
+browser tab, download a file from a URL, open the anime downloader, open the
+video library, open the download manager, open download statistics, open the
+recommendations page, open a series' details page, repair downloaded videos,
+clear the anime cache, and export or import your watch progress and statistics.
 
 ## Backing up data
 
@@ -592,6 +642,14 @@ full notes live on each release. Security-relevant details are in
 
 ## Limitations
 
+- The browser is a cleaned-page browser over native HTTP, not a full engine.
+  Sites that require service workers, extension APIs, cross-origin frame access,
+  or remote module graphs may not render or play.
+- A CDN that requires the page as its Referer can refuse direct playback in the
+  browser; use **Download and play** and the saved file opens in the native
+  player.
+- Encrypted and fragmented HLS streams are not downloaded; the browser reports
+  the reason rather than saving an unplayable file.
 - Playback uses the platform's own video element, so a format it cannot decode
   (MPEG-TS) will not play inside the plugin. Keep **Download format** on MP4 if
   you want to watch in the library.
