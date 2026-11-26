@@ -13,6 +13,30 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.4.5 — 2026-11-26
+
+The browser returns as a separate surface, built on native HTTP rather than an
+embedded engine, and video finally has a reliable way to play and download.
+
+- **The browser is back.** A workspace view with tabs, back and forward, reload,
+  bookmarks, a home page, a download tray, and a search-or-address bar. Android
+  uses CapacitorHttp; desktop falls back to `requestUrl`. Pages are cleaned, CSP
+  is removed, and remote stylesheets, scripts and fonts are embedded so the
+  app's CSP does not blank the page.
+- **Images, videos and files save from any page or URL.** The toolbar media
+  button scans the page DOM and its fetch/XHR traffic, while **Download file from
+  URL** accepts a direct CDN link. Ranged downloads retry, cancel, show progress,
+  send Referer and user-agent headers, and land in a separate browser folder.
+- **Video plays natively.** Direct media URLs open in a real video element, not
+  the page iframe. Page media gets a native player, and **Download and play**
+  saves a hotlink-protected file first and opens the finished local file in the
+  library player.
+- **HLS downloads become MP4.** Master playlists pick the highest-bandwidth
+  variant and are converted to progressive MP4; encrypted and fragmented
+  playlists are refused with a clear message.
+- **Browser settings** cover the download folder, search engine, user agent, and
+  resource inlining.
+
 ## 5.3.5 — 2026-11-22
 
 The catalogue's 18+ source became an opt-in part of the API, and the finder was
