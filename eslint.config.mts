@@ -33,4 +33,10 @@ export default defineConfig(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		// This file exists to expose the device's user-agent string; the rule's
+		// purpose (choosing an OS path) still uses Platform, not the UA.
+		files: ['src/browser/ua.ts'],
+		rules: { 'obsidianmd/platform': 'off' },
+	},
 );

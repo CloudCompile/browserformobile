@@ -38,6 +38,8 @@ interface BrowserBridge {
 interface InjectedConfig {
 	tab: string;
 	url: string;
+	/** Whether static resources were inlined; lazy scripts use the same path. */
+	inline?: boolean;
 }
 
 export function injectedBrowserScript(cfg: InjectedConfig): void {
@@ -267,6 +269,7 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 		upload = new EventTarget();
 		onreadystatechange: ((event: Event) => void) | null = null;
 		onload: ((event: Event) => void) | null = null;
+		onprogress: ((event: Event) => void) | null = null;
 		onerror: ((event: Event) => void) | null = null;
 		onabort: ((event: Event) => void) | null = null;
 		onloadend: ((event: Event) => void) | null = null;
@@ -282,10 +285,9 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 		static LOADING = 3;
 		static DONE = 4;
 
-		private fire(type: string): void {
-			const event = new Event(type);
+		private fireEvent(event: Event): void {
 			const owner = this as unknown as Record<string, unknown>;
-			const handler = owner['on' + type];
+			const handler = owner['on' + event.type];
 			if (typeof handler === 'function') {
 				try {
 					(handler as (event: Event) => void).call(this, event);
@@ -294,6 +296,10 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 				}
 			}
 			this.dispatchEvent(event);
+		}
+
+		private fire(type: string): void {
+			this.fireEvent(new Event(type));
 		}
 
 		open(method: string, url: string | URL): void {
@@ -357,6 +363,17 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 					this.fire('readystatechange');
 					this.readyState = 3;
 					this.fire('readystatechange');
+					// Players and hls.js listen for progress to decide that data is
+					// arriving; a silent XHR looks like a stalled request.
+					if (typeof ProgressEvent !== 'undefined') {
+						this.fireEvent(
+							new ProgressEvent('progress', {
+								lengthComputable: true,
+								loaded: bytes.byteLength,
+								total: bytes.byteLength,
+							}),
+						);
+					} else this.fire('progress');
 					if (this.responseType === 'arraybuffer') {
 						this.response = bytes.buffer;
 					} else if (this.responseType === 'blob') {
@@ -432,43 +449,78 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 		return null;
 	};
 
+	/** Find an anchor even when a component renders it inside a shadow root. */
+	const anchorFor = (event: Event): HTMLAnchorElement | null => {
+		try {
+			for (const node of event.composedPath()) {
+				if (node instanceof HTMLAnchorElement && node.hasAttribute('href')) return node;
+			}
+		} catch {
+			/* composedPath is unavailable in a few older WebViews. */
+		}
+		const target = event.target as Element | null;
+		return (target?.closest?.('a[href]') as HTMLAnchorElement | null) ?? null;
+	};
+
+	const openAnchor = (
+		event: MouseEvent,
+		anchor: HTMLAnchorElement,
+		newTab: boolean,
+	): void => {
+		const raw = anchor.getAttribute('href') || '';
+		if (/^(mailto:|tel:|intent:|market:)/i.test(raw)) {
+			event.preventDefault();
+			B.external(raw);
+			return;
+		}
+		if (/^(javascript:|data:|blob:)/i.test(raw)) return;
+		let url: URL;
+		try {
+			url = new URL(anchor.href, document.baseURI);
+		} catch {
+			return;
+		}
+		if (anchor.hasAttribute('download')) {
+			event.preventDefault();
+			B.download(TAB, {
+				url: url.href,
+				filename: anchor.getAttribute('download') || '',
+				referer: cfg.url,
+			});
+			return;
+		}
+		event.preventDefault();
+		if (url.href.split('#')[0] === cfg.url.split('#')[0] && url.hash !== '') {
+			const id = decodeURIComponent(url.hash.slice(1));
+			const element = id && (document.getElementById(id) || document.getElementsByName(id)[0]);
+			if (element) element.scrollIntoView();
+			return;
+		}
+		B.nav(TAB, {
+			url: url.href,
+			newTab: newTab || anchor.target === '_blank',
+		});
+	};
+
 	document.addEventListener(
 		'click',
 		(event: MouseEvent) => {
 			if (event.defaultPrevented || event.button !== 0) return;
-			const target = event.target as Element | null;
-			const anchor = target?.closest?.('a[href]') as HTMLAnchorElement | null;
+			const anchor = anchorFor(event);
 			if (!anchor) return;
-			const raw = anchor.getAttribute('href') || '';
-			if (/^(mailto:|tel:|intent:|market:)/i.test(raw)) {
-				event.preventDefault();
-				B.external(raw);
-				return;
-			}
-			if (/^(javascript:|data:|blob:)/i.test(raw)) return;
-			let url: URL;
-			try {
-				url = new URL(anchor.href, document.baseURI);
-			} catch {
-				return;
-			}
-			if (anchor.hasAttribute('download')) {
-				event.preventDefault();
-				B.download(TAB, {
-					url: url.href,
-					filename: anchor.getAttribute('download') || '',
-					referer: cfg.url,
-				});
-				return;
-			}
-			event.preventDefault();
-			if (url.href.split('#')[0] === cfg.url.split('#')[0] && url.hash !== '') {
-				const id = decodeURIComponent(url.hash.slice(1));
-				const element = id && (document.getElementById(id) || document.getElementsByName(id)[0]);
-				if (element) element.scrollIntoView();
-				return;
-			}
-			B.nav(TAB, { url: url.href, newTab: anchor.target === '_blank' });
+			openAnchor(event, anchor, event.metaKey || event.ctrlKey || event.shiftKey);
+		},
+		true,
+	);
+
+	// A middle click on a result would otherwise become a new system window.
+	document.addEventListener(
+		'auxclick',
+		(event: MouseEvent) => {
+			if (event.button !== 1) return;
+			const anchor = anchorFor(event);
+			if (!anchor) return;
+			openAnchor(event, anchor, true);
 		},
 		true,
 	);
@@ -551,6 +603,188 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 	HTMLFormElement.prototype.submit = function (): void {
 		if (this.requestSubmit) this.requestSubmit();
 	};
+
+	const classicScript = (script: HTMLScriptElement): boolean => {
+		const type = (script.getAttribute('type') || '').trim().toLowerCase();
+		return (
+			type === '' ||
+			type === 'text/javascript' ||
+			type === 'application/javascript' ||
+			type === 'text/ecmascript' ||
+			type === 'application/ecmascript'
+		);
+	};
+
+	/**
+	 * A player or menu often adds its script after first paint. Those scripts
+	 * never pass through the server-side inliner, so fetch them natively too;
+	 * otherwise the page stays half-built when the app's CSP blocks the remote
+	 * source.
+	 */
+	const installLazyScripts = (): void => {
+		const seen = new WeakSet<HTMLScriptElement>();
+		const rewrite = (script: HTMLScriptElement): void => {
+			if (seen.has(script) || script.hasAttribute('data-bfm-script')) return;
+			if (!classicScript(script)) return;
+			const raw = script.getAttribute('src');
+			if (!raw || /^(data:|blob:|javascript:)/i.test(raw)) return;
+			let url: string;
+			try {
+				url = abs(raw);
+			} catch {
+				return;
+			}
+			if (!/^https?:/i.test(url)) return;
+			seen.add(script);
+			// Stop the blocked remote request before replacing the source.
+			script.removeAttribute('src');
+			script.setAttribute('data-bfm-script', 'loading');
+			B.request({
+				url,
+				method: 'GET',
+				headers: { referer: cfg.url, accept: '*/*' },
+				body: null,
+			})
+				.then((response) => {
+					if (response.status >= 400) throw new Error(`HTTP ${response.status}`);
+					const blob = URL.createObjectURL(
+						new Blob([new Uint8Array(response.bytes)], { type: 'text/javascript' }),
+					);
+					if (!script.isConnected) {
+						URL.revokeObjectURL(blob);
+						return;
+					}
+					script.setAttribute('data-bfm-script', '');
+					script.setAttribute('src', blob);
+				})
+				.catch(() => {
+					if (!script.isConnected) return;
+					script.removeAttribute('data-bfm-script');
+					script.setAttribute('src', url);
+				});
+		};
+		const scan = (root: ParentNode): void => {
+			const element = root as Element;
+			if (element.nodeType === 1 && element.tagName === 'SCRIPT') {
+				rewrite(element as HTMLScriptElement);
+			} else {
+				for (const script of Array.from(root.querySelectorAll<HTMLScriptElement>('script[src]'))) {
+					rewrite(script);
+				}
+			}
+		};
+		try {
+			new MutationObserver((records) => {
+				for (const record of records) {
+					if (record.type === 'attributes') {
+						const target = record.target as Element;
+						if (target.nodeType === 1 && target.tagName === 'SCRIPT') {
+							rewrite(target as HTMLScriptElement);
+						}
+						continue;
+					}
+					for (const node of Array.from(record.addedNodes)) {
+						if (node.nodeType === 1 || node.nodeType === 11) scan(node as ParentNode);
+					}
+				}
+			}).observe(document.documentElement, {
+				childList: true,
+				subtree: true,
+				attributes: true,
+				attributeFilter: ['src'],
+			});
+		} catch {
+			/* Lazy script rewriting is best effort. */
+		}
+	};
+	if (cfg.inline !== false) installLazyScripts();
+
+	/** Retry hotlink- or CSP-blocked images through the native HTTP bridge. */
+	const retriedImages = new WeakSet<HTMLImageElement>();
+	const retryImage = (image: HTMLImageElement): void => {
+		if (retriedImages.has(image)) return;
+		const raw = image.currentSrc || image.src || image.getAttribute('src') || '';
+		if (!/^https?:/i.test(raw)) return;
+		retriedImages.add(image);
+		B.request({
+			url: raw,
+			method: 'GET',
+			headers: { referer: cfg.url, accept: 'image/*,*/*;q=0.8' },
+			body: null,
+		})
+			.then((response) => {
+				if (response.status >= 400) return;
+				const type = String(response.headers['content-type'] || 'image/*');
+				const blob = URL.createObjectURL(new Blob([new Uint8Array(response.bytes)], { type }));
+				image.addEventListener('load', () => URL.revokeObjectURL(blob), { once: true });
+				image.src = blob;
+			})
+			.catch(() => {
+				/* The page's own error state is still accurate. */
+			});
+	};
+	document.addEventListener(
+		'error',
+		(event: Event) => {
+			const target = event.target;
+			if (target instanceof HTMLImageElement) retryImage(target);
+		},
+		true,
+	);
+
+	// A direct MP4 behind a hotlink-protected CDN can fetch, buffer and then
+	// fail because the media element cannot send the page's cookies/referer.
+	// Retry small files through native HTTP and hand the player a blob.
+	const retriedVideos = new WeakSet<HTMLVideoElement>();
+	const retryVideo = (video: HTMLVideoElement): void => {
+		if (retriedVideos.has(video)) return;
+		const raw =
+			video.currentSrc ||
+			video.src ||
+			video.getAttribute('src') ||
+			video.querySelector('source[src]')?.getAttribute('src') ||
+			'';
+		if (!/^https?:/i.test(raw) || /\.m3u8([?#]|$)/i.test(raw)) return;
+		retriedVideos.add(video);
+		// Check the advertised size first. A retry must not pull a whole movie
+		// into memory just to discover it is too large for this path.
+		B.request({
+			url: raw,
+			method: 'HEAD',
+			headers: { referer: cfg.url, accept: '*/*' },
+			body: null,
+		})
+			.then((head) => {
+				if (head.status >= 400) return;
+				const length = Number(head.headers['content-length'] || 0);
+				if (!Number.isFinite(length) || length <= 0 || length > 64 * 1024 * 1024) return;
+				return B.request({
+					url: raw,
+					method: 'GET',
+					headers: { referer: cfg.url, accept: 'video/*,*/*;q=0.8' },
+					body: null,
+				}).then((response) => {
+					if (response.status >= 400) return;
+					const bytes = new Uint8Array(response.bytes);
+					if (bytes.byteLength > 64 * 1024 * 1024) return;
+					const type = String(response.headers['content-type'] || 'video/mp4');
+					video.src = URL.createObjectURL(new Blob([bytes], { type }));
+					video.load();
+					void video.play().catch(() => undefined);
+				});
+			})
+			.catch(() => {
+				/* Leave the player's own error visible. */
+			});
+	};
+	document.addEventListener(
+		'error',
+		(event: Event) => {
+			const target = event.target;
+			if (target instanceof HTMLVideoElement) retryVideo(target);
+		},
+		true,
+	);
 
 	// Mobile WebViews only play inline when the attribute is present, and many
 	// sites add their video element after the first load.

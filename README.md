@@ -521,13 +521,14 @@ error, so recommendations always appear.
 - **Browser download folder** — where the browser saves media, relative to the
   vault. Defaults to `Browser/`.
 - **Browser search engine** — DuckDuckGo, Brave, Google, Bing or Startpage.
-- **Browser user agent** — the user agent sent with browser requests.
+- **Browser user agent** — automatic uses this device's own UA, with WebView markers removed; enter a custom string to override it (for example, a desktop UA).
 - **Inline browser styles and scripts** — fetch remote resources natively and
   embed them in the page. On by default; turn it off only to test a rendering
   problem.
 - **Browser compatibility mode** — try a direct, real-origin frame when the site
-  allows it. On by default; turn it off to always use the downloadable proxy
-  view. The page menu overrides it per site.
+  allows it. On by default; turn it off to always use the proxy view. The page
+  menu overrides it per site, except for search engines, which stay proxied so
+  their result links open inside the plugin.
 - **Cache anime details** — store API responses locally so repeat lookups are
   instant. On by default.
 - **Download quality** — preferred height; the closest available is used.

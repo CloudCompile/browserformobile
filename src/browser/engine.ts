@@ -2,11 +2,12 @@ import { Notice } from 'obsidian';
 import type AnimePlugin from '../main';
 import { BrowserAssetCache } from './assets';
 import { framingAllowed, hostOf, parseMetaRefresh, type MetaRefresh } from './compat';
-import { BROWSER_ENGINES, BROWSER_QUICK_LINKS, DEFAULT_BROWSER_UA } from './config';
+import { BROWSER_ENGINES, BROWSER_QUICK_LINKS, isSearchEngineHost } from './config';
 import { BrowserCookieJar } from './cookies';
 import { base64ToBytes, decodeText, nativeRequest, type NativeResponse } from './http';
 import { injectedBrowserScript } from './injected';
 import { selectSrcset, type BrowserMediaItem } from './media';
+import { resolveBrowserUserAgent } from './ua';
 import {
 	normaliseImportMap,
 	parseImportMapJson,
@@ -75,6 +76,8 @@ interface CapacitorBrowser {
 const MODULE_LIMIT = 80;
 const MODULE_BYTES_LIMIT = 24 * 1024 * 1024;
 const MODULE_DEPTH_LIMIT = 12;
+const SCRIPT_LIMIT = 120;
+const SCRIPT_BYTES_LIMIT = 32 * 1024 * 1024;
 const IMAGE_URL = /\.(png|jpe?g|gif|webp|avif|bmp|svg|ico)([?#]|$)/i;
 
 /**
@@ -163,6 +166,11 @@ export class BrowserEngine {
 		return this.plugin.settings.browserCompatibility !== false;
 	}
 
+	/** The configured UA, or this device's own browser identity. */
+	userAgent(): string {
+		return resolveBrowserUserAgent(this.plugin.settings.browserUserAgent);
+	}
+
 	siteMode(host: string): BrowserSiteMode {
 		const saved = this.plugin.browserSiteModes?.[host];
 		return saved === 'direct' || saved === 'proxy' ? saved : 'auto';
@@ -178,6 +186,10 @@ export class BrowserEngine {
 
 	/** Whether a normal `iframe src` should be tried for this page. */
 	canUseDirect(host: string, headers: Record<string, string>): boolean {
+		// A direct frame is cross-origin, so a result link with target="_blank"
+		// would leave the plugin. Search engines always stay proxied, even if a
+		// saved per-site choice says otherwise.
+		if (isSearchEngineHost(host)) return false;
 		const mode = this.siteMode(host);
 		if (mode === 'direct') return true;
 		if (mode === 'proxy') return false;
@@ -196,7 +208,7 @@ export class BrowserEngine {
 	/** A native request with the browser's user agent, cookies and language defaults. */
 	async request(options: BridgeRequest): Promise<NativeResponse> {
 		const headers: Record<string, string> = {
-			'user-agent': this.plugin.settings.browserUserAgent || DEFAULT_BROWSER_UA,
+			'user-agent': this.userAgent(),
 			accept: '*/*',
 			'accept-language':
 				typeof navigator === 'undefined'
@@ -255,7 +267,11 @@ export class BrowserEngine {
 		if (!doc.head) doc.documentElement.prepend(head);
 		const base = doc.createElement('base');
 		base.setAttribute('href', baseUrl);
-		const config = JSON.stringify({ tab: tabId, url: finalUrl }).replace(/</g, '\\u003c');
+		const config = JSON.stringify({
+			tab: tabId,
+			url: finalUrl,
+			inline: this.plugin.settings.browserInline !== false,
+		}).replace(/</g, '\\u003c');
 		const script = doc.createElement('script');
 		script.textContent = `(${injectedBrowserScript.toString()})(${config});`;
 		head.prepend(script);
@@ -411,6 +427,7 @@ export class BrowserEngine {
 		};
 
 		await this.inlineModuleScripts(doc, baseUrl, pageUrl, tabId, getFile);
+		await this.inlineClassicScripts(doc, baseUrl, tabId, getFile);
 
 		const links = Array.from(doc.querySelectorAll("link[rel~='stylesheet'][href]")).filter(
 			(link) => !/alternate/i.test(link.getAttribute('rel') || ''),
@@ -628,6 +645,58 @@ export class BrowserEngine {
 		}
 	}
 
+	/**
+	 * Inline ordinary external scripts.
+	 *
+	 * Without this, a page's classic scripts stay remote, inherit the app's
+	 * content security policy and never run: the shell and styles arrive while
+	 * the menu, player or search results do not. A blob URL keeps load/error
+	 * handlers, defer and async behaviour, and document order intact.
+	 */
+	private async inlineClassicScripts(
+		doc: Document,
+		baseUrl: string,
+		tabId: string,
+		getFile: (url: string) => Promise<{ text: string; url: string }>,
+	): Promise<void> {
+		const scripts = Array.from(doc.querySelectorAll<HTMLScriptElement>('script[src]'))
+			.filter((script) => isClassicScript(script))
+			.slice(0, SCRIPT_LIMIT);
+		let totalBytes = 0;
+		await Promise.all(
+			scripts.map(async (script) => {
+				const raw = script.getAttribute('src') || '';
+				if (!raw || /^(data:|blob:|javascript:)/i.test(raw)) return;
+				let url: string;
+				try {
+					const parsed = new URL(raw, baseUrl);
+					if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+					url = parsed.href;
+				} catch {
+					return;
+				}
+				try {
+					const file = await getFile(url);
+					if (!file.text) return;
+					if (totalBytes + file.text.length > SCRIPT_BYTES_LIMIT) return;
+					totalBytes += file.text.length;
+					const source = `${file.text}\n//# sourceURL=${url}`;
+					const blob = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+					this.trackModuleBlob(tabId, blob);
+					script.removeAttribute('integrity');
+					script.removeAttribute('crossorigin');
+					script.setAttribute('data-bfm-script', '');
+					script.setAttribute('src', blob);
+				} catch (error) {
+					this.plugin.debug('browser.script.failed', {
+						url,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}),
+		);
+	}
+
 	private trackModuleBlob(tabId: string, blob: string): void {
 		let urls = this.moduleBlobs.get(tabId);
 		if (!urls) {
@@ -713,6 +782,18 @@ ${bookmarkHtml ? `<h2>Bookmarks</h2><div class="grid">${bookmarkHtml}</div>` : '
 	notice(message: string): void {
 		new Notice(message);
 	}
+}
+
+/** Whether a script tag is ordinary JavaScript rather than JSON, a module or a template. */
+function isClassicScript(script: HTMLScriptElement): boolean {
+	const type = (script.getAttribute('type') || '').trim().toLowerCase();
+	return (
+		type === '' ||
+		type === 'text/javascript' ||
+		type === 'application/javascript' ||
+		type === 'text/ecmascript' ||
+		type === 'application/ecmascript'
+	);
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

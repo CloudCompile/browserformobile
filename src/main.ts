@@ -54,13 +54,19 @@ import {
 } from './recommend';
 import { requestUrl } from 'obsidian';
 import { DownloadManagerView, VIEW_TYPE_DOWNLOADS } from './downloadManagerView';
-import { BROWSER_VIEW_TYPE } from './browser/config';
+import {
+	AUTO_BROWSER_UA,
+	BROWSER_ENGINES,
+	BROWSER_VIEW_TYPE,
+	LEGACY_DEFAULT_BROWSER_UA,
+} from './browser/config';
 import { BrowserDownloadManager, type BrowserDownloadJob, type BrowserDownloadRequest } from './browser/downloads';
 import { BrowserEngine } from './browser/engine';
 import type { BrowserCookie } from './browser/cookies';
 import { CdnDownloadModal } from './browser/dialogs';
 import type { BrowserBookmark } from './browser/media';
 import { BrowserView } from './browser/view';
+import { resolveBrowserUserAgent } from './browser/ua';
 
 interface PersistedShape {
 	settings?: Partial<AnimeSettings>;
@@ -247,7 +253,7 @@ export default class AnimePlugin extends Plugin {
 		this.browserDownloads = new BrowserDownloadManager(
 			this.app,
 			() => this.settings.browserDownloadFolder,
-			() => this.settings.browserUserAgent,
+			() => resolveBrowserUserAgent(this.settings.browserUserAgent),
 			(message, details) => this.debug(message, details),
 			(url) => this.browserEngine?.cookieHeader(url) ?? '',
 		);
@@ -1702,6 +1708,16 @@ export default class AnimePlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const raw = (await this.loadData()) as PersistedShape | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, raw?.settings ?? {});
+		// The first browser release pinned every device to one Pixel UA. Move
+		// that stored default to automatic without touching a custom string.
+		if (this.settings.browserUserAgent === LEGACY_DEFAULT_BROWSER_UA) {
+			this.settings.browserUserAgent = AUTO_BROWSER_UA;
+		}
+		// The no-JS DuckDuckGo option was removed; an install that selected it
+		// falls back to the full search page rather than looking broken.
+		if (!(this.settings.browserSearchEngine in BROWSER_ENGINES)) {
+			this.settings.browserSearchEngine = 'ddg';
+		}
 		if (this.settings.downloadFilenameTemplate === '{series} - {ep:02} - {title}.{ext}') {
 			this.settings.downloadFilenameTemplate = DEFAULT_FILENAME_TEMPLATE;
 		}

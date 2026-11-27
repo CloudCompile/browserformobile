@@ -2,8 +2,8 @@ import { App, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
 import { DEFAULT_API_BASE } from './animeApi';
 import type AnimePlugin from './main';
 import {
+        AUTO_BROWSER_UA,
         BROWSER_ENGINES,
-        DEFAULT_BROWSER_UA,
         type BrowserSearchEngine,
 } from './browser/config';
 
@@ -30,7 +30,7 @@ export interface AnimeSettings {
         downloadFolder: string;
         /** Folder for files saved from the browser, relative to the vault. */
         browserDownloadFolder: string;
-        /** User agent the embedded browser sends. */
+        /** User agent the embedded browser sends; empty detects this device. */
         browserUserAgent: string;
         /** Search engine used by the browser address bar and home page. */
         browserSearchEngine: BrowserSearchEngine;
@@ -126,7 +126,7 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         downloadFormat: 'mp4',
         downloadFolder: 'Anime',
         browserDownloadFolder: 'Browser',
-        browserUserAgent: DEFAULT_BROWSER_UA,
+        browserUserAgent: AUTO_BROWSER_UA,
         browserSearchEngine: 'ddg',
         browserInline: true,
         browserCompatibility: true,
@@ -239,8 +239,8 @@ export class AnimeSettingTab extends PluginSettingTab {
                         },
                         {
                                 name: 'Browser user agent',
-                                desc: 'Sent with every browser request. Use a desktop string if a site serves a mobile layout you do not want.',
-                                control: { type: 'text', key: 'browserUserAgent', placeholder: DEFAULT_BROWSER_UA },
+                                desc: 'Automatic uses this device\u2019s own browser identity, with WebView markers removed, so sites see the actual phone rather than a generic desktop or Pixel string. Enter a custom string only to override it; use a desktop string if you want a site\u2019s desktop layout.',
+                                control: { type: 'text', key: 'browserUserAgent', placeholder: 'Automatic (this device)' },
                         },
                         {
                                 name: 'Inline browser styles and scripts',

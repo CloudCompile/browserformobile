@@ -71,8 +71,14 @@ When a site allows embedding, the browser can load it in **compatibility mode**
 at its own address. That gives the page its real cookies, modules and scripts,
 but the download and media controls cannot inspect it. A banner explains the
 mode and offers **Use download mode**; the page menu remembers the choice for
-that site. If a page comes up blank, the banner offers **Try compatibility mode**
-and **Open in system browser** instead of leaving you with an empty page.
+that site. Search engines always stay in download mode, so their result links
+open in a new browser tab rather than the system browser. If a page comes up
+blank, the banner offers **Try compatibility mode** and **Open in system
+browser** instead of leaving you with an empty page.
+
+The browser uses this device's own user agent automatically, with WebView
+markers removed, so sites see the phone they are actually running on. A custom
+string in **Browser user agent** overrides it.
 
 The browser is not a full engine. Pages that need service workers, extension
 APIs, anti-bot challenges, passkeys or DRM may still need the system browser.
