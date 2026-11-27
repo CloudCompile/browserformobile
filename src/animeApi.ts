@@ -2,6 +2,7 @@ import { loadProviderSynopsis } from './providerPage';
 import {
  requestUrl } from 'obsidian';
 import type { AnimeCache } from './animeCache';
+import { serverNames, streamHeaders } from '@anime/hls';
 
 /**
  * Client for the anime-api instance at animeapi.cjhauser.me. The catalogue is
@@ -226,24 +227,7 @@ export interface SubtitleRendition {
  * `preferDub` hoists the dubbed servers to the front — a dub preference, not a
  * guarantee: many series list no dubbed server at all, and those are unaffected.
  */
-export function serverNames(servers: unknown, preferDub = false): string[] {
-        if (!Array.isArray(servers)) return [];
-        const subbed: string[] = [];
-        const dubbed: string[] = [];
-        const rest: string[] = [];
-        const seen = new Set<string>();
-        for (const entry of servers) {
-                const record = (entry ?? {}) as Record<string, unknown>;
-                const name = asString(record.serverName);
-                if (!name || seen.has(name)) continue;
-                seen.add(name);
-                const type = asString(record.type);
-                if (type === 'sub') subbed.push(name);
-                else if (type === 'dub' && preferDub) dubbed.push(name);
-                else rest.push(name);
-        }
-        return preferDub ? [...dubbed, ...subbed, ...rest] : [...subbed, ...rest];
-}
+export { serverNames } from '@anime/hls';
 
 /** An error the caller can show verbatim; the message is already user-facing. */
 export class AnimeApiError extends Error {}
@@ -340,22 +324,12 @@ function summaryFields(record: Record<string, unknown>): {
 }
 
 /**
- * The request headers a stream's CDN needs, defaulting the old player origin.
- * The API's `Referer` is authoritative; anything else it publishes is kept, so
- * a CDN that starts demanding another header needs no client change.
+ * The request headers a stream's CDN needs. Shared with the web app: the API's
+ * `Referer` is authoritative, anything else it publishes is kept, and the old
+ * player origin is only a fallback.
  */
 function requestHeaders(value: unknown): Record<string, string> {
-        const headers: Record<string, string> = {};
-        if (value && typeof value === 'object') {
-                for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-                        const text = asString(raw);
-                        if (key && text) headers[key] = text;
-                }
-        }
-        if (!Object.keys(headers).some((key) => key.toLowerCase() === 'referer')) {
-                headers.Referer = STREAM_REFERER;
-        }
-        return headers;
+        return streamHeaders(value);
 }
 
 /**

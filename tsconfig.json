@@ -13,7 +13,23 @@
 		"skipLibCheck": true,
 		"forceConsistentCasingInFileNames": true,
 		"allowSyntheticDefaultImports": true,
-		"lib": ["ES2021", "DOM"]
+		"lib": [
+			"ES2021",
+			"DOM"
+		],
+		"baseUrl": ".",
+		"paths": {
+			"@anime/hls": [
+				"../../packages/hls/src/index.d.ts",
+				"./vendor/anime-hls.d.ts"
+			],
+			"@anime/catalogue": [
+				"../../packages/catalogue/src/index.d.ts",
+				"./vendor/anime-catalogue.d.ts"
+			]
+		}
 	},
-	"include": ["src/**/*.ts"]
+	"include": [
+		"src/**/*.ts"
+	]
 }

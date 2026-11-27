@@ -1,5 +1,12 @@
 import { requestUrl } from 'obsidian';
-import { STREAM_REFERER, resolveUrl, type SubtitleRendition } from './animeApi';
+import {
+        createGateState,
+        nextGate,
+        parseDownloadPlaylist,
+        shedConcurrency,
+        type GateState,
+} from '@anime/hls';
+import { STREAM_REFERER, type SubtitleRendition } from './animeApi';
 import { mapWithConcurrency } from './utils';
 
 /**
@@ -119,30 +126,13 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
         }
 }
 
+/**
+ * Parse a media playlist. The parser is shared (`@anime/hls`) so the web
+ * downloader reads a playlist the same way; this wrapper only names the local
+ * `MediaPlaylist` type.
+ */
 export function parseMediaPlaylist(text: string, baseUrl: string): MediaPlaylist {
-        const lines = text.split(/\r?\n/);
-        const segments: string[] = [];
-        const durations: number[] = [];
-        let duration = 0;
-        let targetDuration = 0;
-        let pendingDuration = 0;
-        for (const line of lines) {
-                if (!line) continue;
-                if (line.startsWith('#EXTINF:')) {
-                        pendingDuration = Number.parseFloat(line.slice('#EXTINF:'.length)) || 0;
-                        continue;
-                }
-                if (line.startsWith('#EXT-X-TARGETDURATION:')) {
-                        targetDuration = Number.parseFloat(line.slice('#EXT-X-TARGETDURATION:'.length)) || 0;
-                        continue;
-                }
-                if (line.startsWith('#')) continue;
-                segments.push(resolveUrl(line, baseUrl));
-                durations.push(pendingDuration);
-                duration += pendingDuration;
-                pendingDuration = 0;
-        }
-        return { segments, durations, duration, targetDuration };
+        return parseDownloadPlaylist(text, baseUrl);
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -292,37 +282,22 @@ export async function downloadSegmentsStreaming(
         const workers = Math.max(1, Math.min(options.concurrency, total - resumeFrom));
 
         /**
-         * Concurrency is a target rather than a fixed pool. A 429 means the CDN is
-         * refusing us *right now*, so the target is halved and the level that just
-         * failed becomes a ceiling the pool may not climb back past. Measured
-         * against the live CDN, shedding one worker at a time converges far too
-         * slowly from a high setting, and every worker that keeps firing while it
-         * converges earns another 429 — a 138-segment episode took 242 s starting at
-         * 12 versus 9 s at 3. Recovery then creeps up one worker per cooldown and
-         * stops at the ceiling, so a run settles near the rate the CDN will actually
-         * sustain instead of oscillating into the limit.
+         * Concurrency is a target rather than a fixed pool: a 429 halves it and
+         * records a ceiling it may climb back to one worker per cooldown. That
+         * decision is shared with the web downloader (`@anime/hls`, where the
+         * measurements live); this loop only supplies the waiting.
          */
-        const minWorkers = 1;
-        let targetWorkers = workers;
-        let ceiling = workers;
-        let recoverAt = 0;
+        const gateState: GateState = createGateState(workers);
         const onRateLimit = (): void => {
-                ceiling = Math.max(minWorkers, targetWorkers - 1);
-                targetWorkers = Math.max(minWorkers, Math.floor(targetWorkers / 2));
-                recoverAt = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+                shedConcurrency(gateState);
         };
         const gate = async (): Promise<void> => {
-                while (targetWorkers < ceiling) {
-                        if (internal.signal.aborted) throw new DownloadError('Download cancelled.');
-                        if (Date.now() >= recoverAt) {
-                                targetWorkers++;
-                                // Hold the next increment back by another cooldown so
-                                // the pool climbs gradually instead of all at once.
-                                recoverAt = Date.now() + RATE_LIMIT_COOLDOWN_MS;
-                                return;
-                        }
-                        await delay(GATE_POLL_MS, internal.signal);
-                }
+                await nextGate(
+                        gateState,
+                        delay,
+                        internal.signal,
+                        () => new DownloadError('Download cancelled.'),
+                );
         };
 
         const worker = async (): Promise<void> => {

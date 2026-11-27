@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
 import process from 'process';
 import { builtinModules } from 'node:module';
@@ -10,7 +13,45 @@ if you want to view the source, please visit the github repository of this plugi
 
 const prod = process.argv[2] === 'production';
 
+/**
+ * Resolve `@anime/*` from the monorepo's `packages/`, or from `vendor/` when the
+ * package cannot be resolved — which is every build of the standalone mirror,
+ * where the directory does not exist. The vendored copies are generated from the
+ * packages (`npm run vendor`) and `npm test` fails when they drift, so the two
+ * give the same module either way.
+ */
+const here = dirname(fileURLToPath(import.meta.url));
+const vendored = {
+  '@anime/hls': join(here, 'vendor/anime-hls.js'),
+  '@anime/catalogue': join(here, 'vendor/anime-catalogue.js'),
+};
+const sharedVendor = {
+  name: 'anime-shared-vendor',
+  setup(build) {
+    build.onResolve({ filter: /^@anime\/(hls|catalogue)$/ }, (args) => {
+      // In this repository the package sits at packages/<name>/src; in the
+      // mirror that directory does not exist, so the generated copy is used.
+      const name = args.path.replace('@anime/', '');
+      const source = join(here, '..', '..', 'packages', name, 'src', 'index.js');
+      return { path: existsSync(source) ? source : vendored[args.path] };
+    });
+  },
+};
+
+/**
+ * The shared `@anime/*` packages are inlined into `main.js`.
+ *
+ * The plugin is mirrored to its own repository, which has no `packages/`, so it
+ * cannot resolve them at runtime the way the other apps do — and Obsidian loads
+ * a single `main.js` with no module resolution at all. Bundling is therefore the
+ * only way it can use them. The mirrored repository has no `packages/` either,
+ * so there the dependency cannot even be installed: `scripts/check-shared.mjs`
+ * refuses a bundle that still contains an unresolved import, and
+ * `apps/plugin/AGENTS.md` carries the vendoring fallback for that case.
+ */
+
 const context = await esbuild.context({
+	plugins: [sharedVendor],
 	banner: {
 		js: banner,
 	},

@@ -60,6 +60,7 @@ npm run build
       types.ts         # TypeScript interfaces and types
     ```
 - **Do not commit build artifacts**: Never commit `node_modules/`, `main.js`, or other generated files to version control.
+- **Shared code is vendored, never depended on.** The plugin imports `@anime/hls` and `@anime/catalogue` from `packages/`, but its mirror (`CloudCompile/browserformobile`) has no `packages/` directory, and a `file:` dependency cannot be installed there. So `package.json` lists neither, and `vendor/anime-hls.{js,d.ts}` and `vendor/anime-catalogue.{js,d.ts}` are **generated** copies. `npm run vendor` rewrites them; `npm test` fails if they have drifted from `packages/`; esbuild, tsconfig `paths` and the vitest aliases all prefer `packages/` and fall back to `vendor/`. Never edit `vendor/` by hand, and never add an `@anime/*` or `file:` entry to `package.json`.
 - Keep the plugin small. Avoid large dependencies. Prefer browser-compatible packages.
 - Generated output should be placed at the plugin root or `dist/` depending on your build setup. Release artifacts must end up at the top level of the plugin folder in the vault (`main.js`, `manifest.json`, `styles.css`).
 
