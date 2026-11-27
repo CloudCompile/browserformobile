@@ -12,7 +12,8 @@ export interface NativeRequestOptions {
 	url: string;
 	method?: string;
 	headers?: Record<string, string>;
-	body?: string | null;
+	/** A string body, or raw bytes for multipart and binary uploads. */
+	body?: string | Uint8Array | null;
 }
 
 export interface NativeResponse {
@@ -20,6 +21,8 @@ export interface NativeResponse {
 	statusText: string;
 	url: string;
 	headers: Record<string, string>;
+	/** Separate from `headers`, because joining Set-Cookie on commas corrupts Expires. */
+	setCookies: string[];
 	bytes: Uint8Array;
 }
 
@@ -53,6 +56,33 @@ export function normalizeHeaders(headers: Record<string, string | string[]> | un
 	const out: Record<string, string> = {};
 	for (const [key, value] of Object.entries(headers ?? {})) {
 		out[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : String(value);
+	}
+	return out;
+}
+
+/**
+ * Split a joined Set-Cookie value. A plain comma split is wrong because
+ * `Expires=Wed, 21 Oct 2026 ...` contains one; a cookie name followed by `=`
+ * after the comma is the reliable marker for a new cookie.
+ */
+export function splitSetCookieHeader(value: string): string[] {
+	return value
+		.split(/,(?=\s*[!#$%&'*+\-.^_`|~0-9A-Za-z]+\s*=)/)
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+}
+
+/** Every Set-Cookie header, kept separate rather than comma-joined. */
+export function setCookieHeaders(
+	headers: Record<string, string | string[]> | undefined,
+): string[] {
+	const out: string[] = [];
+	for (const [key, value] of Object.entries(headers ?? {})) {
+		if (key.toLowerCase() !== 'set-cookie') continue;
+		if (Array.isArray(value)) out.push(...value.map((entry) => String(entry)));
+		else {
+			for (const line of String(value).split(/\r?\n/)) out.push(...splitSetCookieHeader(line));
+		}
 	}
 	return out;
 }
@@ -128,7 +158,9 @@ async function capacitorRequest(
 ): Promise<NativeResponse> {
 	const method = (options.method ?? 'GET').toUpperCase();
 	let data: unknown = options.body ?? undefined;
-	if (typeof data === 'string') {
+	if (data instanceof Uint8Array) {
+		data = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+	} else if (typeof data === 'string') {
 		const type = headers['content-type'] ?? '';
 		if (/x-www-form-urlencoded/i.test(type)) {
 			const params = new URLSearchParams(data);
@@ -159,6 +191,7 @@ async function capacitorRequest(
 		statusText: response.statusText ?? '',
 		url: response.url || options.url,
 		headers: normalizeHeaders(response.headers),
+		setCookies: setCookieHeaders(response.headers),
 		bytes: bytesFromData(response.data),
 	};
 }
@@ -168,12 +201,19 @@ async function obsidianRequest(
 	headers: Record<string, string>,
 ): Promise<NativeResponse> {
 	const method = (options.method ?? 'GET').toUpperCase();
+	const body =
+		options.body instanceof Uint8Array
+			? (options.body.buffer.slice(
+					options.body.byteOffset,
+					options.body.byteOffset + options.body.byteLength,
+				) as ArrayBuffer)
+			: (options.body ?? undefined);
 	const response = await withTimeout(
 		requestUrl({
 			url: options.url,
 			method,
 			headers,
-			body: options.body ?? undefined,
+			body,
 			throw: false,
 		}),
 		REQUEST_TIMEOUT_MS,
@@ -184,6 +224,7 @@ async function obsidianRequest(
 		// requestUrl does not report the final URL after redirects.
 		url: options.url,
 		headers: normalizeHeaders(response.headers),
+		setCookies: setCookieHeaders(response.headers),
 		bytes: new Uint8Array(response.arrayBuffer),
 	};
 }
@@ -192,6 +233,10 @@ async function obsidianRequest(
 export async function nativeRequest(options: NativeRequestOptions): Promise<NativeResponse> {
 	const headers = normalizeHeaders(options.headers);
 	const capacitor = capacitorHttp();
-	if (capacitor) return capacitorRequest(capacitor, options, headers);
+	// requestUrl's ArrayBuffer body is the verified path for binary uploads;
+	// CapacitorHttp's request data has no documented binary form on Android.
+	if (capacitor && !(options.body instanceof Uint8Array)) {
+		return capacitorRequest(capacitor, options, headers);
+	}
 	return obsidianRequest(options, headers);
 }

@@ -15,8 +15,10 @@ observed. A fix will be released as a patch and noted in the changelog.
 
 - Everything it stores lives in the plugin's `data.json` inside your vault:
   settings, watch progress, the download run log (500 most recent runs), cached
-  anime API responses, the repair ledger, and browser bookmarks. Nothing is
-  collected, and nothing is sent anywhere by the plugin itself.
+  anime API responses, the repair ledger, browser bookmarks, per-site browser
+  modes, and non-session browser cookies. Session cookies stay in memory. The
+  cookie jar is what keeps a proxied page's login working across requests;
+  nothing is collected, and nothing is sent anywhere by the plugin itself.
 - Downloaded videos are written into the vault, and inherit whatever syncing
   your vault has.
 - The plugin's own network traffic is to the configured anime API (default
@@ -38,7 +40,10 @@ observed. A fix will be released as a patch and noted in the changelog.
 - The browser does execute the pages you open, including their scripts. Treat a
   page opened there with the same caution as one opened in a browser: it can
   read and send what it can reach in that page, and a malicious page is not made
-  safe by the native HTTP layer.
+  safe by the native HTTP layer. In the rewritten view the page shares the
+  plugin's origin and can call the browser bridge, so prefer **compatibility
+  mode** for pages you do not trust: the direct frame is cross-origin and cannot
+  reach the bridge.
 
 ## Scope notes
 

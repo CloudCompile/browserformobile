@@ -92,6 +92,7 @@ export class BrowserDownloadManager {
 		private readonly defaultFolder: () => string,
 		private readonly userAgent: () => string,
 		private readonly onDebug?: (message: string, details?: unknown) => void,
+		private readonly cookieHeader?: (url: string) => string,
 	) {}
 
 	subscribe(listener: () => void): () => void {
@@ -256,6 +257,8 @@ export class BrowserDownloadManager {
 			...extra,
 		};
 		if (job.referer) headers.referer = job.referer;
+		const cookie = this.cookieHeader?.(job.url);
+		if (cookie) headers.cookie = cookie;
 		return headers;
 	}
 

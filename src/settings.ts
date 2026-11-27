@@ -36,6 +36,8 @@ export interface AnimeSettings {
         browserSearchEngine: BrowserSearchEngine;
         /** Inline remote styles, scripts and fonts into browser pages. */
         browserInline: boolean;
+        /** Try a direct, real-origin iframe when the site allows framing. */
+        browserCompatibility: boolean;
         /** Save outside the vault. Desktop only; ignored on mobile. */
         downloadExternal: boolean;
         /** Filename template supporting {series}, {ep}, {ep:02}, {title}, {ext}. */
@@ -127,6 +129,7 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         browserUserAgent: DEFAULT_BROWSER_UA,
         browserSearchEngine: 'ddg',
         browserInline: true,
+        browserCompatibility: true,
         downloadExternal: false,
         downloadFilenameTemplate: DEFAULT_FILENAME_TEMPLATE,
         // Off by default: subtitles cost a second set of segment requests per
@@ -241,8 +244,13 @@ export class AnimeSettingTab extends PluginSettingTab {
                         },
                         {
                                 name: 'Inline browser styles and scripts',
-                                desc: 'Fetch remote stylesheets, scripts and fonts natively and embed them, because a page in the browser inherits the app content security policy. Turn this off only to test a rendering problem.',
+                                desc: 'Fetch remote stylesheets, scripts, modules, fonts and images natively and embed them, because a page in the browser inherits the app content security policy. Turn this off only to test a rendering problem.',
                                 control: { type: 'toggle', key: 'browserInline' },
+                        },
+                        {
+                                name: 'Browser compatibility mode',
+                                desc: 'Try loading a page directly at its own address when the site allows embedding. This gives real cookies, modules, scripts and storage, but the download and media controls cannot inspect that page. Turn it off to always use download mode; the per-site menu overrides this.',
+                                control: { type: 'toggle', key: 'browserCompatibility' },
                         },
                         {
                                 name: 'Save outside the vault',

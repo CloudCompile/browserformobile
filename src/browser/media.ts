@@ -283,6 +283,7 @@ export function mediaFromDocument(doc: Document, baseUrl: string): BrowserMediaI
 		if (element.tagName === 'IMG') {
 			const image = element as HTMLImageElement;
 			const source =
+				image.getAttribute('data-bfm-source') ||
 				image.currentSrc ||
 				selectSrcset(image.getAttribute('srcset')) ||
 				image.getAttribute('src') ||
@@ -324,7 +325,11 @@ export function mediaFromDocument(doc: Document, baseUrl: string): BrowserMediaI
 
 	// A <picture> may carry the largest source separately from its fallback img.
 	for (const source of Array.from(doc.querySelectorAll('picture source[srcset]'))) {
-		add(selectSrcset(source.getAttribute('srcset')), 'image', 'Image');
+		add(
+			source.getAttribute('data-bfm-source') || selectSrcset(source.getAttribute('srcset')),
+			'image',
+			'Image',
+		);
 	}
 
 	const items = Array.from(found.values());

@@ -3040,6 +3040,81 @@ body.bfm-glass-on .bfm-recs-card {
 	to { background-position: -200% 0; }
 }
 
+.bfm-browser-banner {
+	display: none;
+	align-items: flex-start;
+	gap: var(--bfm-space-2);
+	padding: 8px 10px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--bfm-border);
+	font-size: 12px;
+	line-height: 1.4;
+	flex: 0 0 auto;
+}
+
+.bfm-browser-banner.is-visible { display: flex; }
+
+.bfm-browser-banner.is-info {
+	background: color-mix(in srgb, var(--bfm-accent) 10%, var(--background-secondary));
+}
+
+.bfm-browser-banner.is-warning {
+	background: color-mix(in srgb, var(--text-warning, #b8860b) 12%, var(--background-secondary));
+}
+
+.bfm-browser-banner-copy {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	color: var(--text-muted);
+}
+
+.bfm-browser-banner-copy strong { color: var(--text-normal); }
+
+.bfm-browser-banner-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+
+.bfm-browser-banner-button {
+	appearance: none;
+	border: 1px solid var(--bfm-border);
+	border-radius: var(--bfm-radius-s);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: 11px;
+	padding: 4px 7px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.bfm-browser-banner-button:hover { background: var(--bfm-hover); border-color: var(--bfm-border-hover); }
+
+.bfm-browser-banner-close {
+	appearance: none;
+	border: 0;
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: var(--bfm-radius-s);
+	cursor: pointer;
+	flex: 0 0 auto;
+}
+
+.bfm-browser-banner-close:hover { background: var(--bfm-hover); color: var(--text-normal); }
+.bfm-browser-banner-close svg { width: 14px; height: 14px; }
+
 .bfm-browser-frames {
 	position: relative;
 	flex: 1 1 auto;
@@ -3374,6 +3449,8 @@ body.bfm-glass-on .bfm-recs-card {
 .bfm-browser-media-error { color: var(--text-error); font-size: 12px; line-height: 1.45; }
 
 @media (max-width: 640px) {
+	.bfm-browser-banner { flex-wrap: wrap; }
+	.bfm-browser-banner-actions { width: 100%; justify-content: flex-start; }
 	.bfm-browser-tab { max-width: 140px; min-width: 72px; padding-left: 8px; }
 	.bfm-browser-bar { gap: 2px; padding: 6px 5px; }
 	.bfm-browser-button { width: 30px; min-width: 30px; height: 34px; }

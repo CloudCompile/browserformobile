@@ -13,6 +13,7 @@ interface BrowserBridgeRequest {
 	method: string;
 	headers: Record<string, string>;
 	body: string | null;
+	bodyBase64?: string | null;
 }
 
 interface BrowserBridgeResponse {
@@ -30,6 +31,8 @@ interface BrowserBridge {
 	external(url: string): void;
 	media(tab: string, items: unknown[]): void;
 	download(tab: string, options: Record<string, unknown>): void;
+	readCookie(tab: string, url: string): string;
+	writeCookie(tab: string, url: string, value: string): void;
 }
 
 interface InjectedConfig {
@@ -106,28 +109,82 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 		}
 		return null;
 	};
-	const buildBody = async (body: unknown, headers: Record<string, string>): Promise<string | null> => {
-		if (body == null) return null;
-		if (typeof body === 'string') return body;
+	interface BuiltBody {
+		text: string | null;
+		base64: string | null;
+	}
+	const bytesToBase64 = (bytes: Uint8Array): string => {
+		let binary = '';
+		const chunk = 0x8000;
+		for (let index = 0; index < bytes.length; index += chunk) {
+			binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+		}
+		return btoa(binary);
+	};
+	const concatBytes = (chunks: Uint8Array[]): Uint8Array => {
+		const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+		const out = new Uint8Array(total);
+		let offset = 0;
+		for (const chunk of chunks) {
+			out.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		return out;
+	};
+	const buildBody = async (body: unknown, headers: Record<string, string>): Promise<BuiltBody> => {
+		if (body == null) return { text: null, base64: null };
+		if (typeof body === 'string') return { text: body, base64: null };
 		if (body instanceof URLSearchParams) {
 			if (!headers['content-type']) headers['content-type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
-			return body.toString();
+			return { text: body.toString(), base64: null };
 		}
 		if (typeof FormData !== 'undefined' && body instanceof FormData) {
-			const params = new URLSearchParams();
-			body.forEach((value, key) => {
-				if (typeof value === 'string') params.append(key, value);
-			});
-			headers['content-type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
-			return params.toString();
+			const boundary = `----bfmFormBoundary${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+			const encoder = new TextEncoder();
+			const chunks: Uint8Array[] = [];
+			const push = (value: string): void => {
+				chunks.push(encoder.encode(value));
+			};
+			const entries: { name: string; value: FormDataEntryValue }[] = [];
+			body.forEach((value, name) => entries.push({ name, value }));
+			for (const { name, value } of entries) {
+				push(`--${boundary}\r\n`);
+				if (typeof value === 'string') {
+					push(`Content-Disposition: form-data; name="${name.replace(/"/g, '%22')}"\r\n\r\n`);
+					push(value);
+					push('\r\n');
+					continue;
+				}
+				const filename = typeof value.name === 'string' && value.name ? value.name : 'blob';
+				const type = value.type || 'application/octet-stream';
+				push(
+					`Content-Disposition: form-data; name="${name.replace(/"/g, '%22')}"; filename="${filename.replace(/"/g, '%22')}"\r\n`,
+				);
+				push(`Content-Type: ${type}\r\n\r\n`);
+				chunks.push(new Uint8Array(await value.arrayBuffer()));
+				push('\r\n');
+			}
+			push(`--${boundary}--\r\n`);
+			headers['content-type'] = `multipart/form-data; boundary=${boundary}`;
+			return { text: null, base64: bytesToBase64(concatBytes(chunks)) };
 		}
-		if (typeof Blob !== 'undefined' && body instanceof Blob) return await body.text();
-		if (ArrayBuffer.isView(body)) return new TextDecoder().decode(body);
-		if (body instanceof ArrayBuffer) return new TextDecoder().decode(body);
+		if (typeof Blob !== 'undefined' && body instanceof Blob) {
+			if (body.type && !headers['content-type']) headers['content-type'] = body.type;
+			return { text: null, base64: bytesToBase64(new Uint8Array(await body.arrayBuffer())) };
+		}
+		if (ArrayBuffer.isView(body)) {
+			return {
+				text: null,
+				base64: bytesToBase64(new Uint8Array(body.buffer, body.byteOffset, body.byteLength)),
+			};
+		}
+		if (body instanceof ArrayBuffer) {
+			return { text: null, base64: bytesToBase64(new Uint8Array(body)) };
+		}
 		try {
-			return JSON.stringify(body) ?? '';
+			return { text: JSON.stringify(body) ?? '', base64: null };
 		} catch {
-			return '';
+			return { text: '', base64: null };
 		}
 	};
 	const cleanHeaders = (headers: Record<string, string> | undefined): Record<string, string> => {
@@ -161,12 +218,25 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 			/* Ignore malformed request headers. */
 		}
 		let body = options.body !== undefined ? options.body : null;
-		if (request && body === null && method !== 'GET' && method !== 'HEAD') body = await request.clone().text();
-		body = method === 'GET' || method === 'HEAD' ? null : await buildBody(body, headers);
+		// Read a Request body as bytes, not text: a cloned FormData or Blob body
+		// must keep its files, and buildBody already handles an ArrayBuffer.
+		if (request && body === null && method !== 'GET' && method !== 'HEAD') {
+			body = await request.clone().arrayBuffer();
+		}
+		const payload =
+			method === 'GET' || method === 'HEAD'
+				? { text: null, base64: null }
+				: await buildBody(body, headers);
 		if (!headers.referer) headers.referer = cfg.url;
 		if (method !== 'GET' && !headers.origin) headers.origin = new URL(cfg.url).origin;
 		captureRequest(url);
-		const response = await B.request({ url, method, headers, body });
+		const response = await B.request({
+			url,
+			method,
+			headers,
+			body: payload.text,
+			bodyBase64: payload.base64,
+		});
 		const type = String(response.headers['content-type'] || '');
 		if (/mpegurl/i.test(type)) reportMedia(response.url || url, { mime: type }, 'hls');
 		const bytes = new Uint8Array(response.bytes);
@@ -193,7 +263,7 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 		responseURL = '';
 		responseType = '';
 		timeout = 0;
-		withCredentials = false;
+		withCredentials = true;
 		upload = new EventTarget();
 		onreadystatechange: ((event: Event) => void) | null = null;
 		onload: ((event: Event) => void) | null = null;
@@ -265,7 +335,15 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 			if (this.method !== 'GET' && !headers.origin) headers.origin = new URL(cfg.url).origin;
 			captureRequest(this.url);
 			buildBody(this.method === 'GET' || this.method === 'HEAD' ? null : body, headers)
-				.then((encoded) => B.request({ url: this.url, method: this.method, headers, body: encoded }))
+				.then((payload) =>
+					B.request({
+						url: this.url,
+						method: this.method,
+						headers,
+						body: payload.text,
+						bodyBase64: payload.base64,
+					}),
+				)
 				.then((response) => {
 					if (this.aborted) return;
 					this.status = response.status;
@@ -313,6 +391,18 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 		}
 	}
 	window.XMLHttpRequest = BrowserXHR as unknown as typeof XMLHttpRequest;
+
+	// A proxied page has no real cookie store. Expose the native jar as
+	// `document.cookie` so script-set sessions behave like they do in a browser.
+	try {
+		Object.defineProperty(document, 'cookie', {
+			configurable: true,
+			get: () => B.readCookie(TAB, cfg.url),
+			set: (value: string) => B.writeCookie(TAB, cfg.url, String(value)),
+		});
+	} catch {
+		/* A read-only document still works; cookies just stay native-only. */
+	}
 
 	const originalPush = history.pushState.bind(history);
 	const originalReplace = history.replaceState.bind(history);
@@ -401,14 +491,15 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 		true,
 	);
 
-	document.addEventListener(
+		document.addEventListener(
 		'submit',
-					(event: SubmitEvent) => {
-				if (event.defaultPrevented) return;
-				const form = event.target;
-				if (!(form instanceof HTMLFormElement)) return;
-				event.preventDefault();
-								const submitter = event.submitter;
+		(event: SubmitEvent) => {
+			void (async (): Promise<void> => {
+			if (event.defaultPrevented) return;
+			const form = event.target;
+			if (!(form instanceof HTMLFormElement)) return;
+			event.preventDefault();
+			const submitter = event.submitter;
 			const method = String(
 				submitter?.getAttribute('formmethod') || form.getAttribute('method') || 'GET',
 			).toUpperCase();
@@ -419,6 +510,25 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 			const data = new FormData(form);
 			const submitterName = submitter?.getAttribute('name');
 			if (submitterName) data.append(submitterName, submitter?.getAttribute('value') ?? '');
+			const enctype = String(
+				submitter?.getAttribute('formenctype') || form.getAttribute('enctype') || '',
+			).toLowerCase();
+			let hasFile = false;
+			data.forEach((value) => {
+				if (typeof value !== 'string') hasFile = true;
+			});
+			if (method === 'POST' && (hasFile || enctype.includes('multipart/form-data'))) {
+				const headers: Record<string, string> = {};
+				const payload = await buildBody(data, headers);
+				B.nav(TAB, {
+					url: action.href,
+					method: 'POST',
+					body: payload.text ?? '',
+					bodyBase64: payload.base64,
+					headers,
+				});
+				return;
+			}
 			const params = new URLSearchParams();
 			data.forEach((value, key) => {
 				if (typeof value === 'string') params.append(key, value);
@@ -434,6 +544,7 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 				action.search = params.toString();
 				B.nav(TAB, { url: action.href });
 			}
+			})();
 		},
 		true,
 	);

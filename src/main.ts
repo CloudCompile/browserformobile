@@ -50,6 +50,7 @@ import { DownloadManagerView, VIEW_TYPE_DOWNLOADS } from './downloadManagerView'
 import { BROWSER_VIEW_TYPE } from './browser/config';
 import { BrowserDownloadManager, type BrowserDownloadJob, type BrowserDownloadRequest } from './browser/downloads';
 import { BrowserEngine } from './browser/engine';
+import type { BrowserCookie } from './browser/cookies';
 import { CdnDownloadModal } from './browser/dialogs';
 import type { BrowserBookmark } from './browser/media';
 import { BrowserView } from './browser/view';
@@ -74,6 +75,10 @@ interface PersistedShape {
 	finderState?: PersistedFinderState;
 	/** Pages saved with the browser's star. */
 	browserBookmarks?: BrowserBookmark[];
+	/** Persistent cookies from proxied pages. Session cookies stay in memory. */
+	browserCookies?: BrowserCookie[];
+	/** Per-site choice between direct compatibility mode and download mode. */
+	browserSiteModes?: Record<string, 'direct' | 'proxy'>;
 	/** The library's layout, remembered between sessions. */
 	libraryView?: 'list' | 'grid';
 	/** Recommendation titles the user said they are not interested in. */
@@ -102,6 +107,10 @@ export default class AnimePlugin extends Plugin {
 	browserDownloads!: BrowserDownloadManager;
 	/** Bookmarks shown on the browser home page and in its menu. */
 	browserBookmarks: BrowserBookmark[] = [];
+	/** Non-session cookies from the browser's native HTTP layer. */
+	browserCookies: BrowserCookie[] = [];
+	/** Hosts forced into direct compatibility mode or download mode. */
+	browserSiteModes: Record<string, 'direct' | 'proxy'> = {};
 	/** Re-ranks recommendations with a decision model, when one is enabled. */
 	private localRanker: TinyDecideRanker | null = null;
 	private hostedRanker: JevRanker | null = null;
@@ -233,6 +242,7 @@ export default class AnimePlugin extends Plugin {
 			() => this.settings.browserDownloadFolder,
 			() => this.settings.browserUserAgent,
 			(message, details) => this.debug(message, details),
+			(url) => this.browserEngine?.cookieHeader(url) ?? '',
 		);
 		this.browserEngine = new BrowserEngine(this);
 		this.browserEngine.install();
@@ -1697,6 +1707,22 @@ export default class AnimePlugin extends Plugin {
 						typeof entry?.url === 'string' && typeof entry.title === 'string',
 				)
 			: [];
+		this.browserCookies = Array.isArray(raw?.browserCookies)
+			? raw.browserCookies.filter(
+					(entry): entry is BrowserCookie =>
+						Boolean(entry) &&
+						typeof entry.name === 'string' &&
+						typeof entry.value === 'string' &&
+						typeof entry.domain === 'string' &&
+						typeof entry.path === 'string',
+				)
+			: [];
+		this.browserSiteModes = {};
+		if (raw?.browserSiteModes && typeof raw.browserSiteModes === 'object') {
+			for (const [host, mode] of Object.entries(raw.browserSiteModes)) {
+				if (mode === 'direct' || mode === 'proxy') this.browserSiteModes[host] = mode;
+			}
+		}
 		this.libraryView = raw?.libraryView === 'grid' ? 'grid' : 'list';
 		this.dismissedRecommendations = Array.isArray(raw?.dismissedRecommendations)
 			? raw.dismissedRecommendations.filter((title): title is string => typeof title === 'string')
@@ -1736,6 +1762,8 @@ export default class AnimePlugin extends Plugin {
 			seriesPreferences: this.seriesPreferences,
 			finderState: this.finderState,
 			browserBookmarks: this.browserBookmarks,
+			browserCookies: this.browserCookies,
+			browserSiteModes: this.browserSiteModes,
 			libraryView: this.libraryView,
 			dismissedRecommendations: this.dismissedRecommendations,
 		});

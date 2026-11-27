@@ -74,8 +74,15 @@ back and forward, reload, bookmarks, a home page and a download tray.
 
 - **Pages are fetched natively.** Android uses CapacitorHttp; desktop falls back
   to Obsidian's `requestUrl`, so CORS does not block a page. The HTML is cleaned,
-  its CSP is removed, and remote stylesheets, scripts and fonts are fetched and
-  embedded because the app's CSP blocks them inside an iframe.
+  its CSP is removed, and remote stylesheets, ES modules, scripts, fonts and
+  images are fetched and embedded because the app's CSP blocks them inside an
+  iframe. A cookie jar carries sessions across those requests.
+- **Compatibility mode runs the page at its own address.** When a site allows
+  framing, the browser loads it directly instead of rewriting it, which gives
+  real origin cookies, modules, workers and storage. That mode cannot inspect the
+  page for downloads, so a banner offers **Use download mode**; the page menu
+  remembers the choice per site. If a rewritten page comes up blank, the banner
+  offers **Try compatibility mode** and **Open in system browser**.
 - **Media is playable.** A direct image, audio or video URL opens in a native
   element. The toolbar's media button lists images, videos, audio and media
   links found in the page, including requests the page made itself, and offers
@@ -518,6 +525,9 @@ error, so recommendations always appear.
 - **Inline browser styles and scripts** — fetch remote resources natively and
   embed them in the page. On by default; turn it off only to test a rendering
   problem.
+- **Browser compatibility mode** — try a direct, real-origin frame when the site
+  allows it. On by default; turn it off to always use the downloadable proxy
+  view. The page menu overrides it per site.
 - **Cache anime details** — store API responses locally so repeat lookups are
   instant. On by default.
 - **Download quality** — preferred height; the closest available is used.
@@ -643,8 +653,9 @@ full notes live on each release. Security-relevant details are in
 ## Limitations
 
 - The browser is a cleaned-page browser over native HTTP, not a full engine.
-  Sites that require service workers, extension APIs, cross-origin frame access,
-  or remote module graphs may not render or play.
+  Sites that require service workers, extension APIs, anti-bot challenges,
+  passkeys or DRM may not render or play. Compatibility mode gets closer when a
+  site allows framing, but it gives up the download controls.
 - A CDN that requires the page as its Referer can refuse direct playback in the
   browser; use **Download and play** and the saved file opens in the native
   player.

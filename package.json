@@ -27,6 +27,7 @@
                 "vitest": "^4.1.10"
         },
         "dependencies": {
+                "es-module-lexer": "^3.0.5",
                 "mux.js": "^6.3.0"
         }
 }

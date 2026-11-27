@@ -1,5 +1,6 @@
 import { ItemView, Menu, Notice, setIcon, type WorkspaceLeaf } from 'obsidian';
 import type AnimePlugin from '../main';
+import { hostOf, looksBlank } from './compat';
 import { BROWSER_VIEW_TYPE } from './config';
 import {
 	downloadPercent,
@@ -29,13 +30,17 @@ interface BrowserTab {
 	url: string;
 	frame: HTMLIFrameElement;
 	mediaEl: HTMLElement;
-	mode: 'frame' | 'media';
+	mode: 'frame' | 'media' | 'direct';
 	hist: BrowserNavSpec[];
 	idx: number;
 	token: number;
 	loading: boolean;
 	blobUrl: string | null;
 	media: BrowserMediaItem[];
+	failed: boolean;
+	problem: string;
+	bannerDismissed: boolean;
+	refreshHops: number;
 }
 
 export class BrowserView extends ItemView {
@@ -48,6 +53,7 @@ export class BrowserView extends ItemView {
 	private framesEl!: HTMLElement;
 	private downloadsEl!: HTMLElement;
 	private progressEl!: HTMLElement;
+	private bannerEl!: HTMLElement;
 	private input!: HTMLInputElement;
 	private backBtn!: HTMLButtonElement;
 	private fwdBtn!: HTMLButtonElement;
@@ -100,6 +106,7 @@ export class BrowserView extends ItemView {
 		this.mediaBtn = this.mkButton('download', 'Download media', () => this.openMediaPicker());
 		this.mkButton('more-vertical', 'Browser menu', (event) => this.openMenu(event));
 		this.progressEl = this.contentEl.createDiv({ cls: 'bfm-browser-progress' });
+		this.bannerEl = this.contentEl.createDiv({ cls: 'bfm-browser-banner' });
 		this.framesEl = this.contentEl.createDiv({ cls: 'bfm-browser-frames' });
 		this.downloadsEl = this.contentEl.createDiv({ cls: 'bfm-browser-downloads' });
 		this.unsubscribe = this.plugin.browserDownloads.subscribe(() => this.renderDownloads());
@@ -171,6 +178,33 @@ export class BrowserView extends ItemView {
 					if (this.active?.url) this.plugin.browserEngine.openExternal(this.active.url);
 				}),
 		);
+		const tab = this.active;
+		const host = tab?.url ? hostOf(tab.url) : '';
+		if (tab && host) {
+			menu.addSeparator();
+			const siteMode = this.plugin.browserEngine.siteMode(host);
+			const isDirect = siteMode === 'direct' || (siteMode === 'auto' && tab.mode === 'direct');
+			menu.addItem((item) =>
+				item
+					.setTitle(isDirect ? 'Use download mode for this site' : 'Use compatibility mode for this site')
+					.setIcon(isDirect ? 'shield' : 'globe-2')
+					.onClick(() => {
+						this.plugin.browserEngine.setSiteMode(host, isDirect ? 'proxy' : 'direct');
+						void this.loadTab(tab);
+					}),
+			);
+			if (siteMode !== 'auto') {
+				menu.addItem((item) =>
+					item
+						.setTitle('Use automatic mode for this site')
+						.setIcon('settings-2')
+						.onClick(() => {
+							this.plugin.browserEngine.setSiteMode(host, 'auto');
+							void this.loadTab(tab);
+						}),
+				);
+			}
+		}
 		menu.addSeparator();
 		menu.addItem((item) =>
 			item
@@ -205,7 +239,12 @@ export class BrowserView extends ItemView {
 			loading: false,
 			blobUrl: null,
 			media: [],
+			failed: false,
+			problem: '',
+			bannerDismissed: false,
+			refreshHops: 0,
 		};
+		frame.addEventListener('load', () => this.onFrameLoad(tab));
 		this.tabs.push(tab);
 		const handle: BrowserTabHandle = {
 			handleNav: (next) => this.handleNav(tab, next),
@@ -225,10 +264,49 @@ export class BrowserView extends ItemView {
 	private switchTo(tab: BrowserTab): void {
 		this.active = tab;
 		for (const other of this.tabs) {
-			other.frame.toggleClass('is-active', other === tab && other.mode === 'frame');
+			other.frame.toggleClass('is-active', other === tab && other.mode !== 'media');
 			other.mediaEl.toggleClass('is-active', other === tab && other.mode === 'media');
 		}
 		this.refresh();
+	}
+
+	private onFrameLoad(tab: BrowserTab): void {
+		if (!tab.url) return;
+		if (tab.mode === 'direct') {
+			tab.loading = false;
+			try {
+				const href = tab.frame.contentWindow?.location.href;
+				if (href && /^https?:/i.test(href)) tab.url = href;
+			} catch {
+				/* Cross-origin, so the address bar keeps the page we navigated to. */
+			}
+			if (this.active === tab) this.refresh();
+			return;
+		}
+		if (tab.mode !== 'frame') return;
+		tab.loading = false;
+		if (this.active === tab) this.refresh();
+		window.setTimeout(() => this.checkPage(tab, tab.token), 900);
+	}
+
+	private checkPage(tab: BrowserTab, token: number): void {
+		if (token !== tab.token || tab.mode !== 'frame' || tab.bannerDismissed) return;
+		let body: HTMLElement | null = null;
+		try {
+			body = tab.frame.contentDocument?.body ?? null;
+		} catch {
+			return;
+		}
+		if (!body) return;
+		const text = (body.innerText || body.textContent || '').trim();
+		const rich = body.querySelectorAll('img, video, audio, canvas, svg, iframe, object, embed, input, textarea, select, button').length;
+		// Never clear a load error here: this check runs after an error page too,
+		// and its explanatory text would otherwise make the page look healthy.
+		if (looksBlank(text.length, rich)) {
+			tab.failed = true;
+			if (!tab.problem) tab.problem = 'The page rendered no visible content.';
+		}
+		if (this.active === tab) this.refresh();
 	}
 
 	private closeTab(tab: BrowserTab): void {
@@ -259,6 +337,7 @@ export class BrowserView extends ItemView {
 	}
 
 	private async navigate(tab: BrowserTab, spec: BrowserNavSpec): Promise<void> {
+		tab.refreshHops = spec.fromRefresh ? tab.refreshHops + 1 : 0;
 		tab.hist = tab.hist.slice(0, tab.idx + 1);
 		tab.hist.push(spec);
 		tab.idx = tab.hist.length - 1;
@@ -281,6 +360,10 @@ export class BrowserView extends ItemView {
 		tab.loading = true;
 		tab.media = [];
 		tab.mediaEl.empty();
+		tab.failed = false;
+		tab.problem = '';
+		tab.bannerDismissed = false;
+		this.plugin.browserEngine.resetTab(tab.id);
 		if (spec.home) {
 			tab.url = '';
 			tab.title = 'Home';
@@ -321,22 +404,45 @@ export class BrowserView extends ItemView {
 					...(spec.headers ?? {}),
 				},
 				body: spec.body ?? null,
+				bodyBase64: spec.bodyBase64 ?? null,
 			});
 			if (token !== tab.token) return;
 			tab.url = response.url || url;
 			const contentType = response.headers['content-type'] || '';
 			if (!contentType || /html|xhtml/i.test(contentType)) {
+				const host = hostOf(tab.url);
+				const isGet = (spec.method || 'GET').toUpperCase() === 'GET';
+				if (isGet && this.plugin.browserEngine.canUseDirect(host, response.headers)) {
+					tab.title = host;
+					this.showDirect(tab, tab.url);
+					this.refresh();
+					return;
+				}
 				const built = this.plugin.browserEngine.buildDoc(
 					decodeText(response.bytes, contentType),
 					tab.url,
 					tab.id,
 				);
 				if (this.plugin.settings.browserInline) {
-					await this.plugin.browserEngine.inlineResources(built.doc, built.baseUrl, tab.url);
+					const failures = await this.plugin.browserEngine.inlineResources(
+						built.doc,
+						built.baseUrl,
+						tab.url,
+						tab.id,
+					);
+					if (failures > 0) tab.problem = 'Some page resources could not be loaded.';
 				}
 				if (token !== tab.token) return;
-				tab.title = built.title || hostOf(tab.url);
+				tab.title = built.title || host;
 				this.showHtml(tab, this.plugin.browserEngine.serialize(built.doc));
+				const refresh = built.refresh;
+				if (refresh && refresh.url !== tab.url && tab.refreshHops < 5) {
+					window.setTimeout(() => {
+						if (token === tab.token) {
+							void this.navigate(tab, { url: refresh.url, fromRefresh: true });
+						}
+					}, refresh.delayMs);
+				}
 			} else {
 				const kind = kindForUrl(tab.url, contentType);
 				tab.title = filenameFromUrl(tab.url);
@@ -350,6 +456,8 @@ export class BrowserView extends ItemView {
 		} catch (error) {
 			if (token !== tab.token) return;
 			tab.title = 'Error';
+			tab.failed = true;
+			tab.problem = error instanceof Error ? error.message : String(error);
 			this.showHtml(tab, this.plugin.browserEngine.errorHtml(url, error));
 		} finally {
 			if (token === tab.token) {
@@ -357,6 +465,17 @@ export class BrowserView extends ItemView {
 				this.refresh();
 			}
 		}
+	}
+
+	private showDirect(tab: BrowserTab, url: string): void {
+		this.clearBlob(tab);
+		tab.mode = 'direct';
+		tab.mediaEl.empty();
+		tab.mediaEl.removeClass('is-active');
+		tab.frame.addClass('is-active');
+		tab.frame.removeAttribute('srcdoc');
+		tab.frame.removeAttribute('src');
+		tab.frame.src = url;
 	}
 
 	private showHtml(tab: BrowserTab, html: string): void {
@@ -460,6 +579,7 @@ export class BrowserView extends ItemView {
 
 	private collectMedia(tab: BrowserTab): BrowserMediaItem[] {
 		const found = new Map<string, BrowserMediaItem>();
+		if (tab.mode === 'direct') return [];
 		for (const item of tab.media) found.set(item.url, item);
 		if (tab.mode === 'frame') {
 			try {
@@ -481,6 +601,10 @@ export class BrowserView extends ItemView {
 	private openMediaPicker(): void {
 		const tab = this.active;
 		if (!tab) return;
+		if (tab.mode === 'direct') {
+			new Notice('Media capture is unavailable in compatibility mode. Switch this site to download mode from the menu, or open the page in the system browser.');
+			return;
+		}
 		const items = this.collectMedia(tab);
 		new MediaPickerModal(this.app, {
 			items,
@@ -604,7 +728,57 @@ export class BrowserView extends ItemView {
 		if (document.activeElement !== this.input) this.input.value = tab.url || '';
 		this.starBtn.toggleClass('is-on', Boolean(tab.url) && this.plugin.browserBookmarks.some((bookmark) => bookmark.url === tab.url));
 		this.mediaBtn.toggleClass('has-media', tab.media.length > 0);
-		this.mediaBtn.disabled = !tab.url && tab.mode === 'frame';
+		this.mediaBtn.disabled = !tab.url || tab.mode === 'direct';
+		this.renderBanner();
+	}
+
+	private renderBanner(): void {
+		if (!this.bannerEl) return;
+		this.bannerEl.empty();
+		this.bannerEl.removeClass('is-visible', 'is-warning', 'is-info');
+		const tab = this.active;
+		if (!tab || !tab.url || tab.bannerDismissed) return;
+		const isDirect = tab.mode === 'direct';
+		if (!isDirect && !tab.failed) return;
+		this.bannerEl.addClass('is-visible');
+		this.bannerEl.addClass(isDirect ? 'is-info' : 'is-warning');
+		const copy = this.bannerEl.createDiv({ cls: 'bfm-browser-banner-copy' });
+		copy.createEl('strong', {
+			text: isDirect ? 'Compatibility mode' : 'This page may not have loaded correctly',
+		});
+		copy.createSpan({
+			text: isDirect
+				? `The page runs at its own address on ${hostOf(tab.url)}. Downloads and media capture are unavailable here.`
+				: tab.problem || 'The page rendered no visible content.',
+		});
+		const actions = this.bannerEl.createDiv({ cls: 'bfm-browser-banner-actions' });
+		const primary = actions.createEl('button', {
+			cls: 'bfm-browser-banner-button',
+			text: isDirect ? 'Use download mode' : 'Try compatibility mode',
+		});
+		primary.addEventListener('click', () => {
+			const host = hostOf(tab.url);
+			this.plugin.browserEngine.setSiteMode(host, isDirect ? 'proxy' : 'direct');
+			void this.loadTab(tab);
+		});
+		if (!isDirect) {
+			const reload = actions.createEl('button', { cls: 'bfm-browser-banner-button', text: 'Reload' });
+			reload.addEventListener('click', () => void this.loadTab(tab));
+		}
+		const external = actions.createEl('button', {
+			cls: 'bfm-browser-banner-button',
+			text: 'Open in system browser',
+		});
+		external.addEventListener('click', () => this.plugin.browserEngine.openExternal(tab.url));
+		const close = this.bannerEl.createEl('button', {
+			cls: 'bfm-browser-banner-close',
+			attr: { 'aria-label': 'Dismiss browser message' },
+		});
+		setIcon(close, 'x');
+		close.addEventListener('click', () => {
+			tab.bannerDismissed = true;
+			this.renderBanner();
+		});
 	}
 
 	private renderDownloads(): void {
@@ -653,13 +827,5 @@ export class BrowserView extends ItemView {
 			setIcon(cancel, 'x');
 			cancel.addEventListener('click', () => this.plugin.browserDownloads.cancel(job.id));
 		}
-	}
-}
-
-function hostOf(url: string): string {
-	try {
-		return new URL(url).hostname || url;
-	} catch {
-		return url;
 	}
 }

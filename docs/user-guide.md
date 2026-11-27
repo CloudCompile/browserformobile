@@ -67,8 +67,15 @@ An HLS playlist (`.m3u8`) is downloaded and converted to MP4. Encrypted and
 fragmented HLS streams are not supported; the browser says so instead of saving
 a file that will not play.
 
+When a site allows embedding, the browser can load it in **compatibility mode**
+at its own address. That gives the page its real cookies, modules and scripts,
+but the download and media controls cannot inspect it. A banner explains the
+mode and offers **Use download mode**; the page menu remembers the choice for
+that site. If a page comes up blank, the banner offers **Try compatibility mode**
+and **Open in system browser** instead of leaving you with an empty page.
+
 The browser is not a full engine. Pages that need service workers, extension
-APIs, cross-origin frames or their original player script may not work.
+APIs, anti-bot challenges, passkeys or DRM may still need the system browser.
 
 > 📱 **Screenshot placeholder** — *the browser with two tabs, a page and the
 > media picker open.*
