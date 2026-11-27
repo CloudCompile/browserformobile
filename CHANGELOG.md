@@ -13,6 +13,33 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.8.5 — 2026-11-27
+
+The finder pages honestly, folds the 18+ episode feed into one card per series,
+and searches titles from its front page.
+
+- **The pager tells the truth.** Native listings reported `currentPage + 1`
+  pages and `hasNextPage: true` on every page, so the finder printed a count it
+  could not reach and left **Next** enabled forever. It now shows a count only
+  from a source that reports one, stops when a page comes back empty, and hides
+  the pager on a single-page list.
+- **New episodes are cards, not duplicates.** The 18+ new-episodes feed lists one
+  row per episode; rows now fold into one card per series showing the newest
+  episode number, the merge count, and the source score.
+- **Scores and episode numbers survive.** Catalogue rows carry `rating`, and the
+  18+ feed carries `episodeNumber` (or a label/slug to parse); both now map into
+  `SeriesSummary` and appear on the card.
+- **The finder searches.** A title search on the front page pages through the
+  catalogue and the opted-in source, and the genre directory has a filter for its
+  long list.
+- **Paging cannot be overtaken.** Each load takes a ticket, so a slow answer for
+  page 2 cannot paint under the heading for page 3 or over a source switch.
+  Failures show the API's message, and focus returns to the pager after a page
+  change.
+- **One 18+ switch.** The finder tab and the downloader search now share the
+  `showAdultContent` setting; an install that had the finder opt-in on migrates
+  to it. Browse listings also cache for five minutes, matching the API.
+
 ## 5.7.5 — 2026-11-27
 
 The browser identifies as the device it runs on, and the 18+ catalogue's own
