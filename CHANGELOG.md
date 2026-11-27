@@ -13,6 +13,24 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.6.5 — 2026-11-27
+
+Every screen is rebuilt around a cover block, and artwork that will not load no
+longer leaves an empty frame.
+
+- **One cover system.** Details and pre-download pages open with a poster-derived
+  backdrop, poster, title, chips and headline numbers, then panels below. The
+  finder, downloader and recommendation cards use the same visual language.
+- **Artwork fails gracefully.** A missing poster, or one whose URL refuses to
+  load, becomes a title-hued placeholder with the title's initials. The same art
+  and fallback drive the hero backdrop.
+- **The cover carries the synopsis.** The 18+ source's real synopsis is read from
+  its own series page instead of the generated API blurb, and fills into the
+  cover when a cached page opens before that read finishes.
+- **Actions move into the cover.** Download and episode buttons live in the hero.
+  Details pages split story and cast from catalogue details, music and production
+  in two columns on wide modals, and one column on phones.
+
 ## 5.5.5 — 2026-11-27
 
 The browser now handles the module-based web, keeps sessions, and can hand a
