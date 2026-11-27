@@ -13,6 +13,25 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.9.5 — 2026-11-27
+
+The downloader and the catalogue cache now run the same code as the web app, so a
+fix in one reaches the other. Nothing changes in the plugin's settings, vault or
+downloaded files.
+
+- **One download loop.** The playlist parser, the CDN request headers, the server
+  ordering and the 429 back-off are shared with the web downloader. The
+  behaviour is the one measured on the live CDN: a rate limit halves the
+  concurrency, holds a ceiling, and climbs back one worker per cooldown.
+- **One cache policy.** Search, info, episodes, stream and browse TTLs, in-flight
+  de-duplication and the "never persist a stream URL" rule live in one place. A
+  stream URL is still memory-only, so a reloaded vault cannot restore an expired
+  link.
+- **Bundled, not installed.** `main.js` is still a single self-contained file
+  with no extra modules to resolve. The shared code is generated into
+  `vendor/` and inlined by the build; `npm test` fails if that copy drifts from
+  the source.
+
 ## 5.8.5 — 2026-11-27
 
 The finder pages honestly, folds the 18+ episode feed into one card per series,

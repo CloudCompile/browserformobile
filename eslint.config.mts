@@ -17,6 +17,9 @@ export default defineConfig(
 		'tsconfig.json',
 		// Vendored third-party engine, minified and outside our TS project.
 		'src/vendor',
+		// Generated copies of packages/* (npm run vendor); the drift check in
+		// `npm test` is what verifies them, not the linter.
+		'vendor',
 	]),
 	{
 		languageOptions: {
@@ -25,7 +28,9 @@ export default defineConfig(
 			},
 			parserOptions: {
 				projectService: {
-					allowDefaultProject: ['eslint.config.mts', 'manifest.json'],
+					// Paths resolve from tsconfigRootDir. The build scripts run under
+					// Node and are outside the TS project, which includes only src/.
+					allowDefaultProject: ['eslint.config.mts', 'manifest.json', 'scripts/*.mjs'],
 				},
 				tsconfigRootDir: import.meta.dirname,
 				extraFileExtensions: ['.json'],
@@ -33,6 +38,23 @@ export default defineConfig(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		// Build scripts, not shipped code: Node built-ins and console output are
+		// correct here even though they would be wrong inside the plugin itself.
+		files: ['scripts/*.mjs'],
+		rules: {
+			'obsidianmd/no-nodejs-modules': 'off',
+			'obsidianmd/rule-custom-message': 'off',
+			'no-undef': 'off',
+		},
+	},
+	{
+		// `packages/*` are linked into this app by path and inlined into main.js at
+		// build time; they are deliberately not dependencies, because the mirror
+		// has neither the packages nor a workspace to resolve them from.
+		files: ['src/**/*.ts'],
+		rules: { 'import/no-extraneous-dependencies': 'off' },
+	},
 	{
 		// This file exists to expose the device's user-agent string; the rule's
 		// purpose (choosing an OS path) still uses Platform, not the UA.

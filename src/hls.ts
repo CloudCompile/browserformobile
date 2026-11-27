@@ -93,14 +93,6 @@ const TRANSIENT_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const BACKOFF_BASE_MS = 750;
 const BACKOFF_MAX_MS = 15000;
 /**
- * How long to wait after a 429 before letting concurrency creep back up. The
- * limit is a sustained-rate one, so recovering instantly just earns another 429.
- */
-const RATE_LIMIT_COOLDOWN_MS = 5000;
-/** How often a worker parked by the concurrency gate re-checks the target. */
-const GATE_POLL_MS = 50;
-
-/**
  * Exponential backoff with jitter. The jitter matters because several segment
  * workers retry at the same moment: without it they stay in lockstep and hammer
  * a rate-limited server in bursts.

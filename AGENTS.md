@@ -659,7 +659,9 @@ path.
   check the response status, not just bytes.
   The gate in `downloadSegmentsStreaming` is a *target*, not a fixed pool: on a
   429 it **halves** the target and sets `ceiling = target - 1`, then creeps back
-  up one worker per `RATE_LIMIT_COOLDOWN_MS` and stops at the ceiling. Halving
+  up one worker per `cooldownMs` and stops at the ceiling. The gate itself
+  (`shedConcurrency` / `nextGate`) lives in `packages/hls`, shared with the web
+  downloader, so both apps back off identically. Halving
   converges in a few rounds where the old one-step shed took minutes, and the
   ceiling is what stops the pool oscillating back into the limit. The default
   `downloadSegmentConcurrency` is 6; anything above ~6 is now safe (it no longer
