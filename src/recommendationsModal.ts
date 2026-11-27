@@ -1,4 +1,5 @@
 import { App, Modal, Notice, setIcon } from 'obsidian';
+import { createCover } from './covers';
 import type { Recommendation } from './recommend';
 import { describeBecause } from './recommendService';
 
@@ -258,15 +259,7 @@ export class RecommendationsModal extends Modal {
                 card.setAttribute('aria-label', `${item.title} — ${describeBecause(item)}`);
 
                 const poster = card.createDiv({ cls: 'bfm-recs-poster' });
-                if (item.image) {
-                        poster.createEl('img', {
-                                cls: 'bfm-recs-poster-image',
-                                attr: { src: item.image, alt: '', loading: 'lazy' },
-                        });
-                } else {
-                        const placeholder = poster.createDiv({ cls: 'bfm-recs-poster-placeholder' });
-                        setIcon(placeholder, 'film');
-                }
+                createCover(poster, item.image, item.title, { imageClass: 'bfm-recs-poster-image' });
 
                 const body = card.createDiv({ cls: 'bfm-recs-card-body' });
                 body.createDiv({ cls: 'bfm-recs-card-title', text: item.title });

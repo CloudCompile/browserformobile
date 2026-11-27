@@ -1,6 +1,6 @@
 import { Notice, Platform, Plugin, WorkspaceLeaf } from 'obsidian';
 import { AnimeCache, type CachePersistence } from './animeCache';
-import { setAnimeCache, setMetadataSink } from './animeApi';
+import { setAnimeCache, setAnimeDebugHook, setMetadataSink } from './animeApi';
 import { MetadataStore } from './metadataStore';
 import {
         DownloadManager,
@@ -38,7 +38,14 @@ import {
         type CuratorTool,
 } from './llm';
 import { curateInProcess, WllamaRuntime, type LocalRuntime } from './llmLocal';
-import { loadPreview, collectPosters, searchSeries, type AnimePreview, type SeriesSummary } from './animeApi';
+import {
+	loadPreview,
+	loadSeriesDetails,
+	collectPosters,
+	searchSeries,
+	type AnimePreview,
+	type SeriesSummary,
+} from './animeApi';
 import {
 	isDismissed,
 	pushDismissed,
@@ -301,6 +308,7 @@ export default class AnimePlugin extends Plugin {
 	 * fire-and-forget, so it must never await the save.
 	 */
 	private installMetadataSink(): void {
+		setAnimeDebugHook((message, details) => this.debug(message, details));
 		setMetadataSink((seriesId, payload) => {
 			this.metadataStore.set(seriesId, payload);
 			if (this.metadataSaveTimer !== null) window.clearTimeout(this.metadataSaveTimer);
@@ -447,6 +455,13 @@ export default class AnimePlugin extends Plugin {
 				// catalogue moved on.
 				initialPreview: (this.metadataStore.get(name)?.payload ?? null) as AnimePreview | null,
 				loadRecommendations: (seed) => this.recommendFor(seed),
+				// Only the 18+ source reaches this: its API record carries no real
+				// description, so the synopsis is read from its own series page.
+				// The details page calls it only when the catalogue had none.
+				loadSynopsis: () =>
+					loadSeriesDetails(this.settings.animeApiBase, name, { provider }).then(
+						(details) => details.preview.detail.synopsis ?? null,
+					),
 			},
 			{
 				onDownload: (picked, search) =>

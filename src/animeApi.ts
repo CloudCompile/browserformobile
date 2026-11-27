@@ -1,4 +1,6 @@
-import { requestUrl } from 'obsidian';
+import { loadProviderSynopsis } from './providerPage';
+import {
+ requestUrl } from 'obsidian';
 import type { AnimeCache } from './animeCache';
 
 /**
@@ -28,6 +30,13 @@ export function setAnimeCache(cache: AnimeCache | null): void {
  * offline rendering, with no extra request anywhere.
  */
 let metadataSink: ((seriesId: string, payload: AnimePreview) => void) | null = null;
+/** Where diagnostics go, so a page the plugin cannot read is explainable. */
+let debugHook: ((message: string, details?: unknown) => void) | null = null;
+
+/** Route this module's diagnostics to the plugin's debug log. */
+export function setAnimeDebugHook(hook: ((message: string, details?: unknown) => void) | null): void {
+        debugHook = hook;
+}
 
 export function setMetadataSink(sink: ((seriesId: string, payload: AnimePreview) => void) | null): void {
         metadataSink = sink;
@@ -852,6 +861,7 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
                 }
                 const episodes = asNumber(data.episodes);
                 const year = asNumber(data.year);
+                const description = asString(data.description) || null;
                 return {
                         adultContent: true,
                         id: asString(data.slug) || seriesId,
@@ -865,8 +875,13 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
                         score: null,
                         genres: Array.isArray(data.genres) ? data.genres.map((g) => String(g)).filter(Boolean) : [],
                         studios: Array.isArray(data.studios) ? data.studios.map((s) => String(s)).filter(Boolean) : [],
-                        overview: readableSynopsis(asString(data.description)),
-                        metadata: {},
+                        overview: readableSynopsis(description),
+                        // The page URL and raw description, so the details loader can
+                        // read the source's real synopsis when it wants one.
+                        metadata: {
+                                ...(asString(data.url) ? { pageUrl: asString(data.url) } : {}),
+                                ...(description && isProviderTemplate(description) ? { description } : {}),
+                        },
                         seasons: [],
                         recommended: [],
                         related: {},
@@ -1738,14 +1753,24 @@ async function loadAdultDetails(base: string, series: string, withEpisodes: bool
         }
         if (!info) throw new AnimeApiError('The anime API returned no details for this series.');
 
-        const episodes = withEpisodes
-                ? await loadEpisodes(base, info.id, ADULT_PROVIDER)
-                                .then((list) => list.episodes)
-                                .catch(() => null)
-                : null;
+        const [episodes, pageSynopsis] = await Promise.all([
+                withEpisodes
+                        ? loadEpisodes(base, info.id, ADULT_PROVIDER)
+                                        .then((list) => list.episodes)
+                                        .catch(() => null)
+                        : Promise.resolve(null),
+                // The provider's API record has no real description, only the
+                // generated blurb the plugin refuses to show. The source's own
+                // page carries the actual synopsis, so that is where it comes from.
+                loadProviderSynopsis(
+                        typeof info.metadata.pageUrl === 'string' ? info.metadata.pageUrl : null,
+                        (message, details) => debugHook?.(message, details),
+                ),
+        ]);
         // The provider's own episode count can lag its list (it reported 3 for a
         // four-episode series); the list is authoritative when it is present.
         if (episodes && episodes.length > 0) info = { ...info, episodeCount: episodes.length };
+        if (pageSynopsis) info = { ...info, overview: pageSynopsis };
 
         const preview = previewFromInfo(info);
         metadataSink?.(preview.detail.title?.trim() || series, preview);

@@ -7,8 +7,22 @@ import {
         type SeriesSummary,
 } from './animeApi';
 import type { Recommendation } from './recommend';
+import { createCover } from './covers';
 import { describeBecause } from './recommendService';
-import { factsFor, renderHero, renderPreviewBlocks, section } from './seriesDetails';
+import {
+        chipsFor,
+        eyebrowFor,
+        factsFor,
+        renderCast,
+        renderFacts,
+        renderHero,
+        renderLinks,
+        renderMusic,
+        renderProduction,
+        renderStaff,
+        section,
+        splitFacts,
+} from './seriesDetails';
 
 export interface DetailsCallbacks {
         /**
@@ -44,6 +58,13 @@ export interface DetailsModalOptions {
         initialPreview?: AnimePreview | null;
         /** Called when recommendations should be produced for this series. */
         loadRecommendations?: (seed: string) => Promise<Recommendation[]>;
+        /**
+         * The series' synopsis from its source page, for a series whose API
+         * record has no real description (the 18+ source). Asked only when the
+         * catalogue answer carried none, and the text is filled into the cover
+         * when it arrives.
+         */
+        loadSynopsis?: () => Promise<string | null>;
 }
 
 /**
@@ -54,6 +75,12 @@ export interface DetailsModalOptions {
  * when it does not. The 18+ provider's generated blurb — the same sentence on
  * every series — is never shown; the facts grid and the source's own episode
  * list carry the real information.
+ *
+ * The page is built as a cover followed by panels: a hero with the poster art
+ * behind the title, its numbers across the bottom, and the download action in
+ * the hero itself. Below it the record splits into two columns on a wide modal
+ * (story and cast on the left, music and production on the right) and falls
+ * back to one column on a phone.
  *
  * Blocks are rendered only when they have content, because a title with no
  * themes or no trailer is normal and an empty heading reads like a bug.
@@ -68,6 +95,8 @@ export class DetailsModal extends Modal {
         private recommendations: Recommendation[] = [];
         private recommendationsLoading = false;
         private bodyEl!: HTMLElement;
+        /** Where a late-arriving synopsis goes, once the hero is on screen. */
+        private synopsisSlot: ((text: string | null) => void) | null = null;
 
         constructor(
                 app: App,
@@ -157,16 +186,65 @@ export class DetailsModal extends Modal {
 
                 const detail = this.preview.detail;
                 this.titleEl.setText(detail.title ?? this.options.series);
-                renderHero(this.bodyEl, {
+                const facts = splitFacts(factsFor(detail));
+                const hero = renderHero(this.bodyEl, {
                         poster: detail.image,
                         title: detail.title ?? this.options.series,
                         subtitle: detail.titleJapanese,
                         adult: this.isAdult(),
-                        facts: factsFor(detail),
+                        eyebrow: eyebrowFor(detail),
+                        facts: facts.hero,
+                        chips: chipsFor(detail),
+                        synopsis: detail.synopsis,
                 });
-                renderPreviewBlocks(this.bodyEl, this.preview);
-                this.renderDownloadAction();
+                // Wrapped, not passed by reference: the slot is a closure, and the
+                // modal only ever calls it.
+                this.synopsisSlot = (text: string | null) => hero.setSynopsis(text);
+                this.renderDownloadAction(hero.actions);
+                // The cover may have been painted from the kept copy while the
+                // 18+ source's page is still being read for its real synopsis.
+                // The text lands later into the same slot, so nothing reloads.
+                void this.fillLateSynopsis();
+
+                // Two columns when there is enough on each side: the story and
+                // the people on the left, the record's catalogue details on the
+                // right. A page missing one side collapses to a single column
+                // rather than leaving an empty gutter.
+                const layout = this.bodyEl.createDiv({ cls: 'bfm-details-layout' });
+                const main = layout.createDiv({ cls: 'bfm-details-col is-main' });
+                const side = layout.createDiv({ cls: 'bfm-details-col is-side' });
+                // The synopsis is the cover's own paragraph, never a second panel.
+                renderCast(main, this.preview.characters);
+                renderStaff(main, this.preview.staff);
+                if (facts.rest.length > 0) {
+                        renderFacts(section(side, 'Details', 'info'), facts.rest);
+                }
+                renderMusic(side, this.preview.themes);
+                renderProduction(side, detail);
+                renderLinks(side, detail);
+                if (main.childElementCount === 0) main.remove();
+                if (side.childElementCount === 0) side.remove();
+                if (layout.childElementCount < 2) layout.addClass('is-single');
+
                 this.renderRecommendations();
+        }
+
+        /**
+         * Put a synopsis into the hero once its source has answered.
+         *
+         * Only the first paint from the kept copy needs this: the read of the
+         * source's page resolves after the details load does, so a page painted
+         * from cached metadata has its cover before its synopsis. A live load
+         * has the text already and this is a no-op.
+         */
+        private async fillLateSynopsis(): Promise<void> {
+                const load = this.options.loadSynopsis;
+                if (!load || this.preview?.detail.synopsis) return;
+                const slot = this.synopsisSlot;
+                this.bodyEl.querySelector('.bfm-hero')?.addClass('is-reading-synopsis');
+                const text = await load().catch(() => null);
+                if (!text || !slot || this.synopsisSlot !== slot) return;
+                slot(text);
         }
 
         /** True when the details came from the opt-in 18+ source. */
@@ -178,11 +256,11 @@ export class DetailsModal extends Modal {
         }
 
         /** The download hand-off, carrying the source and id with the title. */
-        private renderDownloadAction(): void {
+        private renderDownloadAction(actions: HTMLElement): void {
                 if (!this.callbacks.onDownload) return;
-                const actions = section(this.bodyEl, 'Download', 'download');
-                const row = actions.createDiv({ cls: 'bfm-details-actions' });
-                const button = row.createEl('button', { cls: 'mod-cta', text: 'Download episodes' });
+                const button = actions.createEl('button', { cls: 'mod-cta bfm-hero-primary' });
+                setIcon(button.createSpan({ cls: 'bfm-hero-primary-icon' }), 'download');
+                button.createSpan({ text: 'Download episodes' });
                 button.addEventListener('click', () => {
                         this.callbacks.onDownload?.(this.seriesSummary(), !(this.details?.synthesized ?? false));
                         this.close();
@@ -241,15 +319,12 @@ export class DetailsModal extends Modal {
                         // The poster is what makes the section scannable: a column
                         // of titles with a reason each reads as a list of claims,
                         // while a card with artwork reads as a shelf.
+                        // A recommendation's poster can be missing or refuse to load;
+                        // the shelf keeps its shape either way.
                         const poster = card.createDiv({ cls: 'bfm-details-rec-poster' });
-                        if (item.image) {
-                                poster.createEl('img', {
-                                        cls: 'bfm-details-rec-poster-image',
-                                        attr: { src: item.image, alt: '', loading: 'lazy' },
-                                });
-                        } else {
-                                setIcon(poster.createDiv({ cls: 'bfm-details-rec-poster-placeholder' }), 'film');
-                        }
+                        createCover(poster, item.image, item.title, {
+                                imageClass: 'bfm-details-rec-poster-image',
+                        });
 
                         const body = card.createDiv({ cls: 'bfm-details-rec-body' });
                         body.createDiv({ cls: 'bfm-details-rec-title', text: item.title });

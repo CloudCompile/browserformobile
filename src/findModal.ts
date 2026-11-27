@@ -1,4 +1,5 @@
 import { App, Modal, setIcon } from 'obsidian';
+import { createCover } from './covers';
 import {
         ADULT_PROVIDER,
         browseGenre,
@@ -426,23 +427,13 @@ export class FindModal extends Modal {
                         attr: { role: 'button', tabindex: '0', 'aria-label': `Open ${title}` },
                 });
 
+                // A poster that is missing or refuses to load still leaves a card
+                // with its title, badges and meta: the art is an enhancement.
                 const poster = card.createDiv({ cls: 'bfm-find-poster-wrap' });
-                const placeholder = poster.createDiv({ cls: 'bfm-find-poster-placeholder' });
-                setIcon(placeholder, 'film');
-                if (series.poster) {
-                        const image = poster.createEl('img', {
-                                cls: 'bfm-find-poster',
-                                attr: {
-                                        src: series.poster,
-                                        alt: '',
-                                        loading: 'lazy',
-                                        decoding: 'async',
-                                },
-                        });
-                        if (image.complete && image.naturalWidth > 0) image.addClass('is-loaded');
-                        else image.addEventListener('load', () => image.addClass('is-loaded'));
-                        image.addEventListener('error', () => image.remove());
-                }
+                createCover(poster, series.poster, title, {
+                        imageClass: 'bfm-find-poster',
+                        fallbackClass: 'bfm-find-poster-fallback',
+                });
 
                 const badges = poster.createDiv({ cls: 'bfm-find-badges' });
                 if (series.showType && series.showType !== 'Unknown') {

@@ -12,7 +12,18 @@ import {
         type SeriesDetails,
         type SeriesSummary,
 } from './animeApi';
-import { factsFor, renderHero, renderPreviewBlocks, renderSynopsis, section } from './seriesDetails';
+import { createCover } from './covers';
+import {
+        chipsFor,
+        eyebrowFor,
+        factsFor,
+        renderFacts,
+        renderHero,
+        renderPreviewBlocks,
+        renderSynopsis,
+        section,
+        splitFacts,
+} from './seriesDetails';
 import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat, type SeriesPreference, type SeriesPreferenceMap } from './downloader';
 import { formatSpeed } from './hls';
 import { externalStorageAvailable } from './destination';
@@ -256,12 +267,8 @@ export class DownloadModal extends Modal {
                 const list = this.bodyEl.createDiv({ cls: 'bfm-dl-results' });
                 for (const series of this.series) {
                         const card = list.createDiv({ cls: 'bfm-dl-result' });
-                        if (series.poster) {
-                                card.createEl('img', {
-                                        cls: 'bfm-dl-poster',
-                                        attr: { src: series.poster, alt: '', loading: 'lazy' },
-                                });
-                        }
+                        const cover = card.createDiv({ cls: 'bfm-dl-poster-wrap' });
+                        createCover(cover, series.poster, series.title, { imageClass: 'bfm-dl-poster' });
                         const info = card.createDiv({ cls: 'bfm-dl-result-info' });
                         info.createDiv({ cls: 'bfm-dl-result-title', text: series.title });
                         if (series.adultContent) {
@@ -366,15 +373,44 @@ export class DownloadModal extends Modal {
                         !/^episode\s*\d+$/i.test(japanese.trim())
                                 ? japanese
                                 : null;
-                renderHero(page, {
+                const facts = splitFacts(
+                        detail ? factsFor(detail, this.details?.episodes?.length ?? null) : [],
+                );
+                const hero = renderHero(page, {
                         poster: detail?.image ?? info?.poster ?? series.poster ?? null,
                         title,
                         subtitle,
                         adult: Boolean(info?.adultContent ?? series.adultContent),
-                        facts: detail ? factsFor(detail, this.details?.episodes?.length ?? null) : [],
+                        eyebrow: detail ? eyebrowFor(detail) : '',
+                        facts: facts.hero,
+                        chips: detail ? chipsFor(detail) : [],
+                        synopsis: detail?.synopsis ?? null,
+                });
+                if (facts.rest.length > 0) {
+                        renderFacts(section(page, 'Details', 'info'), facts.rest);
+                }
+                // The page's own action lives in the hero, where the title and the
+                // numbers already are; a page whose primary button sits below the
+                // fold reads as an article, not as something to act on.
+                const choose = hero.actions.createEl('button', { cls: 'mod-cta bfm-hero-primary' });
+                setIcon(choose.createSpan({ cls: 'bfm-hero-primary-icon' }), 'download');
+                choose.createSpan({
+                        text:
+                                this.details?.episodes && this.details.episodes.length > 0
+                                        ? `Choose from ${this.details.episodes.length} episodes`
+                                        : 'View episodes',
+                });
+                choose.addEventListener('click', () => void this.loadEpisodesForSelected());
+                const back = hero.actions.createEl('button', {
+                        cls: 'bfm-hero-ghost',
+                        text: 'Back to search',
+                });
+                back.addEventListener('click', () => {
+                        this.stage = 'search';
+                        this.render();
                 });
 
-                if (preview) renderPreviewBlocks(page, preview);
+                if (preview) renderPreviewBlocks(page, preview, { chips: false });
                 else if (info?.overview) renderSynopsis(page, info.overview);
 
                 // Seasons (clickable to open that season's detail page).
@@ -384,12 +420,10 @@ export class DownloadModal extends Modal {
                         const list = sec.createDiv({ cls: 'bfm-dl-results' });
                         for (const season of info.seasons) {
                                 const card = list.createDiv({ cls: 'bfm-dl-result' });
-                                if (season.poster) {
-                                        card.createEl('img', {
-                                                cls: 'bfm-dl-poster',
-                                                attr: { src: season.poster, alt: '', loading: 'lazy' },
-                                        });
-                                }
+                                const cover = card.createDiv({ cls: 'bfm-dl-poster-wrap' });
+                                createCover(cover, season.poster, season.title ?? season.id, {
+                                        imageClass: 'bfm-dl-poster',
+                                });
                                 const inf = card.createDiv({ cls: 'bfm-dl-result-info' });
                                 inf.createDiv({ cls: 'bfm-dl-result-title', text: season.title || season.id });
                                 const m: string[] = [];
@@ -419,12 +453,8 @@ export class DownloadModal extends Modal {
                         const list = sec.createDiv({ cls: 'bfm-dl-results' });
                         for (const rec of info.recommended.slice(0, 8)) {
                                 const card = list.createDiv({ cls: 'bfm-dl-result' });
-                                if (rec.poster) {
-                                        card.createEl('img', {
-                                                cls: 'bfm-dl-poster',
-                                                attr: { src: rec.poster, alt: '', loading: 'lazy' },
-                                        });
-                                }
+                                const cover = card.createDiv({ cls: 'bfm-dl-poster-wrap' });
+                                createCover(cover, rec.poster, rec.title, { imageClass: 'bfm-dl-poster' });
                                 const inf = card.createDiv({ cls: 'bfm-dl-result-info' });
                                 inf.createDiv({ cls: 'bfm-dl-result-title', text: rec.title });
                                 card.addEventListener('click', () => void this.openSeries(rec));
@@ -459,20 +489,6 @@ export class DownloadModal extends Modal {
                         this.renderDetailEpisodes(page, this.details.episodes);
                 }
 
-                const actions = page.createDiv({ cls: 'bfm-dl-actions' });
-                const viewEpisodes = actions.createEl('button', {
-                        cls: 'mod-cta',
-                        text:
-                                this.details?.episodes && this.details.episodes.length > 0
-                                        ? `Choose from ${this.details.episodes.length} episodes`
-                                        : 'View episodes',
-                });
-                viewEpisodes.addEventListener('click', () => void this.loadEpisodesForSelected());
-                const back = actions.createEl('button', { text: 'Back to search' });
-                back.addEventListener('click', () => {
-                        this.stage = 'search';
-                        this.render();
-                });
         }
 
         /** The episode strip on a details page, with each card opening the picker. */

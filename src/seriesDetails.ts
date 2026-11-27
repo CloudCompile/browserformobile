@@ -1,15 +1,20 @@
 /**
  * The blocks a full series details page is made of.
  *
- * Two pages render the same catalogue answer: the library's details page and
- * the downloader's pre-download details page. Keeping the blocks here means a
+ * Two pages render the same catalogue answer: the details page itself and the
+ * downloader's pre-download page. Keeping the blocks here means a
  * provider-agnostic page in both places, and one place to fix when a block
  * reads badly on a phone.
+ *
+ * The layout is deliberately cinematic: a poster-derived backdrop, the poster,
+ * the title block with its chips and numbers, and a slot for the page's primary
+ * action. Everything below it is a set of panels.
  *
  * No state and no requests: callers pass the `AnimePreview` they already have.
  */
 
 import { setIcon } from 'obsidian';
+import { createCover } from './covers';
 import type {
         AnimePreview,
         PreviewCharacter,
@@ -21,6 +26,12 @@ import type {
 export interface DetailFact {
         label: string;
         value: string;
+}
+
+/** A genre, theme or demographic pill. */
+export interface DetailChip {
+        text: string;
+        cls: string;
 }
 
 /** A number with thousands separators, or an em dash when absent. */
@@ -58,6 +69,39 @@ export function factsFor(detail: PreviewDetail, episodesOverride?: number | null
         return facts;
 }
 
+/** Genres, themes and demographics as one ordered pill list. */
+export function chipsFor(detail: PreviewDetail): DetailChip[] {
+        return [
+                ...detail.genres.map((genre) => ({ text: genre, cls: 'is-genre' })),
+                ...detail.themes.map((theme) => ({ text: theme, cls: 'is-theme' })),
+                ...detail.demographics.map((demo) => ({ text: demo, cls: 'is-demo' })),
+        ];
+}
+
+/**
+ * The one-line context above the title: the shape of the show, when it aired,
+ * and whether it is finished. Joined from whatever the record actually has.
+ */
+export function eyebrowFor(detail: PreviewDetail): string {
+        const parts: string[] = [];
+        if (detail.type) parts.push(detail.type);
+        if (detail.year !== null) parts.push(String(detail.year));
+        if (detail.status) parts.push(detail.status);
+        if (detail.rating) parts.push(detail.rating);
+        return parts.join('  ·  ');
+}
+
+/**
+ * Split the facts into the handful the cover shows and the rest.
+ *
+ * A cover is a poster and a few numbers, not a table: the first five facts sit
+ * beside the title where they are read at a glance, and everything else goes
+ * into a Details panel further down the page.
+ */
+export function splitFacts(facts: DetailFact[], limit = 5): { hero: DetailFact[]; rest: DetailFact[] } {
+        return { hero: facts.slice(0, limit), rest: facts.slice(limit) };
+}
+
 /** Append the facts grid to a host. */
 export function renderFacts(host: HTMLElement, facts: DetailFact[]): void {
         if (facts.length === 0) return;
@@ -69,7 +113,7 @@ export function renderFacts(host: HTMLElement, facts: DetailFact[]): void {
         }
 }
 
-/** A titled section with an icon. */
+/** A titled panel with an icon. */
 export function section(host: HTMLElement, title: string, icon: string): HTMLElement {
         const element = host.createDiv({ cls: 'bfm-details-section' });
         const header = element.createDiv({ cls: 'bfm-details-section-title' });
@@ -85,41 +129,133 @@ export interface HeroOptions {
         /** Show the 18+ badge. */
         adult?: boolean;
         facts: DetailFact[];
+        /** Genres and themes, shown inside the hero under the title. */
+        chips?: DetailChip[];
+        /** The small line above the title. */
+        eyebrow?: string;
+        /** The synopsis under the numbers, when the caller already has it. */
+        synopsis?: string | null;
+}
+
+export interface HeroElements {
+        hero: HTMLElement;
+        /** The row the caller puts its primary action into. */
+        actions: HTMLElement;
+        /**
+         * Show the text that was missing when the hero was first drawn.
+         *
+         * A page painted from the kept metadata copy has no synopsis while
+         * the 18+ source's page is being read (that read is a network round
+         * trip). Rather than repaint the whole page — which would reload every
+         * poster — the hero holds a synopsis slot that the caller fills once
+         * the text arrives.
+         */
+        setSynopsis(text: string | null): void;
 }
 
 /**
- * The poster and the headline facts.
+ * The poster, the title block and the headline numbers, over a blurred copy of
+ * the poster.
  *
- * Facts sit beside the poster rather than under it: on a phone the two columns
- * together are still one screen, while a poster followed by a full-width grid
- * pushes the synopsis below the fold.
+ * The backdrop is what makes the page read as a title page rather than a form:
+ * a 132px poster alone on a panel is a thumbnail, while the same art filling
+ * the width behind it is a cover. It is a decorative duplicate of the poster
+ * image (already in the cache, so no extra request) and is hidden from
+ * assistive tech.
+ *
+ * Returns the action row so the caller can place its own buttons, because the
+ * primary action differs per page: "Download episodes" on the details page,
+ * "Choose episodes" on the downloader's.
  */
-export function renderHero(host: HTMLElement, options: HeroOptions): void {
-        if (!options.poster && options.facts.length === 0 && !options.title) return;
-        const hero = host.createDiv({ cls: 'bfm-details-hero' });
-        if (options.poster) {
-                hero.createEl('img', {
-                        cls: 'bfm-details-poster',
-                        attr: { src: options.poster, alt: '', loading: 'lazy' },
+export function renderHero(host: HTMLElement, options: HeroOptions): HeroElements {
+        const hero = host.createDiv({ cls: 'bfm-hero' });
+
+        // The cover is whatever actually loads: a poster URL that fails (a moved
+        // path, a hotlink-protected CDN) or is missing falls back to a drawn
+        // placeholder, so a page never opens to an empty frame.
+        const backdrop = hero.createDiv({ cls: 'bfm-hero-backdrop' });
+        createCover(backdrop, options.poster, options.title, {
+                imageClass: 'bfm-hero-backdrop-image',
+                fallbackClass: 'bfm-hero-backdrop-fallback',
+                variant: 'wide',
+        });
+        backdrop.createDiv({ cls: 'bfm-hero-scrim' });
+
+        const inner = hero.createDiv({ cls: 'bfm-hero-inner' });
+        const posterWrap = inner.createDiv({ cls: 'bfm-hero-poster-wrap' });
+        createCover(posterWrap, options.poster, options.title, {
+                imageClass: 'bfm-hero-poster',
+                fallbackClass: 'bfm-hero-poster-fallback',
+                variant: 'poster',
+        });
+
+        const info = inner.createDiv({ cls: 'bfm-hero-info' });
+        const eyebrowParts = (options.eyebrow ?? '')
+                .split('·')
+                .map((part) => part.trim())
+                .filter(Boolean);
+        if (eyebrowParts.length > 0) {
+                // One span per fact, so a wrap lands between two facts instead of
+                // breaking a value like "PG-13" across two lines.
+                const eyebrow = info.createDiv({ cls: 'bfm-hero-eyebrow' });
+                eyebrowParts.forEach((part, index) => {
+                        if (index > 0) eyebrow.createSpan({ cls: 'bfm-hero-eyebrow-sep', text: '·' });
+                        eyebrow.createSpan({ cls: 'bfm-hero-eyebrow-part', text: part });
                 });
         }
-        const info = hero.createDiv({ cls: 'bfm-details-hero-info' });
-        const titleRow = info.createDiv({ cls: 'bfm-details-hero-title-row' });
-        titleRow.createEl('h2', { cls: 'bfm-details-hero-title', text: options.title });
-        if (options.adult) titleRow.createSpan({ cls: 'bfm-dl-badge', text: '18+' });
+        const titleRow = info.createDiv({ cls: 'bfm-hero-title-row' });
+        titleRow.createEl('h2', { cls: 'bfm-hero-title', text: options.title });
+        if (options.adult) titleRow.createSpan({ cls: 'bfm-hero-badge', text: '18+' });
         if (options.subtitle && options.subtitle.trim() && options.subtitle.trim() !== options.title.trim()) {
-                info.createDiv({ cls: 'bfm-details-hero-sub', text: options.subtitle });
+                info.createDiv({ cls: 'bfm-hero-sub', text: options.subtitle });
         }
-        renderFacts(info, options.facts);
+
+        if (options.chips && options.chips.length > 0) {
+                const chips = info.createDiv({ cls: 'bfm-hero-chips' });
+                for (const chip of options.chips) {
+                        chips.createSpan({ cls: `bfm-hero-chip ${chip.cls}`, text: chip.text });
+                }
+        }
+
+        if (options.facts.length > 0) {
+                const stats = info.createDiv({ cls: 'bfm-hero-stats' });
+                for (const fact of options.facts) {
+                        const stat = stats.createDiv({ cls: 'bfm-hero-stat' });
+                        stat.createSpan({ cls: 'bfm-hero-stat-value', text: fact.value });
+                        stat.createSpan({ cls: 'bfm-hero-stat-label', text: fact.label });
+                }
+        }
+
+        // The synopsis sits in the cover, under the numbers: it is the one
+        // paragraph that convinces someone to watch, so it is part of the title
+        // page rather than another panel they have to scroll to.
+        let synopsisEl: HTMLElement | null = null;
+        const setSynopsis = (text: string | null): void => {
+                const trimmed = (text ?? '').trim();
+                if (!trimmed) {
+                        synopsisEl?.remove();
+                        synopsisEl = null;
+                        hero.removeClass('has-synopsis');
+                        return;
+                }
+                if (!synopsisEl) {
+                        synopsisEl = info.createDiv({ cls: 'bfm-hero-synopsis' });
+                        // Before the action row, so the buttons stay the last thing.
+                        info.insertBefore(synopsisEl, actions);
+                }
+                synopsisEl.setText(trimmed);
+                hero.addClass('has-synopsis');
+                hero.removeClass('is-reading-synopsis');
+        };
+
+        const actions = info.createDiv({ cls: 'bfm-hero-actions' });
+        if (options.synopsis) setSynopsis(options.synopsis);
+        return { hero, actions, setSynopsis };
 }
 
 /** Genres, themes and demographics as chips. */
 export function renderChips(host: HTMLElement, detail: PreviewDetail): void {
-        const chips: Array<{ text: string; cls: string }> = [
-                ...detail.genres.map((genre) => ({ text: genre, cls: 'is-genre' })),
-                ...detail.themes.map((theme) => ({ text: theme, cls: 'is-theme' })),
-                ...detail.demographics.map((demo) => ({ text: demo, cls: 'is-demo' })),
-        ];
+        const chips = chipsFor(detail);
         if (chips.length === 0) return;
         const row = host.createDiv({ cls: 'bfm-details-chips' });
         for (const chip of chips) {
@@ -147,13 +283,14 @@ export function renderMusic(host: HTMLElement, themes: PreviewTheme[]): void {
                 ['Other', other],
         ] as Array<[string, PreviewTheme[]]>) {
                 if (list.length === 0) continue;
-                element.createDiv({ cls: 'bfm-details-subtitle', text: `${label} (${list.length})` });
+                element.createDiv({ cls: 'bfm-details-subtitle', text: `${label} · ${list.length}` });
                 const ul = element.createEl('ul', { cls: 'bfm-details-music' });
                 for (const theme of list) {
                         const li = ul.createEl('li');
-                        li.createSpan({ cls: 'bfm-details-music-title', text: theme.title ?? 'Unknown' });
-                        if (theme.artist) li.createSpan({ cls: 'bfm-details-music-artist', text: ` — ${theme.artist}` });
-                        if (theme.episodes) li.createSpan({ cls: 'bfm-details-music-eps', text: ` (${theme.episodes})` });
+                        const copy = li.createDiv({ cls: 'bfm-details-music-copy' });
+                        copy.createSpan({ cls: 'bfm-details-music-title', text: theme.title ?? 'Unknown' });
+                        if (theme.artist) copy.createSpan({ cls: 'bfm-details-music-artist', text: theme.artist });
+                        if (theme.episodes) li.createSpan({ cls: 'bfm-details-music-eps', text: theme.episodes });
                 }
         }
 }
@@ -263,13 +400,25 @@ export function renderLinks(host: HTMLElement, detail: PreviewDetail): void {
         }
 }
 
+export interface PreviewBlockOptions {
+        /**
+         * Render the chips. Pages whose hero already carries them pass false, so
+         * the genres are not printed twice.
+         */
+        chips?: boolean;
+}
+
 /**
  * Everything the preview carries, in page order: synopsis, chips, music, cast,
  * staff, production and links. Empty blocks are skipped.
  */
-export function renderPreviewBlocks(host: HTMLElement, preview: AnimePreview): void {
+export function renderPreviewBlocks(
+        host: HTMLElement,
+        preview: AnimePreview,
+        options: PreviewBlockOptions = {},
+): void {
         renderSynopsis(host, preview.detail.synopsis);
-        renderChips(host, preview.detail);
+        if (options.chips !== false) renderChips(host, preview.detail);
         renderMusic(host, preview.themes);
         renderCast(host, preview.characters);
         renderStaff(host, preview.staff);
