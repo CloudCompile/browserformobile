@@ -13,6 +13,29 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.7.5 — 2026-11-27
+
+The browser identifies as the device it runs on, and the 18+ catalogue's own
+facts and stills now reach the page.
+
+- **The browser sends this device's user agent.** The automatic setting uses the
+  phone's real UA with WebView markers removed; a custom string still overrides
+  it, and an install carrying the old pinned Pixel UA migrates to automatic.
+- **Search engines stay proxied.** A direct frame is cross-origin, so a result
+  link escaped to the system browser; search engines now always open inside the
+  plugin, whatever the per-site choice says.
+- **Ordinary scripts run.** External `script[src]` files are inlined the way
+  module graphs already were, so a page whose shell and behaviour arrive as
+  classic scripts is no longer a styled corpse.
+- **Episode stills in the picker.** The 18+ source publishes one per episode; it
+  now shows in the episode list as well as the details strip, lazily and only
+  when the source actually has art.
+- **The 18+ record is read, not guessed.** The synopsis, status, score, views,
+  aired date and studios are mapped from the record instead of being recovered
+  from the generated blurb, the provider page is only read when the record has
+  no synopsis, a new-episodes listing joins the finder, and a single-file
+  `hls-mp4`/`r2-mp4` mirror is no longer parsed as a playlist.
+
 ## 5.6.5 — 2026-11-27
 
 Every screen is rebuilt around a cover block, and artwork that will not load no
