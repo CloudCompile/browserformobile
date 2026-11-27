@@ -1,0 +1,1319 @@
+import { App, Modal, Notice, Platform, Setting, setIcon } from 'obsidian';
+import {
+        ADULT_PROVIDER,
+        AnimeApiError,
+        isAdultReference,
+        loadEpisodes,
+        loadSeriesDetails,
+        planEpisodeGroups,
+        searchSeries,
+        type AnimeInfo,
+        type EpisodeSummary,
+        type SeriesDetails,
+        type SeriesSummary,
+} from './animeApi';
+import { createCover } from './covers';
+import {
+        chipsFor,
+        eyebrowFor,
+        factsFor,
+        renderFacts,
+        renderHero,
+        renderPreviewBlocks,
+        renderSynopsis,
+        section,
+        splitFacts,
+} from './seriesDetails';
+import { describeProgress, type DownloadJob, type DownloadManager, type OutputFormat, type SeriesPreference, type SeriesPreferenceMap } from './downloader';
+import { formatSpeed } from './hls';
+import { externalStorageAvailable } from './destination';
+import { repairByteBudget, repairFolder, type RepairLedger } from './doctor';
+import { ConfirmModal } from './modals';
+import { hasWakeLockSupport } from './wakelock';
+
+/** The keep-awake hint shows once per session, on the first download. */
+let keepAwakeHintShown = false;
+
+export interface DownloadModalOptions {
+        apiBase: string;
+        quality: number;
+        format: OutputFormat;
+        folder: string;
+        external: boolean;
+        filenameTemplate: string;
+        segmentConcurrency: number;
+        maxConcurrentJobs: number;
+        /** Ask before a destructive action (cancel/discard losing progress). */
+        confirmDestructiveActions: boolean;
+        /** Pre-filled search text, so a caller can open the downloader on a title. */
+        initialQuery?: string;
+        /** A specific series to open straight to its detail page, with its source. */
+        initialSeries?: SeriesSummary;
+        /** The plugin-wide 18+ opt-in, shared with the finder. */
+        adultOptIn?: boolean;
+        /** Files a previous repair pass cleared, so this one skips them. */
+        repairLedger?: RepairLedger;
+        /**
+         * Per-series format/quality overrides recorded earlier, keyed by series
+         * title. The picker shows the effective value (override or global) and
+         * records changes per series instead of rewriting the global options.
+         */
+        seriesPreferences?: SeriesPreferenceMap;
+}
+
+export interface DownloadModalCallbacks {
+        onOptionsChanged(options: Partial<DownloadModalOptions>): void;
+        /**
+         * Record a series' format/quality override. Unlike `onOptionsChanged`
+         * this never touches the global settings — it is scoped to the series
+         * being picked.
+         */
+        onSeriesPreference?(series: string, patch: SeriesPreference): void;
+        /** Fired when the window closes, so the plugin can drop its reference. */
+        onClosed?(): void;
+        /** Called when the shared 18+ opt-in is switched from the search stage. */
+        onAdultOptInChange?(enabled: boolean): void;
+}
+
+const QUALITY_CHOICES: { value: string; label: string }[] = [
+        { value: '1080', label: '1080p (closest available)' },
+        { value: '720', label: '720p' },
+        { value: '480', label: '480p' },
+        { value: '360', label: '360p' },
+];
+
+type Stage = 'search' | 'detail' | 'episodes' | 'queue';
+
+/**
+ * Search a series, pick episodes, and hand them to the download manager. The
+ * manager outlives the modal, so closing this window does not stop a download.
+ */
+export class DownloadModal extends Modal {
+        private options: DownloadModalOptions;
+        private series: SeriesSummary[] = [];
+        private totalSeriesPages = 1;
+        private currentPage = 1;
+        private includeAdult = false;
+        private lastKeyword = '';
+        private selected: SeriesSummary | null = null;
+        private animeInfo: AnimeInfo | null = null;
+        private episodes: EpisodeSummary[] = [];
+        private chosen = new Set<string>();
+        /**
+         * The format/quality override for the series on screen, seeded from the
+         * recorded preference when the series opens and re-recorded on change.
+         */
+        private seriesOverride: SeriesPreference = {};
+        /** Episode groups the user collapsed in a long picker. */
+        private collapsedGroups = new Set<number>();
+        private searchValue = '';
+        private busy = false;
+        private fullscreen = true;
+        private stage: Stage = 'search';
+        private bodyEl!: HTMLElement;
+        private statusEl!: HTMLElement;
+        /**
+         * The full details answer: the MyAnimeList record when there is one, or
+         * the 18+ source's structured fields mapped into the same shape. It
+         * carries the episode art the detail page shows, so the pre-download
+         * page is a real details page rather than a title and a blurb.
+         */
+        private details: SeriesDetails | null = null;
+
+        constructor(
+                app: App,
+                private readonly manager: DownloadManager,
+                options: DownloadModalOptions,
+                private readonly callbacks: DownloadModalCallbacks,
+        ) {
+                super(app);
+                this.options = { ...options };
+                this.includeAdult = options.adultOptIn === true;
+                this.modalEl.addClass('bfm-download-modal');
+        }
+
+        onOpen(): void {
+                this.titleEl.setText('Anime downloads');
+                const toggle = this.titleEl.createEl('button', { cls: 'bfm-dl-window-close' });
+                setIcon(toggle, 'minimize-2');
+                toggle.setAttribute('aria-label', 'Exit full screen');
+                toggle.addEventListener('click', () => this.setFullscreen(!this.fullscreen));
+                this.contentEl.empty();
+                // Fill the window by default: the queue and episode lists are long
+                // and a phone's small popup wastes most of the screen.
+                this.fullscreen = true;
+                this.modalEl.addClass('is-fullscreen');
+                this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-dl-body' });
+                this.statusEl = this.contentEl.createDiv({ cls: 'bfm-dl-status' });
+                this.render();
+                if (this.options.initialSeries) {
+                        this.includeAdult = Boolean(this.options.initialSeries.adultContent);
+                        void this.openSeries(this.options.initialSeries);
+                } else if (this.options.initialQuery) {
+                        this.searchValue = this.options.initialQuery;
+                        this.render();
+                        void this.doSearch();
+                }
+                // Recover downloads left behind by a previous session. On mobile the
+                // app is killed in the background constantly, so this is the normal
+                // way a queue comes back, not an edge case.
+                void this.restoreInterrupted();
+        }
+
+        private async restoreInterrupted(): Promise<void> {
+                const restored = await this.manager.restore();
+                if (restored > 0) {
+                        new Notice(
+                                `Recovered ${restored} interrupted download${restored === 1 ? '' : 's'}. Resume to continue.`,
+                        );
+                        this.render();
+                }
+        }
+
+        private setFullscreen(full: boolean): void {
+                this.fullscreen = full;
+                this.modalEl.toggleClass('is-fullscreen', full);
+                const button = this.titleEl.querySelector('.bfm-dl-window-close');
+                if (button) setIcon(button as HTMLElement, full ? 'minimize-2' : 'maximize-2');
+        }
+
+        onClose(): void {
+                this.contentEl.empty();
+                this.callbacks.onClosed?.();
+        }
+
+        private render(): void {
+                this.bodyEl.empty();
+                this.renderStageTabs();
+                if (this.stage === 'search') this.renderSearch();
+                else if (this.stage === 'detail') this.renderDetail();
+                else if (this.stage === 'episodes') this.renderEpisodes();
+                else this.renderQueue();
+                this.renderStatus();
+        }
+
+        private renderStageTabs(): void {
+                const tabs = this.bodyEl.createDiv({ cls: 'bfm-dl-tabs' });
+                const active = this.manager.activeCount;
+                const stages: { id: Stage; label: string }[] = [
+                        { id: 'search', label: 'Search' },
+                        { id: 'detail', label: 'Details' },
+                        { id: 'episodes', label: 'Episodes' },
+                        { id: 'queue', label: active > 0 ? `Queue (${active})` : 'Queue' },
+                ];
+                for (const entry of stages) {
+                        const button = tabs.createEl('button', {
+                                cls: 'bfm-dl-tab',
+                                text: entry.label,
+                        });
+                        if (this.stage === entry.id) button.addClass('is-active');
+                        if (entry.id === 'episodes' && !this.selected) button.disabled = true;
+                        if (entry.id === 'detail' && !this.animeInfo) button.disabled = true;
+                        button.addEventListener('click', () => {
+                                if (entry.id === 'episodes' && !this.selected) return;
+                                if (entry.id === 'detail' && !this.animeInfo) return;
+                                this.stage = entry.id;
+                                this.render();
+                        });
+                }
+        }
+
+        // --- Search ------------------------------------------------------------
+
+        private renderSearch(): void {
+                const row = this.bodyEl.createDiv({ cls: 'bfm-dl-search' });
+                const input = row.createEl('input', {
+                        cls: 'bfm-dl-input',
+                        attr: {
+                                type: 'text',
+                                placeholder: 'Search for a series',
+                                value: this.searchValue,
+                                autocapitalize: 'off',
+                                spellcheck: 'false',
+                                enterkeyhint: 'search',
+                        },
+                });
+                const button = row.createEl('button', { cls: 'mod-cta', text: 'Search' });
+                const run = () => {
+                        this.searchValue = input.value;
+                        this.currentPage = 1;
+                        void this.doSearch();
+                };
+                button.addEventListener('click', run);
+                input.addEventListener('keydown', (event) => {
+                        if (event.key === 'Enter') {
+                                event.preventDefault();
+                                run();
+                        }
+                });
+
+                // 18+ toggle re-runs the search with the catalogue's opt-in.
+                const filterRow = this.bodyEl.createDiv({ cls: 'bfm-dl-search-filters' });
+                const adultLabel = filterRow.createEl('label', { cls: 'bfm-dl-search-filter' });
+                const adultCheckbox = adultLabel.createEl('input', { attr: { type: 'checkbox' } });
+                adultCheckbox.checked = this.includeAdult;
+                adultLabel.createSpan({ text: ' Include 18+ titles' });
+                adultCheckbox.addEventListener('change', () => {
+                        this.includeAdult = adultCheckbox.checked;
+                        // The finder shows the same opt-in; report the change so
+                        // switching it in either place switches it in both.
+                        this.callbacks.onAdultOptInChange?.(this.includeAdult);
+                        this.currentPage = 1;
+                        void this.doSearch();
+                });
+
+                if (this.busy) {
+                        this.bodyEl.createEl('p', { cls: 'bfm-dl-hint', text: 'Searching…' });
+                        return;
+                }
+                if (this.series.length === 0) {
+                        if (this.searchValue) {
+                                this.bodyEl.createEl('p', { cls: 'bfm-dl-hint', text: 'No series matched that search.' });
+                        }
+                        return;
+                }
+                const list = this.bodyEl.createDiv({ cls: 'bfm-dl-results' });
+                for (const series of this.series) {
+                        const card = list.createDiv({ cls: 'bfm-dl-result' });
+                        const cover = card.createDiv({ cls: 'bfm-dl-poster-wrap' });
+                        createCover(cover, series.poster, series.title, { imageClass: 'bfm-dl-poster' });
+                        const info = card.createDiv({ cls: 'bfm-dl-result-info' });
+                        info.createDiv({ cls: 'bfm-dl-result-title', text: series.title });
+                        if (series.adultContent) {
+                                info.createSpan({ cls: 'bfm-dl-badge', text: '18+' });
+                        }
+                        const meta: string[] = [];
+                        if (series.showType) meta.push(series.showType);
+                        meta.push(`${series.eps || series.sub} episodes`);
+                        if (series.sub) meta.push(`${series.sub} sub`);
+                        if (series.dub) meta.push(`${series.dub} dub`);
+                        info.createDiv({ cls: 'bfm-dl-result-meta', text: meta.join(' · ') });
+                        card.addEventListener('click', () => void this.openSeries(series));
+                }
+
+                // Pagination.
+                const pager = this.bodyEl.createDiv({ cls: 'bfm-dl-pager' });
+                const prev = pager.createEl('button', { text: 'Prev' });
+                prev.disabled = this.currentPage <= 1 || this.busy;
+                prev.addEventListener('click', () => {
+                        if (this.currentPage > 1) {
+                                this.currentPage--;
+                                void this.doSearch();
+                        }
+                });
+                pager.createSpan({ text: `Page ${this.currentPage} of ${this.totalSeriesPages}` });
+                const next = pager.createEl('button', { text: 'Next' });
+                next.disabled = this.currentPage >= this.totalSeriesPages || this.busy;
+                next.addEventListener('click', () => {
+                        if (this.currentPage < this.totalSeriesPages) {
+                                this.currentPage++;
+                                void this.doSearch();
+                        }
+                });
+        }
+
+        private async doSearch(): Promise<void> {
+                if (this.busy) return;
+                const keyword = this.searchValue.trim();
+                if (!keyword) return;
+                const keywordChanged = keyword !== this.lastKeyword;
+                if (keywordChanged) {
+                        this.lastKeyword = keyword;
+                        this.currentPage = 1;
+                        this.selected = null;
+                        this.animeInfo = null;
+                        this.episodes = [];
+                        this.chosen.clear();
+                }
+                this.busy = true;
+                this.render();
+                try {
+                        const result = await searchSeries(this.options.apiBase, keyword, {
+                                page: this.currentPage,
+                                includeAdult: this.includeAdult,
+                        });
+                        this.series = result.series;
+                        this.totalSeriesPages = result.totalPages;
+                        if (this.currentPage > this.totalSeriesPages) {
+                                this.currentPage = this.totalSeriesPages;
+                                this.series = (await searchSeries(this.options.apiBase, keyword, {
+                                        page: this.currentPage,
+                                        includeAdult: this.includeAdult,
+                                })).series;
+                        }
+                } catch (error) {
+                        this.series = [];
+                        this.totalSeriesPages = 1;
+                        this.notifyError(error);
+                } finally {
+                        this.busy = false;
+                        this.render();
+                }
+        }
+
+        private renderDetail(): void {
+                const series = this.selected;
+                if (!series) {
+                        this.stage = 'search';
+                        this.render();
+                        return;
+                }
+                if (this.busy && !this.animeInfo) {
+                        this.bodyEl.createEl('p', { cls: 'bfm-dl-hint', text: 'Loading details…' });
+                        return;
+                }
+                const info = this.animeInfo;
+                const preview = this.details?.preview ?? null;
+                const detail = preview?.detail ?? null;
+                const page = this.bodyEl.createDiv({ cls: 'bfm-dl-detail-page' });
+
+                // One page for every source: the poster and headline numbers are
+                // built from whichever route answered, and the 18+ source's
+                // generated blurb is never shown (the facts and the episode list
+                // say the same things without repeating a template).
+                const title = detail?.title || info?.title || series.title;
+                const japanese = detail?.titleJapanese || info?.japaneseTitle || series.japaneseTitle;
+                // The 18+ browse rows reuse `japaneseTitle` for the episode name;
+                // "Episode 3" is not a subtitle for the series.
+                const subtitle =
+                        japanese &&
+                        japanese.trim().toLowerCase() !== title.trim().toLowerCase() &&
+                        !/^episode\s*\d+$/i.test(japanese.trim())
+                                ? japanese
+                                : null;
+                const facts = splitFacts(
+                        detail ? factsFor(detail, this.details?.episodes?.length ?? null) : [],
+                );
+                const hero = renderHero(page, {
+                        poster: detail?.image ?? info?.poster ?? series.poster ?? null,
+                        title,
+                        subtitle,
+                        adult: Boolean(info?.adultContent ?? series.adultContent),
+                        eyebrow: detail ? eyebrowFor(detail) : '',
+                        facts: facts.hero,
+                        chips: detail ? chipsFor(detail) : [],
+                        synopsis: detail?.synopsis ?? null,
+                });
+                if (facts.rest.length > 0) {
+                        renderFacts(section(page, 'Details', 'info'), facts.rest);
+                }
+                // The page's own action lives in the hero, where the title and the
+                // numbers already are; a page whose primary button sits below the
+                // fold reads as an article, not as something to act on.
+                const choose = hero.actions.createEl('button', { cls: 'mod-cta bfm-hero-primary' });
+                setIcon(choose.createSpan({ cls: 'bfm-hero-primary-icon' }), 'download');
+                choose.createSpan({
+                        text:
+                                this.details?.episodes && this.details.episodes.length > 0
+                                        ? `Choose from ${this.details.episodes.length} episodes`
+                                        : 'View episodes',
+                });
+                choose.addEventListener('click', () => void this.loadEpisodesForSelected());
+                const back = hero.actions.createEl('button', {
+                        cls: 'bfm-hero-ghost',
+                        text: 'Back to search',
+                });
+                back.addEventListener('click', () => {
+                        this.stage = 'search';
+                        this.render();
+                });
+
+                if (preview) renderPreviewBlocks(page, preview, { chips: false });
+                else if (info?.overview) renderSynopsis(page, info.overview);
+
+                // Seasons (clickable to open that season's detail page).
+                if (info?.seasons && info.seasons.length > 0) {
+                        const sec = page.createDiv({ cls: 'bfm-dl-section' });
+                        sec.createEl('h4', { text: 'Seasons' });
+                        const list = sec.createDiv({ cls: 'bfm-dl-results' });
+                        for (const season of info.seasons) {
+                                const card = list.createDiv({ cls: 'bfm-dl-result' });
+                                const cover = card.createDiv({ cls: 'bfm-dl-poster-wrap' });
+                                createCover(cover, season.poster, season.title ?? season.id, {
+                                        imageClass: 'bfm-dl-poster',
+                                });
+                                const inf = card.createDiv({ cls: 'bfm-dl-result-info' });
+                                inf.createDiv({ cls: 'bfm-dl-result-title', text: season.title || season.id });
+                                const m: string[] = [];
+                                if (season.showType) m.push(season.showType);
+                                if (season.isActive) m.push('current');
+                                inf.createDiv({ cls: 'bfm-dl-result-meta', text: m.join(' · ') });
+                                card.addEventListener('click', () => {
+                                        const pseudo: SeriesSummary = {
+                                                id: season.id,
+                                                title: season.title || season.id,
+                                                japaneseTitle: season.japaneseTitle,
+                                                poster: season.poster,
+                                                showType: season.showType || 'TV',
+                                                sub: 0,
+                                                dub: 0,
+                                                eps: 0,
+                                        };
+                                        void this.openSeries(pseudo);
+                                });
+                        }
+                }
+
+                // Recommended (compact).
+                if (info?.recommended && info.recommended.length > 0) {
+                        const sec = page.createDiv({ cls: 'bfm-dl-section' });
+                        sec.createEl('h4', { text: 'Recommended' });
+                        const list = sec.createDiv({ cls: 'bfm-dl-results' });
+                        for (const rec of info.recommended.slice(0, 8)) {
+                                const card = list.createDiv({ cls: 'bfm-dl-result' });
+                                const cover = card.createDiv({ cls: 'bfm-dl-poster-wrap' });
+                                createCover(cover, rec.poster, rec.title, { imageClass: 'bfm-dl-poster' });
+                                const inf = card.createDiv({ cls: 'bfm-dl-result-info' });
+                                inf.createDiv({ cls: 'bfm-dl-result-title', text: rec.title });
+                                card.addEventListener('click', () => void this.openSeries(rec));
+                        }
+                }
+
+                // Related (compact, grouped).
+                if (info?.related) {
+                        const groups = Object.entries(info.related).filter(([, v]) => Array.isArray(v) && v.length > 0);
+                        if (groups.length > 0) {
+                                const sec = page.createDiv({ cls: 'bfm-dl-section' });
+                                sec.createEl('h4', { text: 'Related' });
+                                for (const [name, items] of groups) {
+                                        const group = sec.createDiv({ cls: 'bfm-dl-related-group' });
+                                        group.createSpan({ cls: 'bfm-dl-result-meta', text: `${name}: ` });
+                                        for (const item of items.slice(0, 6)) {
+                                                const link = group.createEl('a', { cls: 'bfm-dl-link', text: item.title });
+                                                link.addEventListener('click', (ev) => {
+                                                        ev.preventDefault();
+                                                        void this.openSeries(item);
+                                                });
+                                                group.createSpan({ text: ' · ' });
+                                        }
+                                }
+                        }
+                }
+
+                // The 18+ catalogue has no cast or seasons to show, so its
+                // episode list is the body of the page: real art, real titles,
+                // and one tap to the picker with that episode selected.
+                if (this.details?.episodes && this.details.episodes.length > 0) {
+                        this.renderDetailEpisodes(page, this.details.episodes);
+                }
+
+        }
+
+        /** The episode strip on a details page, with each card opening the picker. */
+        private renderDetailEpisodes(host: HTMLElement, episodes: EpisodeSummary[]): void {
+                const sec = section(host, 'Episodes', 'list-video');
+                const grid = sec.createDiv({ cls: 'bfm-dl-episode-grid' });
+                for (const episode of episodes) {
+                        const generic = `Episode ${episode.number}`;
+                        const card = grid.createDiv({ cls: 'bfm-dl-episode-card' });
+                        card.setAttribute('role', 'button');
+                        card.setAttribute('tabindex', '0');
+                        card.setAttribute('aria-label', `Download ${episode.title || generic}`);
+                        const thumb = card.createDiv({ cls: 'bfm-dl-episode-thumb' });
+                        if (episode.poster) {
+                                thumb.createEl('img', {
+                                        cls: 'bfm-dl-episode-thumb-image',
+                                        attr: { src: episode.poster, alt: '', loading: 'lazy' },
+                                });
+                        } else {
+                                thumb.createDiv({ cls: 'bfm-dl-episode-thumb-fallback', text: String(episode.number) });
+                        }
+                        const body = card.createDiv({ cls: 'bfm-dl-episode-body' });
+                        const title = episode.title || generic;
+                        body.createDiv({ cls: 'bfm-dl-episode-title', text: title });
+                        if (episode.number > 0 && title.toLowerCase() !== generic.toLowerCase()) {
+                                body.createDiv({ cls: 'bfm-dl-episode-number', text: generic });
+                        }
+                        const open = () => void this.loadEpisodesForSelected(episode.id);
+                        card.addEventListener('click', open);
+                        card.addEventListener('keydown', (event) => {
+                                if (event.key !== 'Enter' && event.key !== ' ') return;
+                                event.preventDefault();
+                                open();
+                        });
+                }
+        }
+
+
+
+        private async openSeries(series: SeriesSummary): Promise<void> {
+                this.busy = true;
+                this.selected = series;
+                this.animeInfo = null;
+                this.details = null;
+                this.seriesOverride = {};
+                this.collapsedGroups.clear();
+                this.render();
+                try {
+                        // One details answer for the page: the MAL preview when the
+                        // catalogue has one, or the 18+ source's structured fields.
+                        // The 18+ source's episode list rides along, so the page can
+                        // show the real art instead of its generated blurb.
+                        const details = await loadSeriesDetails(this.options.apiBase, series.id, {
+                                provider: series.provider,
+                                // `hm:` series fetch their episode list from the same
+                                // native details call, so the downloader can reuse it.
+                                episodes: series.provider === ADULT_PROVIDER || isAdultReference(series.id),
+                        });
+                        this.details = details;
+                        this.animeInfo = details.info;
+                        const info = details.info;
+                        // Prefer API's canonical title/poster where available.
+                        this.selected = {
+                                ...series,
+                                title: info.title || details.preview.detail.title || series.title,
+                                japaneseTitle:
+                                        info.japaneseTitle ??
+                                        details.preview.detail.titleJapanese ??
+                                        series.japaneseTitle,
+                                poster: info.poster ?? details.preview.detail.image ?? series.poster,
+                                showType: info.showType || series.showType,
+                                adultContent: info.adultContent,
+                                eps: info.episodeCount ?? series.eps,
+                        };
+                        // Seed the picker's overrides from the series' recorded
+                        // preference, under its canonical title.
+                        this.seriesOverride = {
+                                ...(this.options.seriesPreferences?.[this.selected.title] ?? {}),
+                        };
+                        this.stage = 'detail';
+                } catch (error) {
+                        this.selected = null;
+                        this.animeInfo = null;
+                        this.details = null;
+                        this.notifyError(error);
+                } finally {
+                        this.busy = false;
+                        this.render();
+                }
+        }
+
+        private async loadEpisodesForSelected(only?: string): Promise<void> {
+                const series = this.selected;
+                if (!series) return;
+                this.busy = true;
+                this.render();
+                try {
+                        // The 18+ details page already fetched the list; reuse it
+                        // rather than paying for the same call twice.
+                        this.episodes =
+                                this.details?.episodes && this.details.episodes.length > 0
+                                        ? this.details.episodes
+                                        : (await loadEpisodes(this.options.apiBase, series.id, series.provider)).episodes;
+                        this.chosen = only
+                                ? new Set([only])
+                                : new Set(this.episodes.map((episode) => episode.id));
+                        this.stage = 'episodes';
+                } catch (error) {
+                        this.notifyError(error);
+                } finally {
+                        this.busy = false;
+                        this.render();
+                }
+        }
+
+        // --- Episode picker ----------------------------------------------------
+
+        private renderEpisodes(): void {
+                const series = this.selected;
+                if (!series) {
+                        this.stage = 'search';
+                        this.render();
+                        return;
+                }
+                const header = this.bodyEl.createDiv({ cls: 'bfm-dl-header' });
+                header.createEl('h3', { text: series.title });
+                header.createDiv({
+                        cls: 'bfm-dl-result-meta',
+                        text: `${this.episodes.length} episodes · ${this.chosen.size} selected`,
+                });
+
+                this.renderEpisodeControls();
+                this.renderDestinationControls();
+                this.renderEpisodeList();
+
+                const actions = this.bodyEl.createDiv({ cls: 'bfm-dl-actions' });
+                const download = actions.createEl('button', {
+                        cls: 'mod-cta',
+                        text: this.chosen.size === 0
+                                ? 'Select episodes'
+                                : `Download ${this.chosen.size} episode${this.chosen.size === 1 ? '' : 's'}`,
+                });
+                download.disabled = this.chosen.size === 0;
+                download.addEventListener('click', () => this.startDownload());
+        }
+
+        private renderEpisodeControls(): void {
+                const seriesTitle = this.selected?.title ?? 'this series';
+                const controls = this.bodyEl.createDiv({ cls: 'bfm-dl-controls' });
+
+                const quick = controls.createDiv({ cls: 'bfm-dl-chip-row' });
+                const addChip = (label: string, onClick: () => void) => {
+                        const chip = quick.createEl('button', { cls: 'bfm-dl-chip', text: label });
+                        chip.addEventListener('click', onClick);
+                };
+                addChip('Select all', () => {
+                        this.chosen = new Set(this.episodes.map((episode) => episode.id));
+                        this.render();
+                });
+                addChip('Select none', () => {
+                        this.chosen.clear();
+                        this.render();
+                });
+                addChip('Invert', () => {
+                        const next = new Set<string>();
+                        for (const episode of this.episodes) {
+                                if (!this.chosen.has(episode.id)) next.add(episode.id);
+                        }
+                        this.chosen = next;
+                        this.render();
+                });
+                addChip('Skip filler', () => {
+                        this.chosen = new Set(
+                                this.episodes.filter((episode) => !episode.filler).map((episode) => episode.id),
+                        );
+                        this.render();
+                });
+                addChip('Download missing', () => {
+                        void this.selectMissing();
+                });
+
+                const rangeRow = controls.createDiv({ cls: 'bfm-dl-range' });
+                rangeRow.createSpan({ cls: 'bfm-dl-range-label', text: 'Range' });
+                const from = rangeRow.createEl('input', {
+                        cls: 'bfm-dl-input bfm-dl-number',
+                        attr: { type: 'number', min: '1', placeholder: 'From' },
+                });
+                const to = rangeRow.createEl('input', {
+                        cls: 'bfm-dl-input bfm-dl-number',
+                        attr: { type: 'number', min: '1', placeholder: 'To' },
+                });
+                const applyRange = rangeRow.createEl('button', { cls: 'bfm-dl-chip', text: 'Add' });
+                applyRange.addEventListener('click', () => {
+                        const start = Number(from.value);
+                        const end = Number(to.value) || start;
+                        if (!Number.isFinite(start) || start <= 0) return;
+                        const low = Math.min(start, end);
+                        const high = Math.max(start, end);
+                        for (const episode of this.episodes) {
+                                if (episode.number >= low && episode.number <= high) this.chosen.add(episode.id);
+                        }
+                        this.render();
+                });
+                const clearRange = rangeRow.createEl('button', { cls: 'bfm-dl-chip', text: 'Remove' });
+                clearRange.addEventListener('click', () => {
+                        const start = Number(from.value);
+                        const end = Number(to.value) || start;
+                        if (!Number.isFinite(start) || start <= 0) return;
+                        const low = Math.min(start, end);
+                        const high = Math.max(start, end);
+                        for (const episode of this.episodes) {
+                                if (episode.number >= low && episode.number <= high) this.chosen.delete(episode.id);
+                        }
+                        this.render();
+                });
+
+                const options = controls.createDiv({ cls: 'bfm-dl-options' });
+                new Setting(options)
+                        .setName('Quality')
+                        .setDesc(
+                                `The closest available quality is used when the source does not offer the exact one. Applies to ${seriesTitle} only.`,
+                        )
+                        .addDropdown((dropdown) => {
+                                for (const choice of QUALITY_CHOICES) {
+                                        dropdown.addOption(choice.value, choice.label);
+                                }
+                                dropdown.setValue(String(this.seriesOverride.quality ?? this.options.quality));
+                                dropdown.onChange((value) => this.setSeriesPreference({ quality: Number(value) }));
+                        });
+
+                new Setting(options)
+                        .setName('Format')
+                        .setDesc(
+                                Platform.isMobile
+                                        ? `MP4 is one playable file and converts as it downloads — right for watching. TS keeps the raw stream for archiving. Applies to ${seriesTitle} only.`
+                                        : `MP4 produces a single playable file — right for watching. TS keeps the raw stream for archiving or remuxing later. Applies to ${seriesTitle} only.`,
+                        )
+                        .addDropdown((dropdown) => {
+                                dropdown.addOption('mp4', 'Playable file (mp4)');
+                                dropdown.addOption('ts', 'Raw stream (ts, low memory)');
+                                dropdown.setValue(this.seriesOverride.format ?? this.options.format);
+                                dropdown.onChange((value) =>
+                                        this.setSeriesPreference({ format: value === 'ts' ? 'ts' : 'mp4' }),
+                                );
+                        });
+        }
+
+        /**
+         * Record a format/quality override for the series on screen.
+         *
+         * This is scoped to the series — the global settings are untouched, so
+         * queueing one series at 480p does not silently reformat the next. The
+         * override is what this series' jobs are enqueued with, and the caller
+         * persists it for the next visit.
+         */
+        private setSeriesPreference(patch: SeriesPreference): void {
+                const series = this.selected;
+                if (!series) return;
+                this.seriesOverride = { ...this.seriesOverride, ...patch };
+                this.callbacks.onSeriesPreference?.(series.title, this.seriesOverride);
+        }
+
+        private renderDestinationControls(): void {
+                const box = this.bodyEl.createDiv({ cls: 'bfm-dl-destination' });
+                const canExternal = externalStorageAvailable();
+
+                new Setting(box)
+                        .setName('Folder')
+                        .setDesc(
+                                this.options.external && canExternal
+                                        ? 'Absolute path on this device, for example /storage/XXXX-XXXX/Anime.'
+                                        : 'Folder inside your vault. On mobile the vault is the only writable location.',
+                        )
+                        .addText((text) => {
+                                text.setPlaceholder(this.options.external ? '/storage/SD/Anime' : 'Anime');
+                                text.setValue(this.options.folder);
+                                text.onChange((value) => this.updateOption({ folder: value }));
+                        });
+
+                if (canExternal) {
+                        new Setting(box)
+                                .setName('Save outside the vault')
+                                .setDesc('Desktop only. Writes to an absolute path, such as a mounted memory card.')
+                                .addToggle((toggle) => {
+                                        toggle.setValue(this.options.external);
+                                        toggle.onChange((value) => this.updateOption({ external: value }));
+                                });
+                } else {
+                        box.createEl('p', {
+                                cls: 'bfm-dl-hint',
+                                text: 'Saving outside the vault is desktop only: Obsidian on mobile cannot write to a memory card. Files go to the folder above inside your vault.',
+                        });
+                }
+        }
+
+        /**
+         * The "series finisher": select only the episodes that are not already
+         * saved and not already queued, so a long-running series can be topped up
+         * without re-downloading what is on disk.
+         */
+        private async selectMissing(): Promise<void> {
+                const series = this.selected;
+                if (!series) return;
+                this.busy = true;
+                this.render();
+                try {
+                        const missing = await this.manager.missingEpisodes(
+                                series.title,
+                                this.episodes,
+                                this.seriesOverride.format ?? this.options.format,
+                        );
+                        this.chosen = new Set(missing.map((episode) => episode.id));
+                        const have = this.episodes.length - missing.length;
+                        new Notice(
+                                missing.length === 0
+                                        ? `All ${this.episodes.length} episodes are already saved.`
+                                        : `${missing.length} missing episode${missing.length === 1 ? '' : 's'} selected` +
+                                                  (have > 0 ? ` (${have} already saved).` : '.'),
+                        );
+                } finally {
+                        this.busy = false;
+                        this.render();
+                }
+        }
+
+        private renderEpisodeList(): void {
+                const list = this.bodyEl.createDiv({ cls: 'bfm-dl-episodes' });
+                const groups = planEpisodeGroups(this.episodes);
+                // Stills are shown for the whole list or not at all: a list where
+                // only some episodes carry art would misalign every row.
+                const stills = this.episodes.some((episode) => Boolean(episode.poster));
+                // A short series renders exactly as it always did: one flat list.
+                if (!groups) {
+                        this.renderEpisodeRows(list, this.episodes, stills);
+                        return;
+                }
+                // A long one is chunked numerically — the API exposes no season
+                // boundaries, so the labels are honest ranges, not invented
+                // seasons. Each group collapses and carries its own select/clear
+                // beside the global chips above.
+                groups.forEach((group, index) => {
+                        const collapsed = this.collapsedGroups.has(index);
+                        const selected = group.episodes.filter((episode) => this.chosen.has(episode.id)).length;
+                        const head = list.createDiv({ cls: 'bfm-dl-epgroup-head' });
+                        head.setAttribute('role', 'button');
+                        head.setAttribute('tabindex', '0');
+                        head.setAttribute('aria-label', `${group.label}, ${selected} of ${group.episodes.length} selected`);
+                        const chevron = head.createSpan({ cls: 'bfm-dl-epgroup-chevron' });
+                        setIcon(chevron, collapsed ? 'chevron-right' : 'chevron-down');
+                        head.createSpan({ cls: 'bfm-dl-epgroup-label', text: group.label });
+                        head.createSpan({
+                                cls: 'bfm-dl-epgroup-count',
+                                text: `${selected}/${group.episodes.length}`,
+                        });
+                        const toggle = (): void => {
+                                if (collapsed) this.collapsedGroups.delete(index);
+                                else this.collapsedGroups.add(index);
+                                this.render();
+                        };
+                        head.addEventListener('click', (event) => {
+                                if ((event.target as HTMLElement | null)?.closest('button')) return;
+                                toggle();
+                        });
+                        head.addEventListener('keydown', (event) => {
+                                if (event.target !== head) return;
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        toggle();
+                                }
+                        });
+                        const select = head.createEl('button', { cls: 'bfm-dl-chip bfm-dl-epgroup-select', text: 'Select' });
+                        select.setAttribute('aria-label', `Select all of ${group.label}`);
+                        select.addEventListener('click', (event) => {
+                                event.stopPropagation();
+                                for (const episode of group.episodes) this.chosen.add(episode.id);
+                                this.render();
+                        });
+                        const clear = head.createEl('button', { cls: 'bfm-dl-chip bfm-dl-epgroup-select', text: 'Clear' });
+                        clear.setAttribute('aria-label', `Clear all of ${group.label}`);
+                        clear.addEventListener('click', (event) => {
+                                event.stopPropagation();
+                                for (const episode of group.episodes) this.chosen.delete(episode.id);
+                                this.render();
+                        });
+                        if (!collapsed) this.renderEpisodeRows(list, group.episodes, stills);
+                });
+        }
+
+        /**
+         * The episode rows themselves, shared by the flat and grouped lists.
+         *
+         * The 18+ source publishes a still per episode, so its rows carry the
+         * art; the MAL catalogue's rows carry none and keep the compact layout.
+         * `stills` is decided for the whole list, and an episode missing one
+         * falls back to its number so the column stays aligned.
+         */
+        private renderEpisodeRows(list: HTMLElement, episodes: EpisodeSummary[], stills: boolean): void {
+                for (const episode of episodes) {
+                        const row = list.createDiv({ cls: 'bfm-dl-episode' });
+                        if (stills) row.addClass('has-still');
+                        const checkbox = row.createEl('input', { attr: { type: 'checkbox' } });
+                        if (stills) {
+                                const still = row.createDiv({ cls: 'bfm-dl-episode-still' });
+                                if (episode.poster) {
+                                        still.createEl('img', {
+                                                cls: 'bfm-dl-episode-still-image',
+                                                attr: {
+                                                        src: episode.poster,
+                                                        alt: '',
+                                                        loading: 'lazy',
+                                                        decoding: 'async',
+                                                },
+                                        });
+                                } else {
+                                        still.createDiv({
+                                                cls: 'bfm-dl-episode-still-fallback',
+                                                text: String(episode.number),
+                                        });
+                                }
+                        }
+                        checkbox.checked = this.chosen.has(episode.id);
+                        checkbox.addEventListener('change', () => {
+                                if (checkbox.checked) this.chosen.add(episode.id);
+                                else this.chosen.delete(episode.id);
+                                this.updateSelectionLabel();
+                        });
+                        const label = row.createDiv({ cls: 'bfm-dl-episode-label' });
+                        label.createSpan({ cls: 'bfm-dl-episode-no', text: `${episode.number}` });
+                        label.createSpan({ cls: 'bfm-dl-episode-title', text: episode.title });
+                        if (episode.filler) label.createSpan({ cls: 'bfm-dl-badge', text: 'filler' });
+                        if (!episode.subbed && episode.dubbed) {
+                                label.createSpan({ cls: 'bfm-dl-badge', text: 'dub' });
+                        }
+                        row.addEventListener('click', (event) => {
+                                if (event.target === checkbox) return;
+                                checkbox.checked = !checkbox.checked;
+                                if (checkbox.checked) this.chosen.add(episode.id);
+                                else this.chosen.delete(episode.id);
+                                this.updateSelectionLabel();
+                        });
+                }
+        }
+
+        private updateSelectionLabel(): void {
+                const header = this.bodyEl.querySelector('.bfm-dl-header .bfm-dl-result-meta');
+                if (header) {
+                        header.setText(`${this.episodes.length} episodes · ${this.chosen.size} selected`);
+                }
+                const download = this.bodyEl.querySelector<HTMLButtonElement>('.bfm-dl-actions .mod-cta');
+                if (download) {
+                        download.disabled = this.chosen.size === 0;
+                        download.setText(
+                                this.chosen.size === 0
+                                        ? 'Select episodes'
+                                        : `Download ${this.chosen.size} episode${this.chosen.size === 1 ? '' : 's'}`,
+                        );
+                }
+        }
+
+        private startDownload(): void {
+                const series = this.selected;
+                if (!series || this.chosen.size === 0) return;
+                const episodes = this.episodes.filter((episode) => this.chosen.has(episode.id));
+                const created = this.manager.enqueue({
+                        seriesTitle: series.title,
+                        episodes,
+                        // `/api/stream` only offers the adult chain to a request
+                        // that opts in; the series' flag is that opt-in.
+                        adult: Boolean(series.adultContent),
+                        format: this.seriesOverride.format,
+                        quality: this.seriesOverride.quality,
+                });
+                const resumed = created.filter((job) => job.status === 'queued' && job.partialFound).length;
+                const message =
+                        resumed > 0
+                                ? `Queued ${created.length} episode${created.length === 1 ? '' : 's'} from ${series.title} (${resumed} will resume).`
+                                : `Queued ${created.length} episode${created.length === 1 ? '' : 's'} from ${series.title}.`;
+                new Notice(message);
+                this.showKeepAwakeHintOnce();
+                this.stage = 'queue';
+                this.render();
+        }
+
+        /**
+         * The one-time "keep the app open" hint, shown only where the Screen
+         * Wake Lock API is missing (iOS). There is no programmatic way to keep
+         * an iPhone's screen on, so the honest guidance is what to do by hand:
+         * keep the app open while a run is going, and the queue pauses itself
+         * when the app is hidden anyway, resuming on return with nothing lost.
+         * Once per session — a persisted flag would buy nothing over a prompt
+         * the user sees at the moment they start the first download.
+         */
+        private showKeepAwakeHintOnce(): void {
+                if (keepAwakeHintShown) return;
+                keepAwakeHintShown = true;
+                if (hasWakeLockSupport()) return;
+                new Notice(
+                        'This device cannot keep the screen on by itself. Keep the app open while downloading; if it is hidden, the download pauses and continues when you return.',
+                        8000,
+                );
+        }
+
+        // --- Queue -------------------------------------------------------------
+
+        private renderQueue(): void {
+                const jobs = this.manager.jobs;
+                if (jobs.length === 0) {
+                        this.bodyEl.createEl('p', {
+                                cls: 'bfm-dl-hint',
+                                text: 'No downloads yet. Search for a series and pick episodes.',
+                        });
+                        return;
+                }
+                const list = this.bodyEl.createDiv({ cls: 'bfm-dl-jobs' });
+                for (const job of jobs) this.renderJobRow(list, job);
+
+                const actions = this.bodyEl.createDiv({ cls: 'bfm-dl-actions' });
+                const resumable = this.manager.resumableJobs;
+                if (resumable.length > 0) {
+                        const resumeAll = actions.createEl('button', {
+                                cls: 'mod-cta',
+                                text: `Resume all (${resumable.length})`,
+                        });
+                        resumeAll.addEventListener('click', () => {
+                                for (const job of resumable) this.manager.resume(job.id);
+                                new Notice(`Resuming ${resumable.length} download${resumable.length === 1 ? '' : 's'}.`);
+                                this.render();
+                        });
+                }
+                const paused = this.manager.pausedJobs;
+                if (paused.length > 0) {
+                        const resumePaused = actions.createEl('button', {
+                                cls: 'mod-cta',
+                                text: `Resume paused (${paused.length})`,
+                        });
+                        resumePaused.addEventListener('click', () => {
+                                for (const job of paused) this.manager.resume(job.id);
+                                this.render();
+                        });
+                }
+                const cancelAll = actions.createEl('button', { text: 'Cancel all' });
+                cancelAll.addEventListener('click', () => {
+                        const working = this.manager.jobs.filter(
+                                (job) => job.partialFound && job.status !== 'done',
+                        ).length;
+                        const run = (): void => {
+                                this.manager.cancelAll();
+                                this.render();
+                        };
+                        if (working > 0 && this.options.confirmDestructiveActions) {
+                                new ConfirmModal(
+                                        this.app,
+                                        `Cancel every download? ${working} unfinished download${working === 1 ? '' : 's'} will lose their progress.`,
+                                        run,
+                                ).open();
+                                return;
+                        }
+                        run();
+                });
+                const clear = actions.createEl('button', { text: 'Clear finished' });
+                clear.addEventListener('click', () => {
+                        this.manager.clearFinished();
+                        this.render();
+                });
+                const doctor = actions.createEl('button', { text: 'Repair old videos' });
+                doctor.addEventListener('click', () => {
+                        void this.repairVideos();
+                });
+        }
+
+        /** One queue row. Kept separate so progress ticks can update it in place. */
+        private renderJobRow(list: HTMLElement, job: DownloadJob): void {
+                const row = list.createDiv({ cls: 'bfm-dl-job' });
+                row.dataset.jobId = job.id;
+                row.addClass(`is-${job.status}`);
+                const head = row.createDiv({ cls: 'bfm-dl-job-head' });
+                head.createSpan({
+                        cls: 'bfm-dl-job-title',
+                        text: `${job.seriesTitle} · Episode ${job.episode.number}`,
+                });
+                const status = head.createSpan({ cls: 'bfm-dl-job-status', text: describeProgress(job) });
+                if (job.status === 'failed') status.addClass('is-error');
+                if (job.status === 'paused' || job.status === 'waiting') status.addClass('is-paused');
+                if (job.status === 'queued' || job.status === 'paused') {
+                        // Queued and paused rows can be nudged past each other; a
+                        // running, parked, or finished row keeps its place. The
+                        // buttons disable themselves where there is nothing to
+                        // swap with, and a move re-renders the whole queue because
+                        // the rows themselves change order.
+                        for (const direction of ['up', 'down'] as const) {
+                                const move = head.createEl('button', { cls: 'bfm-dl-job-move' });
+                                setIcon(move, direction === 'up' ? 'arrow-up' : 'arrow-down');
+                                move.setAttribute('title', direction === 'up' ? 'Move up' : 'Move down');
+                                move.setAttribute('aria-label', `Move ${job.seriesTitle} episode ${job.episode.number} ${direction === 'up' ? 'up' : 'down'}`);
+                                move.disabled = !this.manager.canReorder(job.id, direction);
+                                move.addEventListener('click', () => {
+                                        this.manager.reorder(job.id, direction);
+                                        this.render();
+                                });
+                        }
+                }
+                if (job.status === 'running' || job.status === 'queued' || job.status === 'waiting') {
+                        // A running download can be paused to keep its progress; a
+                        // queued one is simply pulled back out of the queue.
+                        const pause = head.createEl('button', { cls: 'bfm-dl-job-cancel' });
+                        setIcon(pause, 'pause');
+                        pause.setAttribute('title', 'Pause');
+                        pause.addEventListener('click', () => {
+                                this.manager.pause(job.id);
+                                this.render();
+                        });
+                }
+                if (job.status === 'paused') {
+                        const play = head.createEl('button', { cls: 'bfm-dl-job-cancel' });
+                        setIcon(play, 'play');
+                        play.setAttribute('title', 'Resume');
+                        play.addEventListener('click', () => {
+                                this.manager.resume(job.id);
+                                this.render();
+                        });
+                }
+                if (
+                        job.status === 'running' ||
+                        job.status === 'queued' ||
+                        job.status === 'paused' ||
+                        job.status === 'waiting'
+                ) {
+                        const cancel = head.createEl('button', { cls: 'bfm-dl-job-cancel' });
+                        setIcon(cancel, 'x');
+                        cancel.setAttribute('title', 'Cancel');
+                        cancel.addEventListener('click', () => {
+                                const run = (): void => {
+                                        this.manager.cancel(job.id);
+                                        this.render();
+                                };
+                                if (job.partialFound && job.resumeSegments > 0 && this.options.confirmDestructiveActions) {
+                                        new ConfirmModal(
+                                                this.app,
+                                                `Cancel this download? The ${job.resumeSegments} segments already saved will be deleted.`,
+                                                run,
+                                        ).open();
+                                        return;
+                                }
+                                run();
+                        });
+                }
+                if (job.total && job.total > 0 && job.completed !== null && job.status !== 'done') {
+                        const bar = row.createDiv({ cls: 'bfm-dl-progress' });
+                        const fill = bar.createDiv({ cls: 'bfm-dl-progress-fill' });
+                        fill.style.width = `${Math.round((job.completed / job.total) * 100)}%`;
+                }
+                if (job.status === 'failed' && job.partialFound) {
+                        this.renderResumeRow(row, job);
+                }
+        }
+
+        /**
+         * Update just the status text and progress bar of each visible row, so a
+         * fast-downloading queue does not rebuild the whole DOM every 150ms and
+         * stall the window. Rows that changed shape (a job that finished, failed,
+         * or was parked) fall back to a full render.
+         */
+        private tickQueue(): void {
+                const list = this.bodyEl.querySelector<HTMLElement>('.bfm-dl-jobs');
+                if (!list) {
+                        this.render();
+                        return;
+                }
+                for (const job of this.manager.jobs) {
+                        const row = list.querySelector<HTMLElement>(`[data-job-id="${job.id}"]`);
+                        if (!row) {
+                                this.render();
+                                return;
+                        }
+                        if (!row.classList.contains(`is-${job.status}`)) {
+                                this.render();
+                                return;
+                        }
+                        const status = row.querySelector<HTMLElement>('.bfm-dl-job-status');
+                        if (status) status.setText(describeProgress(job));
+                        const fill = row.querySelector<HTMLElement>('.bfm-dl-progress-fill');
+                        if (fill && job.total && job.completed !== null) {
+                                fill.style.width = `${Math.round((job.completed / job.total) * 100)}%`;
+                        }
+                }
+                this.renderStatus();
+        }
+
+        /**
+         * Show how much of a failed download is still on disk and offer to
+         * continue it from the next missing segment.
+         */
+        private renderResumeRow(row: HTMLElement, job: DownloadJob): void {
+                const info = row.createDiv({ cls: 'bfm-dl-resume' });
+                const saved =
+                        job.total !== null
+                                ? `${job.resumeSegments} of ${job.total} segments saved`
+                                : `${job.resumeSegments} segments saved`;
+                info.createSpan({ cls: 'bfm-dl-resume-text', text: `${saved} — resume continues from there.` });
+                const resume = info.createEl('button', { cls: 'mod-cta', text: 'Resume' });
+                resume.addEventListener('click', () => {
+                        this.manager.resume(job.id);
+                        new Notice(`Resuming ${job.seriesTitle} · Episode ${job.episode.number}.`);
+                        this.render();
+                });
+                const discard = info.createEl('button', { text: 'Discard' });
+                discard.addEventListener('click', () => {
+                        const run = (): void => {
+                                void this.manager.discard(job.id).then(() => this.render());
+                        };
+                        if (this.options.confirmDestructiveActions) {
+                                new ConfirmModal(
+                                        this.app,
+                                        `Discard this download? The ${job.resumeSegments} segments already saved will be deleted.`,
+                                        run,
+                                ).open();
+                                return;
+                        }
+                        run();
+                });
+        }
+
+        /**
+         * Fix files downloaded before 1.1.1. mux.js left the track durations at
+         * its "unknown" sentinel, so Samsung Gallery and similar players show
+         * every file as 1:35:15. The real length is still in the movie header,
+         * so the files are repaired in place rather than re-downloaded.
+         */
+        private async repairVideos(): Promise<void> {
+                const adapter = this.app.vault.adapter as unknown as {
+                        readBinary(path: string): Promise<ArrayBuffer>;
+                        writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+                        list(path: string): Promise<{ files: string[]; folders: string[] }>;
+                        exists(path: string): Promise<boolean>;
+                        rename(from: string, to: string): Promise<void>;
+                        remove(path: string): Promise<void>;
+                        stat(path: string): Promise<{ size: number; mtime: number } | null>;
+                };
+                const folder = this.options.external ? '' : this.options.folder;
+                const notice = new Notice('Checking downloaded videos…', 0);
+                try {
+                        const result = await repairFolder(adapter, folder, undefined, {
+                                ledger: this.options.repairLedger,
+                                maxFileBytes: Platform.isMobile ? repairByteBudget() / 2 : undefined,
+                                maxInFlight: Platform.isMobile ? 1 : undefined,
+                        });
+                        notice.hide();
+                        if (result.scanned === 0) {
+                                new Notice('No downloaded videos were found in this folder.');
+                                return;
+                        }
+                        const seconds = result.fixed.reduce((sum, entry) => sum + entry.durationSeconds, 0);
+                        const parts = [
+                                `${result.scanned} checked`,
+                                result.repaired > 0 ? `${result.repaired} repaired` : 'none needed repair',
+                        ];
+                        if (result.repaired > 0) parts.push(`${Math.round(seconds / 60)} minutes fixed`);
+                        if (result.skipped > 0) parts.push(`${result.skipped} already checked`);
+                        if (result.failed.length > 0) {
+                                // A count alone is not diagnosable; the first reason names the
+                                // cause (an unreadable path, a permissions error).
+                                parts.push(`${result.failed.length} failed: ${result.failed[0]?.message ?? 'unknown error'}`);
+                        }
+                        new Notice(parts.join(' · '));
+                } catch (error) {
+                        notice.hide();
+                        new Notice(error instanceof Error ? error.message : 'The repair could not be completed.');
+                }
+        }
+
+        private renderStatus(): void {
+                this.statusEl.empty();
+                const active = this.manager.activeCount;
+                const waiting = this.manager.waitingJobs.length;
+                const paused = this.manager.pausedJobs.length;
+                const done = this.manager.jobs.filter((job) => job.status === 'done').length;
+                const failed = this.manager.jobs.filter((job) => job.status === 'failed').length;
+                const parts: string[] = [];
+                if (active > 0) parts.push(`${active} active`);
+                const speed = this.manager.networkSpeed;
+                if (speed > 0) parts.push(formatSpeed(speed));
+                // The session average is only interesting once something has
+                // finished; while a run is live the instantaneous rate above is
+                // the useful figure.
+                const session = this.manager.averageNetworkSpeed;
+                if (session > 0 && speed <= 0) parts.push(`avg ${formatSpeed(session)}`);
+                if (waiting > 0) parts.push(`${waiting} waiting to retry`);
+                if (paused > 0) parts.push(`${paused} paused`);
+                if (done > 0) parts.push(`${done} done`);
+                if (failed > 0) parts.push(`${failed} failed`);
+                if (this.options.external && externalStorageAvailable()) {
+                        parts.push('saving outside the vault');
+                }
+                this.statusEl.setText(parts.join(' · ') || 'Idle');
+        }
+
+        private updateOption(patch: Partial<DownloadModalOptions>): void {
+                this.options = { ...this.options, ...patch };
+                this.callbacks.onOptionsChanged(patch);
+                if (patch.quality !== undefined || patch.format !== undefined) {
+                        this.renderStatus();
+                }
+        }
+
+        private notifyError(error: unknown): void {
+                const message =
+                        error instanceof AnimeApiError
+                                ? error.message
+                                : error instanceof Error
+                                        ? error.message
+                                        : String(error);
+                new Notice(message);
+        }
+
+        /** Called by the plugin when the manager reports progress. */
+        refresh(): void {
+                if (this.stage === 'queue') this.tickQueue();
+                else this.renderStatus();
+        }
+}

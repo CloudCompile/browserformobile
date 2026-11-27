@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+    - name: Question or usage help
+      url: https://github.com/CloudCompile/browserformobile/discussions
+      about: Ask before opening an issue — most questions are answered by the README's Limitations section.
