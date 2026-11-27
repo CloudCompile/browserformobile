@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { AnimeCache, ttlForPath, isPersistable, pruneEntries, MAX_CACHE_ENTRIES } from '../src/animeCache';
+import {
+        AnimeCache,
+        ttlForPath,
+        isPersistable,
+        pruneEntries,
+        MAX_CACHE_ENTRIES,
+        BROWSE_TTL_MS,
+        SEARCH_TTL_MS,
+} from '../src/animeCache';
 import { setAnimeCache, searchSeries, loadAnimeInfo, loadEpisodes, loadStream } from '../src/animeApi';
 import { requestUrl } from 'obsidian';
 
@@ -27,6 +35,16 @@ describe('ttlForPath', () => {
         it('gives metadata a long life and stream URLs a short one', () => {
                 expect(ttlForPath('/api/info?id=x')).toBeGreaterThan(ttlForPath('/api/search?keyword=x'));
                 expect(ttlForPath('/api/info?id=x')).toBeGreaterThan(ttlForPath('/api/stream?id=x'));
+        });
+
+        it('holds a browse listing for less time than a search', () => {
+                // Listings exist to show what is new; the API's own copy of one
+                // lasts five minutes, so the plugin should not serve a stale one
+                // for longer than a repeated search would be accepted.
+                expect(ttlForPath('/api/most-popular?page=1')).toBe(BROWSE_TTL_MS);
+                expect(ttlForPath('/api/filter?genre=action&page=2')).toBe(BROWSE_TTL_MS);
+                expect(ttlForPath('/api/adult/browse?section=recent&page=1')).toBe(BROWSE_TTL_MS);
+                expect(BROWSE_TTL_MS).toBeLessThan(SEARCH_TTL_MS);
         });
 
         it('does not persist stream URLs', () => {

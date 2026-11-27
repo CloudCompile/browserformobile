@@ -308,11 +308,15 @@ page and the recommendations.
   requests: callers pass the `AnimePreview` they already have.
 - `src/recommendationsModal.ts` — the recommendations page: a poster grid over
   the whole download history, with per-seed progress while it loads.
-- `src/findModal.ts` — the finder: browse listing sections and genre pages
-  (paginated) without searching, then open a title in the downloader. The 18+
-  source is a second tab behind its own opt-in checkbox, reusing the same views.
-  `browseSection` / `browseGenre` / `loadGenres` in `animeApi.ts` back it, and
-  pick the native routes or the `hentaimama` provider routes by source.
+- `src/finder.ts` — the finder's pure model: folding an episode feed into one
+  card per series, the pager (including refusing a page count the source does
+  not report), and the genre filter. No DOM, so it is directly testable.
+- `src/findModal.ts` — the finder: browse listing sections and genre pages,
+  filter the genre list, or search titles (paginated), then open a title in the
+  downloader. The 18+ source is a second tab behind the shared 18+ setting,
+  reusing the same views. `browseSection` / `browseGenre` / `loadGenres` /
+  `searchSeries` in `animeApi.ts` back it, and pick the native routes or the
+  `hentaimama` provider routes by source.
 - `src/recommend.ts` — the pure ranking engine: `tokenize`, `buildTasteProfile`,
   `bm25Scores`, `rankRecommendations`, `blendModelScores`. No I/O, so it is
   directly testable.
@@ -428,6 +432,22 @@ page and the recommendations.
   really is. The detail record carries `status`, `score`, `rating`, `views`,
   `aired`, `studios` and `genres`; they map into `AnimeInfo` and the preview's
   facts rather than being recovered from the description.
+- **The native browse routes do not report a page count.** Every native section
+  answers `totalPages: currentPage + 1` with `hasNextPage: true`, including
+  hundreds of pages in, so `BrowsePage.totalPages` is `null` for those routes
+  and the pager only stops when a page comes back empty. The 18+ `browse` route
+  does report a real count, and it is shown. Do not "fix" the native side by
+  trusting its number.
+- **The 18+ new-episodes feed is a list of episodes, not series.** Rows repeat
+  one series per episode (`episodeNumber`, or a `japanese_title`/slug to parse),
+  so `buildCards` folds them into one card and keeps the newest episode. Do not
+  render the raw rows as duplicate posters badged "Episode".
+- **The 18+ opt-in is one setting.** `showAdultContent` backs both the finder's
+  source tab and the downloader's search checkbox; `adultOptIn` remains on the
+  persisted finder state only to migrate installs from before the setting.
+- **A browse listing is cached for five minutes, not ten.** `BROWSE_TTL_MS`
+  matches the API's own cache; the longer search TTL would keep a "new episodes"
+  page stale by design.
 - **A mirror's container comes from `link.type`, not its URL.** `hls-mp4` and
   `r2-mp4` are single-file MP4 mirrors whose names once read as HLS; the API
   declares the real type, so `loadStream` parses a master playlist only when the

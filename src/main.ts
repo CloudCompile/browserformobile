@@ -520,6 +520,11 @@ export default class AnimePlugin extends Plugin {
 		const modal = new FindModal(this.app, {
 			apiBase: this.settings.animeApiBase,
 			initialState: this.finderState ?? undefined,
+			adultOptIn: this.settings.showAdultContent,
+			onAdultOptInChange: (enabled) => {
+				this.settings.showAdultContent = enabled;
+				void this.saveSettings();
+			},
 			onStateChange: (state) => {
 				this.finderState = state;
 				// Same shape as the queue save: coalesce the writes, since every
@@ -1476,6 +1481,7 @@ export default class AnimePlugin extends Plugin {
 				confirmDestructiveActions: this.settings.confirmDestructiveActions,
 				initialQuery: query,
 				initialSeries: series,
+				adultOptIn: this.settings.showAdultContent,
 				repairLedger: this.repairLedger,
 				seriesPreferences: this.seriesPreferences,
 			},
@@ -1487,6 +1493,11 @@ export default class AnimePlugin extends Plugin {
 					// Scoped to the series: the global quality and format settings
 					// stay untouched, and the override rides the next queue save.
 					this.seriesPreferences = withSeriesPreference(this.seriesPreferences, seriesTitle, patch);
+					void this.saveSettings();
+				},
+				onAdultOptInChange: (enabled) => {
+					// The finder reads the same setting, so the two pages agree.
+					this.settings.showAdultContent = enabled;
 					void this.saveSettings();
 				},
 				onClosed: () => {
@@ -1708,6 +1719,12 @@ export default class AnimePlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const raw = (await this.loadData()) as PersistedShape | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, raw?.settings ?? {});
+		// The finder used to keep its own 18+ opt-in. An install that had turned
+		// it on adopts the shared setting, so the finder and the downloader
+		// search cannot disagree from the first launch after upgrading.
+		if (raw?.finderState?.adultOptIn === true && raw.settings?.showAdultContent === undefined) {
+			this.settings.showAdultContent = true;
+		}
 		// The first browser release pinned every device to one Pixel UA. Move
 		// that stored default to automatic without touching a custom string.
 		if (this.settings.browserUserAgent === LEGACY_DEFAULT_BROWSER_UA) {
@@ -1810,13 +1827,21 @@ export default class AnimePlugin extends Plugin {
 	private parseFinderState(value: unknown): PersistedFinderState | null {
 		if (!value || typeof value !== 'object') return null;
 		const state = value as Partial<PersistedFinderState>;
-		if (state.view !== 'sections' && state.view !== 'genres' && state.view !== 'browse') return null;
+		if (
+			state.view !== 'sections' &&
+			state.view !== 'genres' &&
+			state.view !== 'browse' &&
+			state.view !== 'search'
+		) {
+			return null;
+		}
 		return {
 			source: typeof state.source === 'string' ? state.source : undefined,
 			view: state.view,
 			sectionId: typeof state.sectionId === 'string' ? state.sectionId : null,
 			sectionName: typeof state.sectionName === 'string' ? state.sectionName : '',
 			genreSlug: typeof state.genreSlug === 'string' ? state.genreSlug : null,
+			query: typeof state.query === 'string' ? state.query : '',
 			page: typeof state.page === 'number' && state.page > 0 ? Math.floor(state.page) : 1,
 			adultOptIn: state.adultOptIn === true,
 		};

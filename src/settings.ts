@@ -17,6 +17,11 @@ export interface AnimeSettings {
         /** Base URL of the anime API used by the downloader. */
         animeApiBase: string;
         /**
+         * The one 18+ opt-in. The finder's source tab and the downloader's
+         * search both read it, so the two can never disagree.
+         */
+        showAdultContent: boolean;
+        /**
          * Cache anime API responses on disk. The API is slow to answer because it
          * runs serverless, where no cache of its own survives between requests, so
          * repeating a search or re-opening a series would otherwise re-fetch it.
@@ -118,6 +123,9 @@ export interface AnimeSettings {
 export const DEFAULT_SETTINGS: AnimeSettings = {
         confirmDestructiveActions: true,
         animeApiBase: DEFAULT_API_BASE,
+        // Off by default: the adult source is a separate catalogue, and the
+        // plugin should not reach for it until the user asks.
+        showAdultContent: false,
         animeCacheEnabled: true,
         // Sources are 720p, so this is the usual answer; the closest variant is used
         // when a stream does not offer the exact height.
@@ -192,6 +200,11 @@ export class AnimeSettingTab extends PluginSettingTab {
                                 name: 'Anime API endpoint',
                                 desc: 'Base URL of the anime catalogue used by the downloader. Change this if you self-host the API.',
                                 control: { type: 'text', key: 'animeApiBase', placeholder: DEFAULT_API_BASE },
+                        },
+                        {
+                                name: 'Show 18+ titles',
+                                desc: 'Reveal the opt-in 18+ source in the finder and include its titles in downloader searches. One switch for both pages; off by default.',
+                                control: { type: 'toggle', key: 'showAdultContent' },
                         },
                         {
                                 name: 'Cache anime details',

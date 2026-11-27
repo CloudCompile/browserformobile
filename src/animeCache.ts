@@ -30,6 +30,11 @@ export const SEARCH_TTL_MS = 10 * 60_000;
 export const INFO_TTL_MS = 7 * 24 * 60 * 60_000;
 export const EPISODES_TTL_MS = 12 * 60 * 60_000;
 export const STREAM_TTL_MS = 10 * 60_000;
+/**
+ * Browse listings. Short on purpose: these are the pages whose whole point is
+ * to show what is new, and the API's own cache of them lasts five minutes.
+ */
+export const BROWSE_TTL_MS = 5 * 60_000;
 
 /** Bound on retained entries, so a long browsing history cannot grow forever. */
 export const MAX_CACHE_ENTRIES = 300;
@@ -49,7 +54,30 @@ export function ttlForPath(path: string): number {
         if (path.startsWith('/api/info')) return INFO_TTL_MS;
         if (path.startsWith('/api/episodes/')) return EPISODES_TTL_MS;
         if (path.startsWith('/api/stream')) return STREAM_TTL_MS;
+        if (isBrowsePath(path)) return BROWSE_TTL_MS;
         return SEARCH_TTL_MS;
+}
+
+/** Routes whose rows are a listing of what is new, rather than a search. */
+const BROWSE_ROUTES = [
+        '/api/most-popular',
+        '/api/top-airing',
+        '/api/top-upcoming',
+        '/api/recently-added',
+        '/api/completed',
+        '/api/movie',
+        '/api/tv',
+        '/api/ova',
+        '/api/ona',
+        '/api/special',
+        '/api/filter',
+        '/api/genre/',
+        '/api/adult/browse',
+        '/api/adult/genres',
+];
+
+function isBrowsePath(path: string): boolean {
+        return BROWSE_ROUTES.some((route) => path.startsWith(route));
 }
 
 /**

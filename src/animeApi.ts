@@ -55,6 +55,13 @@ export interface SeriesSummary {
         sub: number;
         dub: number;
         eps: number;
+        /** Catalogue score out of 10, when the row carries a numeric one. */
+        rating?: number | null;
+        /**
+         * Newest episode number, for a source whose listing is an episode feed
+         * rather than a series list. The 18+ browse feed reports one per row.
+         */
+        episodeNumber?: number | null;
         /** Present when the API surfaces an adult-content flag (search/filter may). */
         adultContent?: boolean;
         /**
@@ -277,6 +284,37 @@ function asNullableCount(value: unknown): number | null {
 }
 
 /**
+ * A score out of ten, or null when the field is absent or not numeric.
+ *
+ * Catalogue rows publish `rating: "8.4"`; the 18+ detail record reuses the
+ * same key for an age rating (`"Rx - Hentai"`), so a non-numeric value is
+ * simply not a score and must not become one.
+ */
+function asRating(value: unknown): number | null {
+        if (value === null || value === undefined || value === '') return null;
+        const score = asNumber(value);
+        return score > 0 ? score : null;
+}
+
+/**
+ * The episode a feed row points at, across the shapes the source has served.
+ *
+ * The current 18+ feed publishes `episodeNumber`; older cached rows carry only
+ * the label (`japanese_title: "Episode 4"`) or the episode slug
+ * (`…-episode-4`), so both are read as fallbacks.
+ */
+function episodeNumberFrom(record: Record<string, unknown>): number | null {
+        const explicit = asNumber(record.episodeNumber) || asNumber(record.episode_number);
+        if (explicit > 0) return explicit;
+        const label = asString(record.japanese_title) || asString(record.japaneseTitle);
+        const labelled = /episode\s*(\d+)/i.exec(label);
+        if (labelled) return Number.parseInt(labelled[1] ?? '', 10);
+        const slug = asString(record.episode);
+        const trailing = /-episode-(\d+)$/i.exec(slug);
+        return trailing ? Number.parseInt(trailing[1] ?? '', 10) : null;
+}
+
+/**
  * The display fields of a catalogue row, across both shapes the API has served.
  *
  * List and search rows are flat now (`showType`, `eps`, no sub/dub counts),
@@ -435,6 +473,7 @@ function collectAdultSources(sources: unknown): SeriesSummary[] {
                                 sub: 0,
                                 dub: 0,
                                 eps: asNumber(entry.episodes),
+                                rating: asRating(entry.rating),
                                 adultContent: true,
                                 provider: ADULT_PROVIDER,
                         });
@@ -490,6 +529,7 @@ export async function searchSeries(
                                                 sub: fields.sub,
                                                 dub: fields.dub,
                                                 eps: fields.eps,
+                                                rating: asRating(record.rating),
                                                 // `hm:` rows are adult-only titles the MAL
                                                 // mirror does not carry, so the id itself is
                                                 // the flag. MAL rows keep their explicit one.
@@ -532,8 +572,16 @@ export async function searchSeries(
 /** One page of a browse listing (a section or a genre), from either source. */
 export interface BrowsePage {
         series: SeriesSummary[];
-        totalPages: number;
+        /**
+         * Exact page count when the source reports one, or null when its count
+         * cannot be trusted. The native routes answer `totalPages: page + 1`
+         * with `hasNextPage: true` on every page, so their number is discarded
+         * rather than shown or used to stop paging.
+         */
+        totalPages: number | null;
         page: number;
+        /** Whether another page may hold titles. */
+        hasNextPage: boolean;
 }
 
 /** A genre the current source can be filtered by. */
@@ -711,6 +759,7 @@ function toNativeSummary(record: Record<string, unknown>): SeriesSummary {
                 sub: fields.sub,
                 dub: fields.dub,
                 eps: fields.eps,
+                rating: asRating(record.rating),
         };
 }
 
@@ -719,8 +768,12 @@ function nativePage(results: unknown, requestedPage: number): BrowsePage {
         const rows = Array.isArray(record.data) ? record.data : [];
         return {
                 series: rows.map((row) => toNativeSummary(row as Record<string, unknown>)).filter((series) => series.id),
-                totalPages: Math.max(1, asNumber(record.totalPages)),
-                page: asNumber(record.page) || requestedPage,
+                // The native routes always report `currentPage + 1` pages and
+                // `hasNextPage: true`, so their count is not a fact. A page with
+                // no rows is the only honest end.
+                totalPages: null,
+                page: asNumber(record.page) || asNumber(record.currentPage) || requestedPage,
+                hasNextPage: rows.length > 0 && record.hasNextPage !== false,
         };
 }
 
@@ -749,15 +802,23 @@ function adultPage(results: unknown): BrowsePage {
                                 sub: fields.sub,
                                 dub: fields.dub,
                                 eps: fields.eps || asNumber(entry.episodes),
+                                rating: asRating(entry.rating),
+                                episodeNumber: episodeNumberFrom(entry),
                                 adultContent: true,
                                 provider: native ? undefined : ADULT_PROVIDER,
                         };
                 })
                 .filter((series): series is SeriesSummary => series !== null);
+        const totalPages = asNumber(record.totalPages) || asNumber(record.totalPage);
+        const page = asNumber(record.page) || asNumber(record.currentPage) || 1;
         return {
                 series,
-                totalPages: Math.max(1, asNumber(record.totalPages)),
-                page: asNumber(record.page) || 1,
+                totalPages: totalPages > 0 ? totalPages : null,
+                page,
+                hasNextPage:
+                        typeof record.hasNextPage === 'boolean'
+                                ? record.hasNextPage
+                                : totalPages > 0 && page < totalPages,
         };
 }
 

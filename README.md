@@ -53,15 +53,20 @@ Open it from the compass ribbon icon or the **Anime: find anime** command.
 
 Instead of typing a search, browse the catalogue: pick a listing section (most
 popular, top airing, top upcoming, recently added, completed, or a format such
-as movies) or **Browse by genre**, then page through the poster grid. Selecting
-a title opens it straight in the downloader, ready for episode selection. The
-finder reopens where you left it — the same section or genre, and page.
+as movies) or **Browse by genre**, then page through the poster grid. A search
+box on the front page searches every title when you do know one, and the genre
+page has its own filter for the long list. Selecting a title opens it straight
+in the downloader, ready for episode selection. The finder reopens where you
+left it — the same section, genre, search, or page.
 
-The **18+** checkbox in the finder reveals a second tab backed by the adult
-source, which has its own sections (monthly releases, all series) and its own
-genre list. It uses the same grid and pager, so the browsing is identical; leave
-the box off and only the normal catalogue is reachable. A restored finder obeys
-the same gate: the adult tab comes back only if the box is still on.
+The 18+ source is a single opt-in, shared with the downloader's search: turn on
+**Show 18+** in either place and the second source is available in both. Its
+finder tab has its own sections (monthly releases, new episodes, all series) and
+its own genre list, using the same grid and pager. Listings that arrive as
+individual episodes — the new-episodes feed — are folded into one card per
+series showing the newest episode, and every card shows the catalogue score
+where the catalogue has one. Leave the switch off and only the normal catalogue
+is reachable; a restored finder obeys the same gate.
 
 ## Embedded browser
 

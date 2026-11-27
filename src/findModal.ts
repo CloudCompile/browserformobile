@@ -2,12 +2,24 @@ import { App, Modal, setIcon } from 'obsidian';
 import { createCover } from './covers';
 import {
         ADULT_PROVIDER,
+        AnimeApiError,
         browseGenre,
         browseSection,
         loadGenres,
+        searchSeries,
+        type BrowsePage,
         type GenreRef,
         type SeriesSummary,
 } from './animeApi';
+import {
+        buildCards,
+        filterGenres,
+        pagerFor,
+        pagerForBrowse,
+        pagerLabel,
+        type FinderCard,
+        type PagerModel,
+} from './finder';
 
 /** A listing section the API exposes as its own route. */
 interface Section {
@@ -36,7 +48,7 @@ const ADULT_SECTIONS: Section[] = [
         { id: 'series', name: 'All series', description: 'Every title on the source', icon: 'layout-grid' },
 ];
 
-type View = 'sections' | 'genres' | 'browse';
+type View = 'sections' | 'genres' | 'browse' | 'search';
 
 /**
  * Where the finder was left, so reopening it lands back on the same listing
@@ -50,13 +62,14 @@ export interface PersistedFinderState {
         sectionId: string | null;
         sectionName: string;
         genreSlug: string | null;
+        /** Last title search, so the box is filled in again. */
+        query: string;
         page: number;
         /**
-         * The 18+ opt-in as it stood. Restoring the adult source is gated on it,
-         * so a listing from that source only ever comes back when the opt-in
-         * comes back with it.
+         * Legacy: the finder's own opt-in, before it became one plugin-wide
+         * setting. Still read so an existing install keeps its adult tab.
          */
-        adultOptIn: boolean;
+        adultOptIn?: boolean;
 }
 
 export interface FindModalOptions {
@@ -67,28 +80,49 @@ export interface FindModalOptions {
         initialState?: PersistedFinderState;
         /** Called whenever the visible place changes, to persist it. */
         onStateChange?(state: PersistedFinderState): void;
+        /** The plugin-wide 18+ opt-in, shared with the downloader's search. */
+        adultOptIn?: boolean;
+        /** Called when the opt-in is switched, so the plugin can persist it. */
+        onAdultOptInChange?(enabled: boolean): void;
+}
+
+/** Which pager button should take focus after the next render. */
+type PagerStep = 'prev' | 'next';
+
+/** A score out of ten, printed without a pointless trailing zero. */
+function formatRating(rating: number): string {
+        return Number.isInteger(rating) ? String(rating) : rating.toFixed(1);
 }
 
 /**
  * Browse the catalogue without searching: pick a listing section or a genre and
- * page through the titles. The 18+ source has the same shape (its own sections
- * and genre pages) and is offered as a second tab once it is switched on, the
- * same opt-in the downloader's search uses.
+ * page through the titles, or search across both sources from the front page.
+ * The 18+ source has the same shape (its own sections and genre pages) and is
+ * offered as a second tab once the shared opt-in is on.
  */
 export class FindModal extends Modal {
-        private includeAdult = false;
+        private includeAdult: boolean;
         private source: string | undefined;
         private view: View = 'sections';
         private sectionId: string | null = null;
         private sectionName = '';
         private genreSlug: string | null = null;
+        private query = '';
         private page = 1;
-        private totalPages = 1;
+        private totalPages: number | null = null;
+        private hasNextPage = false;
         private series: SeriesSummary[] = [];
         private genres: GenreRef[] = [];
         private busy = false;
         /** A failed load, kept so the page can offer a retry instead of an empty grid. */
         private error: string | null = null;
+        /**
+         * Every load takes a ticket; only the newest ticket may paint. Without
+         * it, paging quickly left a slow answer for page 2 under the heading for
+         * page 3 (and a source switch could be overwritten by the old source).
+         */
+        private requestSeq = 0;
+        private pendingFocus: PagerStep | null = null;
         private bodyEl!: HTMLElement;
 
         constructor(
@@ -96,6 +130,8 @@ export class FindModal extends Modal {
                 private readonly options: FindModalOptions,
         ) {
                 super(app);
+                this.includeAdult =
+                        options.adultOptIn === true || options.initialState?.adultOptIn === true;
                 this.modalEl.addClass('bfm-find-modal');
         }
 
@@ -104,10 +140,11 @@ export class FindModal extends Modal {
                 this.contentEl.empty();
                 this.bodyEl = this.contentEl.createDiv({ cls: 'bfm-find-body' });
                 this.restoreState();
+                // A restored deep view loads immediately, so open on skeletons
+                // rather than flashing an empty state first.
+                this.busy = this.view !== 'sections';
                 this.render();
-                // A restored deep view reloads its listing; the sections view is
-                // already on screen after render().
-                if (this.view === 'browse') void this.load();
+                if (this.view === 'browse' || this.view === 'search') void this.load();
                 else if (this.view === 'genres') void this.loadGenreList();
         }
 
@@ -115,15 +152,22 @@ export class FindModal extends Modal {
         private restoreState(): void {
                 const state = this.options.initialState;
                 if (!state) return;
-                this.includeAdult = state.adultOptIn === true;
-                this.view = state.view === 'genres' || state.view === 'browse' ? state.view : 'sections';
+                this.view = state.view;
                 this.sectionId = typeof state.sectionId === 'string' ? state.sectionId : null;
                 this.sectionName = typeof state.sectionName === 'string' ? state.sectionName : '';
                 this.genreSlug = typeof state.genreSlug === 'string' ? state.genreSlug : null;
-                this.page = typeof state.page === 'number' && Number.isFinite(state.page) && state.page > 0 ? Math.floor(state.page) : 1;
+                this.query = typeof state.query === 'string' ? state.query : '';
+                this.page =
+                        typeof state.page === 'number' && Number.isFinite(state.page) && state.page > 0
+                                ? Math.floor(state.page)
+                                : 1;
                 // The same rule the opt-in checkbox applies: an 18+ source without
                 // the opt-in falls back to the catalogue.
                 this.source = state.source && this.includeAdult ? state.source : undefined;
+                // A view whose destination is gone is the front page, not a blank
+                // listing with no way back.
+                if (this.view === 'browse' && !this.sectionId && !this.genreSlug) this.view = 'sections';
+                if (this.view === 'search' && !this.query.trim()) this.view = 'sections';
         }
 
         /** The state as it is on screen, for the caller to persist. */
@@ -134,12 +178,13 @@ export class FindModal extends Modal {
                         sectionId: this.sectionId,
                         sectionName: this.sectionName,
                         genreSlug: this.genreSlug,
+                        query: this.query,
                         page: this.page,
-                        adultOptIn: this.includeAdult,
                 };
         }
 
         onClose(): void {
+                this.cancelPending();
                 this.contentEl.empty();
         }
 
@@ -162,8 +207,13 @@ export class FindModal extends Modal {
 
         private renderSourceTabs(): void {
                 const bar = this.bodyEl.createDiv({ cls: 'bfm-find-bar' });
-                const tabs = bar.createDiv({ cls: 'bfm-find-tabs', attr: { role: 'tablist', 'aria-label': 'Source' } });
-                const sources: { id: string | undefined; name: string }[] = [{ id: undefined, name: 'Catalogue' }];
+                const tabs = bar.createDiv({
+                        cls: 'bfm-find-tabs',
+                        attr: { role: 'tablist', 'aria-label': 'Source' },
+                });
+                const sources: { id: string | undefined; name: string }[] = [
+                        { id: undefined, name: 'Catalogue' },
+                ];
                 if (this.includeAdult) sources.push({ id: ADULT_PROVIDER, name: '18+' });
                 for (const entry of sources) {
                         const active = this.source === entry.id;
@@ -192,24 +242,67 @@ export class FindModal extends Modal {
                 });
                 checkbox.checked = this.includeAdult;
                 label.createSpan({ text: 'Show 18+' });
-                checkbox.addEventListener('change', () => {
-                        this.includeAdult = checkbox.checked;
-                        // Leaving the 18+ source on screen after switching the opt-in off
-                        // would keep serving adult listings, so fall back to the catalogue.
-                        if (!this.includeAdult && this.source === ADULT_PROVIDER) this.source = undefined;
+                checkbox.addEventListener('change', () => this.setAdultOptIn(checkbox.checked));
+        }
+
+        /**
+         * Switch the shared 18+ opt-in.
+         *
+         * The same flag backs the downloader's search, so it is reported to the
+         * plugin rather than kept in this modal's own saved state. Leaving the
+         * source after switching it off would keep serving adult listings, so
+         * that falls back to the catalogue.
+         */
+        private setAdultOptIn(enabled: boolean): void {
+                if (this.includeAdult === enabled) return;
+                this.includeAdult = enabled;
+                this.options.onAdultOptInChange?.(enabled);
+                if (!enabled && this.source === ADULT_PROVIDER) {
+                        this.source = undefined;
                         this.resetToSections();
                         this.render();
-                });
+                        return;
+                }
+                // A genre list belongs to the source that produced it.
+                this.genres = [];
+                if (this.view === 'browse' || this.view === 'search') {
+                        this.page = 1;
+                        this.render();
+                        void this.load();
+                } else if (this.view === 'genres') {
+                        void this.loadGenreList();
+                } else {
+                        this.render();
+                }
+        }
+
+        /** Stop an in-flight load from painting over whatever comes next. */
+        private cancelPending(): void {
+                this.requestSeq += 1;
+                this.busy = false;
         }
 
         private resetToSections(): void {
+                this.cancelPending();
+                this.pendingFocus = null;
                 this.view = 'sections';
                 this.sectionId = null;
                 this.sectionName = '';
                 this.genreSlug = null;
                 this.genres = [];
+                this.series = [];
                 this.error = null;
+                this.totalPages = null;
+                this.hasNextPage = false;
                 this.page = 1;
+        }
+
+        private goToSections(): void {
+                this.cancelPending();
+                this.pendingFocus = null;
+                this.view = 'sections';
+                this.error = null;
+                this.render();
         }
 
         private renderSections(host: HTMLElement): void {
@@ -220,8 +313,10 @@ export class FindModal extends Modal {
                 });
                 intro.createDiv({
                         cls: 'bfm-find-intro-text',
-                        text: 'Pick a list to page through, or start from a genre. Titles open in the downloader.',
+                        text: 'Pick a list to page through, start from a genre, or search by title. Titles open in the downloader.',
                 });
+
+                this.renderSearchEntry(host);
 
                 const list = host.createDiv({ cls: 'bfm-find-sections' });
                 for (const section of this.sections()) {
@@ -243,11 +338,62 @@ export class FindModal extends Modal {
                 const chevron = entry.createDiv({ cls: 'bfm-find-section-chevron' });
                 setIcon(chevron, 'chevron-right');
                 entry.addEventListener('click', () => {
+                        this.cancelPending();
                         this.view = 'genres';
                         this.error = null;
                         this.contentEl.scrollTop = 0;
                         void this.loadGenreList();
                 });
+        }
+
+        private renderSearchEntry(host: HTMLElement): void {
+                const form = host.createEl('form', {
+                        cls: 'bfm-find-search',
+                        attr: { role: 'search' },
+                });
+                const input = form.createEl('input', {
+                        cls: 'bfm-find-search-input',
+                        attr: {
+                                type: 'search',
+                                placeholder: 'Search titles…',
+                                'aria-label': 'Search titles',
+                                enterkeyhint: 'search',
+                        },
+                });
+                input.value = this.query;
+                const submit = form.createEl('button', {
+                        cls: 'bfm-find-search-submit',
+                        attr: { type: 'submit' },
+                });
+                const icon = submit.createSpan({ cls: 'bfm-find-search-icon' });
+                setIcon(icon, 'search');
+                submit.createSpan({ text: 'Search' });
+                form.addEventListener('submit', (event) => {
+                        event.preventDefault();
+                        const query = input.value.trim();
+                        if (!query) {
+                                input.focus();
+                                return;
+                        }
+                        this.startSearch(query);
+                });
+        }
+
+        private startSearch(query: string): void {
+                this.cancelPending();
+                this.pendingFocus = null;
+                this.query = query;
+                this.view = 'search';
+                this.sectionId = null;
+                this.sectionName = '';
+                this.genreSlug = null;
+                this.series = [];
+                this.error = null;
+                this.totalPages = null;
+                this.hasNextPage = false;
+                this.page = 1;
+                this.contentEl.scrollTop = 0;
+                void this.load();
         }
 
         private renderSectionCard(list: HTMLElement, section: Section): void {
@@ -264,6 +410,7 @@ export class FindModal extends Modal {
                 setIcon(chevron, 'chevron-right');
 
                 const open = () => {
+                        this.cancelPending();
                         this.sectionId = section.id;
                         this.sectionName = section.name;
                         this.genreSlug = null;
@@ -282,17 +429,23 @@ export class FindModal extends Modal {
                         this.render();
                         return;
                 }
+                const seq = ++this.requestSeq;
                 this.busy = true;
                 this.error = null;
                 this.render();
                 try {
-                        this.genres = await loadGenres(this.options.apiBase, this.source);
-                } catch {
+                        const genres = await loadGenres(this.options.apiBase, this.source);
+                        if (seq !== this.requestSeq) return;
+                        this.genres = genres;
+                } catch (error) {
+                        if (seq !== this.requestSeq) return;
                         this.genres = [];
-                        this.error = 'Could not load genres.';
+                        this.error = this.describeError(error, 'Could not load genres.');
                 } finally {
-                        this.busy = false;
-                        this.render();
+                        if (seq === this.requestSeq) {
+                                this.busy = false;
+                                this.render();
+                        }
                 }
         }
 
@@ -301,11 +454,7 @@ export class FindModal extends Modal {
                         title: 'Genres',
                         meta: this.busy ? 'Loading genres…' : `${this.genres.length} genres`,
                         adult: this.source === ADULT_PROVIDER,
-                        back: () => {
-                                this.view = 'sections';
-                                this.error = null;
-                                this.render();
-                        },
+                        back: () => this.goToSections(),
                 });
 
                 if (this.busy) {
@@ -316,7 +465,7 @@ export class FindModal extends Modal {
                         this.renderState(host, {
                                 icon: 'alert-triangle',
                                 title: 'Could not load genres',
-                                text: 'Check your connection and try again.',
+                                text: this.error,
                                 action: 'Try again',
                                 onAction: () => void this.loadGenreList(),
                         });
@@ -333,14 +482,28 @@ export class FindModal extends Modal {
                         return;
                 }
 
+                const filter = host.createEl('label', { cls: 'bfm-find-filter' });
+                const input = filter.createEl('input', {
+                        attr: {
+                                type: 'search',
+                                placeholder: 'Filter genres…',
+                                'aria-label': 'Filter genres',
+                        },
+                });
+                const count = filter.createSpan({
+                        cls: 'bfm-find-filter-count',
+                        text: `${this.genres.length} genres`,
+                });
+
                 const list = host.createDiv({ cls: 'bfm-find-genres' });
                 for (const genre of this.genres) {
                         const chip = list.createEl('button', {
                                 cls: 'bfm-find-genre',
                                 text: genre.name,
-                                attr: { type: 'button' },
+                                attr: { type: 'button', 'data-genre': genre.slug },
                         });
                         chip.addEventListener('click', () => {
+                                this.cancelPending();
                                 this.genreSlug = genre.slug;
                                 this.sectionName = genre.name;
                                 this.sectionId = null;
@@ -351,21 +514,106 @@ export class FindModal extends Modal {
                                 void this.load();
                         });
                 }
+                const noMatches = host.createDiv({
+                        cls: 'bfm-find-genre-empty',
+                        text: 'No genres match that filter.',
+                });
+                noMatches.hidden = true;
+
+                // Filtering toggles chips in place so typing never rebuilds the
+                // list (and never loses the caret).
+                input.addEventListener('input', () => {
+                        const matches = filterGenres(this.genres, input.value);
+                        const visible = new Set(matches.map((genre) => genre.slug));
+                        let shown = 0;
+                        for (const chip of Array.from(list.querySelectorAll<HTMLElement>('.bfm-find-genre'))) {
+                                const match = visible.has(chip.dataset.genre ?? '');
+                                chip.hidden = !match;
+                                if (match) shown += 1;
+                        }
+                        count.setText(`${shown} of ${this.genres.length} genres`);
+                        noMatches.hidden = shown > 0;
+                });
         }
 
         private renderBrowse(host: HTMLElement): void {
-                const goBack = () => {
-                        this.view = this.genreSlug ? 'genres' : 'sections';
-                        this.error = null;
-                        this.render();
-                };
-                this.renderToolbar(host, {
-                        title: this.sectionName || 'Titles',
+                const searching = this.view === 'search';
+                const goBack = () => (searching ? this.goToSections() : this.goBackFromBrowse());
+                const cards = buildCards(this.series);
+                const pager = searching
+                        ? pagerFor(this.page, this.totalPages, this.hasNextPage)
+                        : pagerForBrowse({
+                                  series: this.series,
+                                  totalPages: this.totalPages,
+                                  page: this.page,
+                                  hasNextPage: this.hasNextPage,
+                              });
+                const title = searching
+                        ? `Results for “${this.query}”`
+                        : this.sectionName || 'Titles';
+                this.renderListing(host, {
+                        title,
                         meta: this.busy
-                                ? 'Loading titles…'
-                                : `Page ${this.page} of ${this.totalPages} · ${this.series.length} titles`,
-                        adult: this.source === ADULT_PROVIDER,
+                                ? searching
+                                        ? 'Searching…'
+                                        : 'Loading titles…'
+                                : `${cards.length} ${cards.length === 1 ? 'title' : 'titles'} · ${pagerLabel(pager)}`,
+                        adult: !searching && this.source === ADULT_PROVIDER,
                         back: goBack,
+                        cards,
+                        pager,
+                        empty: searching
+                                ? {
+                                          icon: 'search',
+                                          title: 'No titles matched',
+                                          text: 'Try a shorter title, or browse a section instead.',
+                                          action: 'Clear search',
+                                          onAction: () => {
+                                                  this.query = '';
+                                                  this.goToSections();
+                                          },
+                                  }
+                                : {
+                                          icon: 'inbox',
+                                          title: 'Nothing here yet',
+                                          text: 'This list has no titles right now. Try another section or check back later.',
+                                          action: 'Go back',
+                                          onAction: () => this.goBackFromBrowse(),
+                                  },
+                });
+        }
+
+        private goBackFromBrowse(): void {
+                this.cancelPending();
+                this.view = this.genreSlug ? 'genres' : 'sections';
+                this.error = null;
+                this.render();
+                if (this.view === 'genres' && this.genres.length === 0) void this.loadGenreList();
+        }
+
+        private renderListing(
+                host: HTMLElement,
+                options: {
+                        title: string;
+                        meta: string;
+                        adult: boolean;
+                        back: () => void;
+                        cards: FinderCard[];
+                        pager: PagerModel;
+                        empty: {
+                                icon: string;
+                                title: string;
+                                text: string;
+                                action: string;
+                                onAction: () => void;
+                        };
+                },
+        ): void {
+                this.renderToolbar(host, {
+                        title: options.title,
+                        meta: options.meta,
+                        adult: options.adult,
+                        back: options.back,
                 });
 
                 if (this.busy) {
@@ -376,28 +624,20 @@ export class FindModal extends Modal {
                         this.renderState(host, {
                                 icon: 'alert-triangle',
                                 title: 'Could not load this list',
-                                text: 'Check your connection and try again.',
+                                text: this.error,
                                 action: 'Try again',
                                 onAction: () => void this.load(),
                         });
                         return;
                 }
-                if (this.series.length === 0) {
-                        this.renderState(host, {
-                                icon: 'inbox',
-                                title: 'Nothing here yet',
-                                text: 'This list has no titles right now. Try another section or check back later.',
-                                action: 'Go back',
-                                onAction: goBack,
-                        });
+                if (options.cards.length === 0) {
+                        this.renderState(host, options.empty);
                         return;
                 }
 
                 const grid = host.createDiv({ cls: 'bfm-find-grid' });
-                for (const series of this.series) {
-                        this.renderCard(grid, series);
-                }
-                this.renderPager(host);
+                for (const card of options.cards) this.renderCard(grid, card);
+                this.renderPager(host, options.pager);
         }
 
         private renderToolbar(
@@ -416,85 +656,125 @@ export class FindModal extends Modal {
 
                 const title = bar.createDiv({ cls: 'bfm-find-browse-title' });
                 title.createDiv({ cls: 'bfm-find-heading', text: options.title });
-                title.createDiv({ cls: 'bfm-find-browse-meta', text: options.meta, attr: { 'aria-live': 'polite' } });
+                title.createDiv({
+                        cls: 'bfm-find-browse-meta',
+                        text: options.meta,
+                        attr: { 'aria-live': 'polite' },
+                });
 
                 if (options.adult) bar.createSpan({ cls: 'bfm-find-source-chip', text: '18+' });
         }
 
-        private renderCard(grid: HTMLElement, series: SeriesSummary): void {
+        private renderCard(grid: HTMLElement, card: FinderCard): void {
+                const series = card.series;
                 const title = series.title || series.id;
-                const card = grid.createDiv({
+                const element = grid.createDiv({
                         cls: 'bfm-find-card',
                         attr: { role: 'button', tabindex: '0', 'aria-label': `Open ${title}` },
                 });
 
                 // A poster that is missing or refuses to load still leaves a card
                 // with its title, badges and meta: the art is an enhancement.
-                const poster = card.createDiv({ cls: 'bfm-find-poster-wrap' });
+                const poster = element.createDiv({ cls: 'bfm-find-poster-wrap' });
                 createCover(poster, series.poster, title, {
                         imageClass: 'bfm-find-poster',
                         fallbackClass: 'bfm-find-poster-fallback',
                 });
 
                 const badges = poster.createDiv({ cls: 'bfm-find-badges' });
-                if (series.showType && series.showType !== 'Unknown') {
+                const rating = series.rating;
+                if (typeof rating === 'number' && rating > 0) {
+                        const printed = formatRating(rating);
+                        badges.createSpan({
+                                cls: 'bfm-find-badge is-rating',
+                                text: `★ ${printed}`,
+                                attr: { 'aria-label': `Rated ${printed} out of 10` },
+                        });
+                }
+                if (card.episodeNumber !== null) {
+                        // The feed's own rows all say "Episode"; the number is the
+                        // useful part, and the series type is not known here anyway.
+                        badges.createSpan({ cls: 'bfm-find-badge', text: `Ep ${card.episodeNumber}` });
+                } else if (series.showType && series.showType !== 'Unknown') {
                         badges.createSpan({ cls: 'bfm-find-badge', text: series.showType });
                 }
-                if (series.eps > 0) {
+                if (card.episodeNumber === null && series.eps > 0) {
                         badges.createSpan({ cls: 'bfm-find-badge', text: `${series.eps} eps` });
                 }
                 if (series.adultContent) {
                         badges.createSpan({ cls: 'bfm-find-badge is-adult', text: '18+' });
                 }
 
-                const body = card.createDiv({ cls: 'bfm-find-card-body' });
+                const body = element.createDiv({ cls: 'bfm-find-card-body' });
                 body.createDiv({ cls: 'bfm-find-card-title', text: title });
-                const meta = this.cardMeta(series);
+                const meta = this.cardMeta(card);
                 if (meta) body.createDiv({ cls: 'bfm-find-card-meta', text: meta });
 
                 const open = () => this.options.onOpenSeries(series);
-                card.addEventListener('click', open);
-                this.activateOnKey(card, open);
+                element.addEventListener('click', open);
+                this.activateOnKey(element, open);
         }
 
-        private cardMeta(series: SeriesSummary): string {
+        private cardMeta(card: FinderCard): string {
+                const series = card.series;
                 const parts: string[] = [];
-                if (series.eps > 0) parts.push(`${series.eps} episode${series.eps === 1 ? '' : 's'}`);
-                if (series.dub > 0) parts.push(`${series.dub} dub`);
-                if (series.sub > 0) parts.push(`${series.sub} sub`);
+                if (card.episodeNumber !== null) {
+                        // Episode counts on a feed row are absent, and the row's
+                        // "type" is the word Episode; the merge count is the fact
+                        // this card can actually report.
+                        if (card.episodes > 1) parts.push(`${card.episodes} new episodes`);
+                } else {
+                        if (series.eps > 0) parts.push(`${series.eps} episode${series.eps === 1 ? '' : 's'}`);
+                        if (series.dub > 0) parts.push(`${series.dub} dub`);
+                        if (series.sub > 0) parts.push(`${series.sub} sub`);
+                }
                 return parts.join(' · ');
         }
 
-        private renderPager(host: HTMLElement): void {
-                const pager = host.createEl('nav', {
+        private renderPager(host: HTMLElement, pager: PagerModel): void {
+                if (!pager.visible) return;
+                const nav = host.createEl('nav', {
                         cls: 'bfm-find-pager',
                         attr: { 'aria-label': 'Pagination' },
                 });
 
-                const previous = pager.createEl('button', {
+                const previous = nav.createEl('button', {
                         cls: 'bfm-find-pager-step',
-                        attr: { type: 'button', 'aria-label': 'Previous page' },
+                        attr: { type: 'button', 'aria-label': 'Previous page', 'data-find-step': 'prev' },
                 });
                 const previousIcon = previous.createSpan({ cls: 'bfm-find-pager-icon' });
                 setIcon(previousIcon, 'chevron-left');
                 previous.createSpan({ text: 'Prev' });
-                previous.disabled = this.page <= 1 || this.busy;
-                previous.addEventListener('click', () => this.goToPage(this.page - 1));
+                previous.disabled = !pager.hasPrevious;
+                previous.addEventListener('click', () => this.goToPage(pager.page - 1, 'prev'));
 
-                const status = pager.createSpan({ cls: 'bfm-find-pager-status' });
+                const status = nav.createSpan({ cls: 'bfm-find-pager-status' });
                 status.createSpan({ text: 'Page ' });
-                status.createEl('strong', { text: String(this.page) });
-                status.createSpan({ text: ` of ${this.totalPages}` });
+                status.createEl('strong', { text: String(pager.page) });
+                if (pager.totalPages !== null) {
+                        status.createSpan({ text: ` of ${pager.totalPages}` });
+                }
 
-                const next = pager.createEl('button', {
+                const next = nav.createEl('button', {
                         cls: 'bfm-find-pager-step',
-                        attr: { type: 'button', 'aria-label': 'Next page' },
+                        attr: { type: 'button', 'aria-label': 'Next page', 'data-find-step': 'next' },
                 });
                 next.createSpan({ text: 'Next' });
                 const nextIcon = next.createSpan({ cls: 'bfm-find-pager-icon' });
                 setIcon(nextIcon, 'chevron-right');
-                next.disabled = this.page >= this.totalPages || this.busy;
-                next.addEventListener('click', () => this.goToPage(this.page + 1));
+                next.disabled = !pager.hasNext;
+                next.addEventListener('click', () => this.goToPage(pager.page + 1, 'next'));
+
+                // Paging rebuilds the page (skeletons, then the answer), so the
+                // button that had focus no longer exists. Put it back on the same
+                // control, without scrolling away from the new page's top.
+                const step = this.pendingFocus;
+                this.pendingFocus = null;
+                if (!step) return;
+                const preferred = step === 'next' ? next : previous;
+                const fallback = step === 'next' ? previous : next;
+                if (!preferred.disabled) preferred.focus({ preventScroll: true });
+                else if (!fallback.disabled) fallback.focus({ preventScroll: true });
         }
 
         private renderSkeletons(host: HTMLElement): void {
@@ -545,32 +825,82 @@ export class FindModal extends Modal {
                 });
         }
 
-        private goToPage(next: number): void {
-                if (this.busy || next === this.page || next < 1 || next > this.totalPages) return;
+        private goToPage(next: number, focus: PagerStep): void {
+                if (next === this.page) return;
+                if (next > this.page && !this.hasNextPage) return;
+                if (next < 1) return;
                 this.page = next;
+                this.pendingFocus = focus;
+                this.contentEl.scrollTop = 0;
                 void this.load();
         }
 
+        /** Turn a thrown error into the sentence the page shows. */
+        private describeError(error: unknown, fallback: string): string {
+                return error instanceof AnimeApiError && error.message ? error.message : fallback;
+        }
+
+        /**
+         * Load the page on screen. Every call supersedes the last one instead of
+         * being dropped while busy, so paging never silently ignores a tap, and
+         * only the newest answer paints.
+         */
         private async load(): Promise<void> {
-                if (this.busy) return;
+                const seq = ++this.requestSeq;
                 this.busy = true;
                 this.error = null;
                 this.render();
                 try {
-                        const page = this.genreSlug
-                                ? await browseGenre(this.options.apiBase, this.genreSlug, this.page, this.source)
-                                : await browseSection(this.options.apiBase, this.sectionId ?? 'most-popular', this.page, this.source);
-                        this.series = page.series;
-                        this.totalPages = Math.max(1, page.totalPages);
-                        this.page = page.page;
-                } catch {
+                        let answer: BrowsePage;
+                        if (this.view === 'search') {
+                                const result = await searchSeries(this.options.apiBase, this.query, {
+                                        page: this.page,
+                                        includeAdult: this.includeAdult,
+                                });
+                                const totalPages = Math.max(1, result.totalPages);
+                                // A restored page can outlive the result set that
+                                // produced it; the API serves the last real page,
+                                // so the pager must show that page, not the one
+                                // that was asked for.
+                                const page = Math.min(this.page, totalPages);
+                                answer = {
+                                        series: result.series,
+                                        totalPages,
+                                        page,
+                                        hasNextPage: page < totalPages && result.series.length > 0,
+                                };
+                        } else if (this.genreSlug) {
+                                answer = await browseGenre(
+                                        this.options.apiBase,
+                                        this.genreSlug,
+                                        this.page,
+                                        this.source,
+                                );
+                        } else {
+                                answer = await browseSection(
+                                        this.options.apiBase,
+                                        this.sectionId ?? 'most-popular',
+                                        this.page,
+                                        this.source,
+                                );
+                        }
+                        if (seq !== this.requestSeq) return;
+                        this.series = answer.series;
+                        this.page = answer.page;
+                        this.totalPages = answer.totalPages;
+                        this.hasNextPage = answer.hasNextPage;
+                } catch (error) {
+                        if (seq !== this.requestSeq) return;
                         this.series = [];
-                        this.totalPages = 1;
-                        this.error = 'Could not load this list.';
+                        this.totalPages = null;
+                        this.hasNextPage = false;
+                        this.error = this.describeError(error, 'Could not load this list.');
                 } finally {
-                        this.busy = false;
-                        if (!this.error) this.contentEl.scrollTop = 0;
-                        this.render();
+                        if (seq === this.requestSeq) {
+                                this.busy = false;
+                                this.contentEl.scrollTop = 0;
+                                this.render();
+                        }
                 }
         }
 }

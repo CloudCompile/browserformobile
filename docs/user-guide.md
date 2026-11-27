@@ -37,10 +37,13 @@ Two ways in, both from the ribbon or the command palette:
 - **Search** (**Open anime downloader**) — type a title, pick it from the
   results.
 - **Browse** (**Anime: find anime**) — page through listing sections (most
-  popular, top airing, movies, …) or a genre page without typing a search.
-  Whatever you open lands straight in the downloader.
+  popular, top airing, movies, …) or a genre page, filter the genre list, or
+  search by title from the front page. Whatever you open lands straight in the
+  downloader.
 
-The finder reopens where you left it: same section or genre, same page.
+The finder reopens where you left it: same section, genre, search, or page. Its
+**Show 18+** switch is the same opt-in the downloader's search uses, so turning
+it on in one place turns it on in both.
 
 > 📱 **Screenshot placeholder** — *the finder's poster grid, with a section
 > picker at the top.*

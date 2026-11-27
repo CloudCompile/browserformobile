@@ -49,6 +49,8 @@ export interface DownloadModalOptions {
         initialQuery?: string;
         /** A specific series to open straight to its detail page, with its source. */
         initialSeries?: SeriesSummary;
+        /** The plugin-wide 18+ opt-in, shared with the finder. */
+        adultOptIn?: boolean;
         /** Files a previous repair pass cleared, so this one skips them. */
         repairLedger?: RepairLedger;
         /**
@@ -69,6 +71,8 @@ export interface DownloadModalCallbacks {
         onSeriesPreference?(series: string, patch: SeriesPreference): void;
         /** Fired when the window closes, so the plugin can drop its reference. */
         onClosed?(): void;
+        /** Called when the shared 18+ opt-in is switched from the search stage. */
+        onAdultOptInChange?(enabled: boolean): void;
 }
 
 const QUALITY_CHOICES: { value: string; label: string }[] = [
@@ -124,6 +128,7 @@ export class DownloadModal extends Modal {
         ) {
                 super(app);
                 this.options = { ...options };
+                this.includeAdult = options.adultOptIn === true;
                 this.modalEl.addClass('bfm-download-modal');
         }
 
@@ -250,6 +255,9 @@ export class DownloadModal extends Modal {
                 adultLabel.createSpan({ text: ' Include 18+ titles' });
                 adultCheckbox.addEventListener('change', () => {
                         this.includeAdult = adultCheckbox.checked;
+                        // The finder shows the same opt-in; report the change so
+                        // switching it in either place switches it in both.
+                        this.callbacks.onAdultOptInChange?.(this.includeAdult);
                         this.currentPage = 1;
                         void this.doSearch();
                 });

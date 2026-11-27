@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { browseSection, browseGenre, loadGenres, NATIVE_GENRES } from '../src/animeApi';
+import { browseSection, browseGenre, loadGenres, searchSeries, NATIVE_GENRES } from '../src/animeApi';
 import { requestUrl } from 'obsidian';
 
 vi.mock('obsidian', () => ({
@@ -33,6 +33,7 @@ describe('browseSection', () => {
                                                         title: 'One Piece',
                                                         japanese_title: 'One Piece',
                                                         poster: 'p.jpg',
+                                                        rating: '9.2',
                                                         tvInfo: { showType: 'TV', sub: '1180', dub: '1159' },
                                                 },
                                         ],
@@ -41,9 +42,26 @@ describe('browseSection', () => {
                 );
                 const page = await browseSection('https://api', 'most-popular', 2);
                 expect(mockedRequestUrl.mock.calls[0][0].url).toBe('https://api/api/most-popular?page=2');
-                expect(page.totalPages).toBe(389);
+                // The native route reports `page + 1` pages; it is not a count
+                // the pager may print or stop at.
+                expect(page.totalPages).toBeNull();
                 expect(page.page).toBe(2);
-                expect(page.series[0]).toMatchObject({ id: 'one-piece-81553', title: 'One Piece', sub: 1180 });
+                expect(page.hasNextPage).toBe(true);
+                expect(page.series[0]).toMatchObject({
+                        id: 'one-piece-81553',
+                        title: 'One Piece',
+                        sub: 1180,
+                        rating: 9.2,
+                });
+        });
+
+        it('ends when a page comes back empty', async () => {
+                mockedRequestUrl.mockImplementation(
+                        respondWith({ results: { totalPages: 9, page: 9, hasNextPage: false, data: [] } }),
+                );
+                const page = await browseSection('https://api', 'completed', 9);
+                expect(page.hasNextPage).toBe(false);
+                expect(page.totalPages).toBeNull();
         });
 
         it('reads the 18+ browse feed with hm: references', async () => {
@@ -56,9 +74,12 @@ describe('browseSection', () => {
                                                 {
                                                         id: 'hm:so_low',
                                                         data_id: '81435',
-                                                        title: 'So_low – Episode 4',
+                                                        title: 'So_low',
+                                                        japanese_title: 'Episode 4',
                                                         poster: 'p.webp',
                                                         showType: 'Episode',
+                                                        rating: 7.6,
+                                                        episode: 'so_low-episode-4',
                                                         eps: null,
                                                 },
                                         ],
@@ -70,11 +91,43 @@ describe('browseSection', () => {
                         'https://api/api/adult/browse?section=monthly&page=1',
                 );
                 expect(page.totalPages).toBe(48);
+                expect(page.hasNextPage).toBe(true);
                 expect(page.series[0]).toMatchObject({
                         id: 'hm:so_low',
+                        rating: 7.6,
+                        // No explicit episodeNumber in this row: the label is
+                        // the only place the number exists.
+                        episodeNumber: 4,
                         adultContent: true,
                         provider: undefined,
                 });
+        });
+});
+
+describe('searchSeries', () => {
+        it('maps the catalogue score onto each row', async () => {
+                mockedRequestUrl.mockImplementation(
+                        respondWith({
+                                results: {
+                                        totalPage: 3,
+                                        data: [
+                                                {
+                                                        id: 'naruto-20',
+                                                        title: 'Naruto',
+                                                        showType: 'TV',
+                                                        rating: '8.0',
+                                                        eps: 220,
+                                                },
+                                        ],
+                                },
+                        }),
+                );
+                const result = await searchSeries('https://api', 'naruto');
+                expect(mockedRequestUrl.mock.calls[0][0].url).toBe(
+                        'https://api/api/search?keyword=naruto&page=1',
+                );
+                expect(result.totalPages).toBe(3);
+                expect(result.series[0]).toMatchObject({ id: 'naruto-20', rating: 8 });
         });
 });
 
