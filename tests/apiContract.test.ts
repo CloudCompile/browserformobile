@@ -274,6 +274,80 @@ describe('stream headers', () => {
                 );
         });
 
+        it('treats an hls-mp4 mirror as one MP4 file, not a playlist', async () => {
+                // `hls-mp4` and `r2-mp4` name the source's encoders, not HLS: the
+                // file is a single progressive MP4 and there is no manifest to read.
+                mockedRequestUrl.mockImplementation(
+                        respondByUrl([
+                                {
+                                        match: '/api/providers/hentaimama/stream',
+                                        reply: {
+                                                status: 200,
+                                                text: '',
+                                                json: {
+                                                        success: true,
+                                                        results: {
+                                                                data: {
+                                                                        server: 'r2-mp4',
+                                                                        type: 'hls-mp4',
+                                                                        link: {
+                                                                                file: 'https://download.example/output/S/so_low/4/hls-mp4/stream',
+                                                                                type: 'hls-mp4',
+                                                                        },
+                                                                        headers: { Referer: 'https://hentaimama.io/' },
+                                                                },
+                                                        },
+                                                },
+                                        },
+                                },
+                        ]),
+                );
+
+                const stream = await loadStream('https://api', 'so_low-episode-4', 'hentaimama');
+                expect(stream.variants).toHaveLength(1);
+                expect(stream.variants[0]?.url).toBe(
+                        'https://download.example/output/S/so_low/4/hls-mp4/stream',
+                );
+                // One request: the file itself. Nothing fetched it as a manifest.
+                expect(mockedRequestUrl).toHaveBeenCalledTimes(1);
+        });
+
+        it('reads a declared hls mirror as a playlist even without the extension', async () => {
+                const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=1280x720\nindex.m3u8\n';
+                mockedRequestUrl.mockImplementation(
+                        respondByUrl([
+                                {
+                                        match: '/api/providers/hentaimama/stream',
+                                        reply: {
+                                                status: 200,
+                                                text: '',
+                                                json: {
+                                                        success: true,
+                                                        results: {
+                                                                data: {
+                                                                        server: 'mi-2',
+                                                                        type: 'hls',
+                                                                        link: {
+                                                                                file: 'https://stream.example/output/S/so_low/4/hls/master',
+                                                                                type: 'hls',
+                                                                        },
+                                                                },
+                                                        },
+                                                },
+                                        },
+                                },
+                                {
+                                        match: 'https://stream.example/output/S/so_low/4/hls/master',
+                                        reply: { status: 200, text: master, json: {} },
+                                },
+                        ]),
+                );
+
+                const stream = await loadStream('https://api', 'so_low-episode-4', 'hentaimama');
+                expect(stream.variants).toHaveLength(1);
+                expect(stream.variants[0]?.height).toBe(720);
+        });
+
         it('downloads a whole-document caption track as one VTT file', async () => {
                 const vtt = [
                         'WEBVTT',

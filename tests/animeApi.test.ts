@@ -224,6 +224,13 @@ describe('previewFromInfo', () => {
                 expect(built.detail.synopsis).toBe('A real synopsis.');
                 expect(built.detail.rating).toBe('7.5');
         });
+
+        it('carries the record\u2019s score, views and air date into the facts', () => {
+                const built = previewFromInfo(info({ score: '7.8', views: 1079075, aired: 'Aug 2023' }));
+                expect(built.detail.score).toBe(7.8);
+                expect(built.detail.views).toBe(1079075);
+                expect(built.detail.aired.string).toBe('Aug 2023');
+        });
 });
 
 describe('infoFromPreview', () => {
@@ -241,7 +248,6 @@ describe('infoFromPreview', () => {
                 expect(built.rating).toBe('Rx');
                 expect(built.provider).toBeUndefined();
         });
-
         it('round-trips through previewFromInfo', () => {
                 const source = preview();
                 const rebuilt = previewFromInfo(infoFromPreview(source, '55548'));

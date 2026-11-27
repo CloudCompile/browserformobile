@@ -32,6 +32,7 @@ const NATIVE_SECTIONS: Section[] = [
 
 const ADULT_SECTIONS: Section[] = [
         { id: 'monthly', name: 'Monthly releases', description: 'Newest additions', icon: 'calendar-clock' },
+        { id: 'recent', name: 'New episodes', description: 'Just added to the source', icon: 'sparkles' },
         { id: 'series', name: 'All series', description: 'Every title on the source', icon: 'layout-grid' },
 ];
 

@@ -409,13 +409,29 @@ page and the recommendations.
   to a title search so a library entry the catalogue lists under another
   provider (or another id) still resolves. Nothing should call `loadPreview` on
   a page's behalf.
-- **The 18+ provider's description is boilerplate and must not be shown.**
-  Every series gets "Watch <title> hentai online free in HD with English
-  subtitles. N episodes, Ongoing. Genres: …" — generated from its own fields,
-  and often stale (`so_low` said 3 episodes while its list had 4).
-  `readableSynopsis` drops it, `providerStatus` recovers the one useful fact
-  from it (`status` is otherwise always null), and the episode list wins over
-  the claimed count. Do not render that text as a synopsis.
+- **The 18+ provider's record now carries the real synopsis, and its old
+  template is still recognised.** The provider used to publish only "Watch
+  <title> hentai online free in HD with English subtitles. N episodes, Ongoing.
+  Genres: …" — generated from its own fields and often stale (`so_low` said 3
+  episodes while its list had 4). The API now scrapes the page's `.dsc-desc`
+  block into `description`, so that field is the synopsis; `readableSynopsis`
+  still drops the template for cached payloads from before the change, and
+  `providerStatus` can still recover the status from one. `loadAdultDetails`
+  reads the provider page only when the record has no synopsis — spending that
+  round trip on every page is no longer needed. Do not render the template as a
+  synopsis.
+- **The 18+ provider's listing and detail facts are API data now.** `browse`
+  supports `section=list|monthly|series|recent`, `genre=`, `studio=` and
+  `month=<month>-<year>`, clamps a past-the-end page to the last one (and says
+  `pageClamped: true`), and a studio listing has a single page. `findModal`
+  adopts the returned `page`, so a clamped answer is shown as the page it
+  really is. The detail record carries `status`, `score`, `rating`, `views`,
+  `aired`, `studios` and `genres`; they map into `AnimeInfo` and the preview's
+  facts rather than being recovered from the description.
+- **A mirror's container comes from `link.type`, not its URL.** `hls-mp4` and
+  `r2-mp4` are single-file MP4 mirrors whose names once read as HLS; the API
+  declares the real type, so `loadStream` parses a master playlist only when the
+  declared type is `hls`.
 - **A details page's download hand-off carries the source.** `onDownload`
   passes the `SeriesSummary` (provider included) so an 18+ title opens its own
   provider page; the `search` flag is set when the details came only from the

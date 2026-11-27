@@ -15,6 +15,7 @@ vi.mock('obsidian', () => ({
 }));
 
 import { loadSeriesDetails } from '../src/animeApi';
+import { factsFor } from '../src/seriesDetails';
 
 const BASE = 'https://api.test';
 
@@ -35,14 +36,17 @@ function adultDetail(overrides: Record<string, unknown> = {}): unknown {
                                 japaneseTitle: null,
                                 poster: 'https://img/so_low.webp',
                                 description:
-                                        'Watch So_low hentai online free in HD with English subtitles. 3 episodes, Ongoing. Genres: Anal…',
+                                        'Mitsuki and Kasumi are twin sisters, and their tutor Koudai has had enough of their tricks.',
                                 type: 'TV',
                                 year: 2023,
                                 episodes: 3,
                                 rating: null,
-                                genres: ['Uncensored', '3D'],
-                                studios: [],
-                                status: null,
+                                status: 'Airing',
+                                score: 7.8,
+                                views: 1079075,
+                                aired: 'Aug 2023',
+                                genres: ['Anal', 'Harem'],
+                                studios: ['Nur'],
                                 ...overrides,
                         },
                         total: 1,
@@ -127,16 +131,51 @@ describe('loadSeriesDetails', () => {
                 });
 
                 expect(details.info.adultContent).toBe(true);
-                expect(details.info.status).toBe('Ongoing');
+                expect(details.info.status).toBe('Airing');
+                expect(details.info.score).toBe('7.8');
+                expect(details.info.views).toBe(1079075);
+                expect(details.info.aired).toBe('Aug 2023');
+                expect(details.info.studios).toEqual(['Nur']);
                 expect(details.info.year).toBe(2023);
                 expect(details.info.episodeCount).toBe(4);
-                expect(details.preview.detail.synopsis).toBeNull();
+                expect(details.preview.detail.synopsis).toBe(
+                        'Mitsuki and Kasumi are twin sisters, and their tutor Koudai has had enough of their tricks.',
+                );
+                // The record's own numbers reach the facts grid, not the blurb.
+                expect(factsFor(details.preview.detail, 4)).toEqual(
+                        expect.arrayContaining([
+                                { label: 'Score', value: '7.80' },
+                                { label: 'Aired', value: 'Aug 2023' },
+                                { label: 'Views', value: '1,079,075' },
+                        ]),
+                );
                 expect(details.preview.detail.title).toBe('So_low');
                 expect(details.preview.detail.image).toBe('https://img/so_low.webp');
                 expect(details.preview.detail.episodes).toBe(4);
                 expect(details.episodes).toHaveLength(4);
                 expect(details.episodes?.[0]?.poster).toBe('https://img/ep1.webp');
                 expect(details.synthesized).toBe(false);
+        });
+
+        it('still drops a cached generated blurb when the record carries one', async () => {
+                // Payloads cached before the API scraped the page's own synopsis
+                // still hold the generated line; it must never render.
+                stage(
+                        '/api/providers/hentaimama/anime?id=so_low',
+                        adultDetail({
+                                description:
+                                        'Watch So_low hentai online free in HD with English subtitles. 3 episodes, Ongoing. Genres: Anal…',
+                                status: null,
+                                score: null,
+                                views: null,
+                                aired: null,
+                        }),
+                );
+
+                const details = await loadSeriesDetails(BASE, 'so_low', { provider: 'hentaimama' });
+                expect(details.preview.detail.synopsis).toBeNull();
+                // The status is the one useful fact the blurb carried.
+                expect(details.info.status).toBe('Ongoing');
         });
 
         it('resolves an 18+ title from a stale id through the search route', async () => {

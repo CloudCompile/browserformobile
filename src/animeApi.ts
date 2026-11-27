@@ -159,6 +159,10 @@ export interface AnimeInfo {
         episodeCount?: number | null;
         /** First broadcast year when the source reports one. */
         year?: number | null;
+        /** View count, when the source reports one. */
+        views?: number | null;
+        /** Air date as the source prints it, e.g. `Aug 2023`. */
+        aired?: string | null;
         /** Age rating, when the source reports one. */
         rating?: string | null;
 }
@@ -251,6 +255,25 @@ function asNumber(value: unknown): number {
                 return Number.isFinite(parsed) ? parsed : 0;
         }
         return 0;
+}
+
+/**
+ * A count published either as a number or as a formatted string.
+ *
+ * The scraper hands view counts through as it reads them, so `1079075` and
+ * `1,079,075` both arrive; `parseFloat` would read the second one as 1.
+ */
+function asCount(value: unknown): number {
+        if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+        const digits = asString(value).replace(/[^\d]/g, '');
+        return digits ? Number.parseInt(digits, 10) : 0;
+}
+
+/** A count, or null when it is absent or zero. */
+function asNullableCount(value: unknown): number | null {
+        if (value === null || value === undefined || value === '') return null;
+        const count = asCount(value);
+        return count > 0 ? count : null;
 }
 
 /**
@@ -872,7 +895,9 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
                         showType: asString(data.type) || 'TV',
                         duration: null,
                         status: asString(data.status) || providerStatus(asString(data.description)),
-                        score: null,
+                        score: asString(data.score) || null,
+                        views: asNullableCount(data.views),
+                        aired: asString(data.aired) || null,
                         genres: Array.isArray(data.genres) ? data.genres.map((g) => String(g)).filter(Boolean) : [],
                         studios: Array.isArray(data.studios) ? data.studios.map((s) => String(s)).filter(Boolean) : [],
                         overview: readableSynopsis(description),
@@ -978,6 +1003,10 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
 
         const overviewRaw = asString(animeInfo.Overview);
         const scoreRaw = asString(animeInfo.Scores);
+        // The scraper publishes these on the page but the catalogue's own shape
+        // spelled them per-field; both arrive as displayed text.
+        const viewsRaw = asNullableCount(animeInfo.Views ?? animeInfo.views);
+        const airedRaw = asString(animeInfo['Date aired']) || asString(animeInfo.aired);
         const durationRaw = asString(tvInfo.duration);
         const statusRaw = asString(animeInfo.Status) || asString(metadata.Status);
         const showType = asString(data.showType) || asString(tvInfo.showType) || 'Unknown';
@@ -1001,6 +1030,8 @@ export async function loadAnimeInfo(base: string, seriesId: string, provider?: s
                 duration: durationRaw || null,
                 status: statusRaw || null,
                 score: scoreRaw || null,
+                views: viewsRaw,
+                aired: airedRaw || null,
                 genres,
                 studios,
                 overview: overviewRaw || null,
@@ -1121,9 +1152,14 @@ export async function loadStream(
                 if (!data || !url) {
                         return { url: null, iframe: asString(data?.embed) || null, server: asString(data?.server), variants: [], subtitles: [], headers };
                 }
-                // HLS resolves to quality variants; a progressive MP4 is a single
-                // variant whose height is unknown until it is probed.
-                if (!/\.m3u8($|\?)/i.test(url)) {
+                // HLS resolves to quality variants; a single-file MP4 mirror is
+                // one variant whose height is unknown until it is probed. The API
+                // declares the container in `link.type`, and its `hls-mp4` and
+                // `r2-mp4` mirrors are single MP4 files despite the name, so the
+                // declared type decides and the URL is only the fallback.
+                const declared = asString(link.type) || asString(data.type);
+                const isHls = declared ? declared.toLowerCase() === 'hls' : /\.m3u8($|\?)/i.test(url);
+                if (!isHls) {
                         return { url, iframe: null, server: asString(data?.server), variants: [{ height: 0, width: 0, bandwidth: 0, url }], subtitles: [], headers };
                 }
                 const response = await requestUrl({ url, method: 'GET', headers, throw: false });
@@ -1288,6 +1324,8 @@ export interface PreviewDetail {
         scoredBy: number | null;
         members: number | null;
         favorites: number | null;
+        /** View count for sources that publish one instead of a member list. */
+        views?: number | null;
         rank: number | null;
         popularity: number | null;
         duration: string | null;
@@ -1420,6 +1458,7 @@ function normalizePreviewDetail(raw: unknown): PreviewDetail {
                 scoredBy: asNullableNumber(record.scoredBy),
                 members: asNullableNumber(record.members),
                 favorites: asNullableNumber(record.favorites),
+                views: asNullableCount(record.views),
                 rank: asNullableNumber(record.rank),
                 popularity: asNullableNumber(record.popularity),
                 duration: asNullableString(record.duration),
@@ -1631,6 +1670,7 @@ export function previewFromInfo(info: AnimeInfo): AnimePreview {
                         scoredBy: null,
                         members: null,
                         favorites: null,
+                        views: info.views ?? null,
                         rank: null,
                         popularity: null,
                         duration: info.duration,
@@ -1638,7 +1678,7 @@ export function previewFromInfo(info: AnimeInfo): AnimePreview {
                         source: null,
                         season: null,
                         year: info.year ?? null,
-                        aired: { from: null, to: null, string: null },
+                        aired: { from: null, to: null, string: info.aired ?? null },
                         broadcast: { day: null, time: null, timezone: null, string: null },
                         trailer: { youtubeId: null, url: null, embedUrl: null },
                         genres: info.genres,
@@ -1672,6 +1712,8 @@ export function infoFromPreview(preview: AnimePreview, id: string): AnimeInfo {
                 duration: detail.duration,
                 status: detail.status,
                 score: detail.score !== null ? detail.score.toFixed(2) : null,
+                views: detail.views ?? null,
+                aired: detail.aired.string,
                 genres: detail.genres,
                 studios: detail.studios.map((studio) => studio.name),
                 overview: detail.synopsis,
@@ -1753,19 +1795,23 @@ async function loadAdultDetails(base: string, series: string, withEpisodes: bool
         }
         if (!info) throw new AnimeApiError('The anime API returned no details for this series.');
 
+        // The provider record carries the real synopsis now, so the page is only
+        // read when this answer has none — an older cached payload, or a source
+        // that stops publishing it. Reading a page costs a round trip and can hit
+        // a challenge page, so it is not spent when the text is already here.
+        const needsPageSynopsis = !info.overview;
         const [episodes, pageSynopsis] = await Promise.all([
                 withEpisodes
                         ? loadEpisodes(base, info.id, ADULT_PROVIDER)
                                         .then((list) => list.episodes)
                                         .catch(() => null)
                         : Promise.resolve(null),
-                // The provider's API record has no real description, only the
-                // generated blurb the plugin refuses to show. The source's own
-                // page carries the actual synopsis, so that is where it comes from.
-                loadProviderSynopsis(
-                        typeof info.metadata.pageUrl === 'string' ? info.metadata.pageUrl : null,
-                        (message, details) => debugHook?.(message, details),
-                ),
+                needsPageSynopsis
+                        ? loadProviderSynopsis(
+                                  typeof info.metadata.pageUrl === 'string' ? info.metadata.pageUrl : null,
+                                  (message, details) => debugHook?.(message, details),
+                          )
+                        : Promise.resolve(null),
         ]);
         // The provider's own episode count can lag its list (it reported 3 for a
         // four-episode series); the list is authoritative when it is present.

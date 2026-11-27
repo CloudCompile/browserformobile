@@ -63,6 +63,7 @@ export function factsFor(detail: PreviewDetail, episodesOverride?: number | null
         if (detail.source) facts.push({ label: 'Source', value: detail.source });
         if (detail.year !== null) facts.push({ label: 'Year', value: String(detail.year) });
         if (detail.aired.string) facts.push({ label: 'Aired', value: detail.aired.string });
+        if (detail.views != null) facts.push({ label: 'Views', value: countText(detail.views) });
         if (detail.broadcast.string) facts.push({ label: 'Broadcast', value: detail.broadcast.string });
         if (detail.members !== null) facts.push({ label: 'Members', value: countText(detail.members) });
         if (detail.favorites !== null) facts.push({ label: 'Favourites', value: countText(detail.favorites) });
