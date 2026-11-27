@@ -13,6 +13,28 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.5.5 — 2026-11-27
+
+The browser now handles the module-based web, keeps sessions, and can hand a
+page back to its own origin when embedding allows it.
+
+- **Modern pages load.** ES module scripts and their import graphs are fetched
+  natively and rewired with an import map instead of being skipped. External
+  styles, fonts and images are inlined too, and original image URLs stay
+  available to the media picker.
+- **Sessions work.** A per-host cookie jar carries `Set-Cookie`, sends `Cookie`
+  on page, module, asset and download requests, persists non-session cookies and
+  bridges `document.cookie` for proxied pages.
+- **Redirects and uploads work.** Meta-refresh redirects are followed and
+  multipart forms upload file inputs as real bytes.
+- **Compatibility mode.** Sites that allow framing can run directly at their own
+  address, with real origin modules, workers and storage. A banner offers
+  **Use download mode**, and the page menu remembers the choice per site.
+- **Blank pages explain themselves.** A proxied page with no visible content
+  offers **Try compatibility mode**, **Reload** and **Open in system browser**.
+- **Settings** gain **Browser compatibility mode**; the docs and security policy
+  describe the mode, per-site choices and persisted cookies.
+
 ## 5.4.5 — 2026-11-26
 
 The browser returns as a separate surface, built on native HTTP rather than an
