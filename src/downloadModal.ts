@@ -817,9 +817,12 @@ export class DownloadModal extends Modal {
         private renderEpisodeList(): void {
                 const list = this.bodyEl.createDiv({ cls: 'bfm-dl-episodes' });
                 const groups = planEpisodeGroups(this.episodes);
+                // Stills are shown for the whole list or not at all: a list where
+                // only some episodes carry art would misalign every row.
+                const stills = this.episodes.some((episode) => Boolean(episode.poster));
                 // A short series renders exactly as it always did: one flat list.
                 if (!groups) {
-                        this.renderEpisodeRows(list, this.episodes);
+                        this.renderEpisodeRows(list, this.episodes, stills);
                         return;
                 }
                 // A long one is chunked numerically — the API exposes no season
@@ -870,15 +873,42 @@ export class DownloadModal extends Modal {
                                 for (const episode of group.episodes) this.chosen.delete(episode.id);
                                 this.render();
                         });
-                        if (!collapsed) this.renderEpisodeRows(list, group.episodes);
+                        if (!collapsed) this.renderEpisodeRows(list, group.episodes, stills);
                 });
         }
 
-        /** The episode rows themselves, shared by the flat and grouped lists. */
-        private renderEpisodeRows(list: HTMLElement, episodes: EpisodeSummary[]): void {
+        /**
+         * The episode rows themselves, shared by the flat and grouped lists.
+         *
+         * The 18+ source publishes a still per episode, so its rows carry the
+         * art; the MAL catalogue's rows carry none and keep the compact layout.
+         * `stills` is decided for the whole list, and an episode missing one
+         * falls back to its number so the column stays aligned.
+         */
+        private renderEpisodeRows(list: HTMLElement, episodes: EpisodeSummary[], stills: boolean): void {
                 for (const episode of episodes) {
                         const row = list.createDiv({ cls: 'bfm-dl-episode' });
+                        if (stills) row.addClass('has-still');
                         const checkbox = row.createEl('input', { attr: { type: 'checkbox' } });
+                        if (stills) {
+                                const still = row.createDiv({ cls: 'bfm-dl-episode-still' });
+                                if (episode.poster) {
+                                        still.createEl('img', {
+                                                cls: 'bfm-dl-episode-still-image',
+                                                attr: {
+                                                        src: episode.poster,
+                                                        alt: '',
+                                                        loading: 'lazy',
+                                                        decoding: 'async',
+                                                },
+                                        });
+                                } else {
+                                        still.createDiv({
+                                                cls: 'bfm-dl-episode-still-fallback',
+                                                text: String(episode.number),
+                                        });
+                                }
+                        }
                         checkbox.checked = this.chosen.has(episode.id);
                         checkbox.addEventListener('change', () => {
                                 if (checkbox.checked) this.chosen.add(episode.id);
