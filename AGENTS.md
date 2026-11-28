@@ -417,6 +417,8 @@ Traps worth keeping, each of which was a real breakage:
   `cookieEnabled` of `false` for the opaque `about:srcdoc` origin, and a document
   that reports `hidden`. The injected script hides `<noscript>` (including ones
   added later), reports cookies as enabled, and reports the document as visible.
+  `buildDoc` ignores a `<meta http-equiv="refresh">` inside `<noscript>` for the
+  same reason: DuckDuckGo's sent every search to `html.duckduckgo.com`.
 - **Search engines stay in download mode.** `canUseDirect` refuses a direct
   frame for `isSearchEngineHost`, because a cross-origin frame's `target="_blank"`
   links escape to the system browser.

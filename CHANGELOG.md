@@ -13,6 +13,19 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.14.5 — 2026-11-28
+
+Search reaches the site DuckDuckGo actually serves, and the human check is left
+to the human.
+
+- **DuckDuckGo opens its real site.** The browser obeyed a `<meta
+  http-equiv="refresh">` that DuckDuckGo keeps inside `<noscript>` as a
+  no-JavaScript fallback, so every search jumped to `html.duckduckgo.com`. A
+  browser with scripting on never obeys that fallback, and neither does this one
+  now. The real page loads with its full interface; when DuckDuckGo asks for its
+  bot check, a person can answer it, and the clearance cookie is kept for the
+  next search.
+
 ## 5.13.5 — 2026-11-28
 
 The library is a shelf you can scan on a phone, compact settings stop leading

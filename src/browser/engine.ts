@@ -243,7 +243,13 @@ export class BrowserEngine {
 		for (const meta of Array.from(doc.querySelectorAll('meta[http-equiv]'))) {
 			const name = (meta.getAttribute('http-equiv') || '').toLowerCase();
 			if (name === 'refresh') {
-				refresh = parseMetaRefresh(meta.getAttribute('content') || '', finalUrl);
+				// A browser with scripting on never obeys a refresh inside
+				// `<noscript>`; that fallback exists for readers without
+				// JavaScript. DuckDuckGo uses one to send no-JS clients to
+				// `html.duckduckgo.com`, which is not the site a person asked for.
+				if (!meta.closest('noscript')) {
+					refresh = parseMetaRefresh(meta.getAttribute('content') || '', finalUrl);
+				}
 				meta.remove();
 			} else if (name === 'content-security-policy' || name === 'x-frame-options') {
 				meta.remove();
