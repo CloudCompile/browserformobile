@@ -263,7 +263,7 @@ export class LibraryView extends ItemView {
 				this.openKey = group.key;
 				this.season = 'all';
 				this.render();
-				this.bodyEl.scrollTo?.({ top: 0 });
+				this.contentEl.scrollTo?.({ top: 0 });
 			};
 			card.addEventListener('click', open);
 			card.addEventListener('keydown', (event) => {

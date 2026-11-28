@@ -13,6 +13,24 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.12.5 — 2026-11-28
+
+The library fills its tab instead of rendering as a clipped strip, and the
+advanced settings switch takes effect the moment it is flipped.
+
+- **The library view has the whole pane.** Its root element reused the class the
+  retired library modal used for its list/grid toggle, so the view inherited a
+  32px button width and, on touch screens, `width: 44px; height: 44px` — the
+  whole library rendered clipped against the left edge of the screen. Those dead
+  toggle rules are gone, and every rule the view still needs is scoped under
+  `.bfm-library-view`, so the old modal styles cannot reach it again. The header
+  sticks, the grid uses the full width, and the episode badge no longer stretches
+  across the poster.
+- **Advanced settings appears when it is switched on.** The page was built once
+  from the current value, so flipping the switch changed nothing until the tab
+  was reopened. The technical groups now hide behind a live `visible` predicate,
+  and the tab asks Obsidian to re-evaluate them after the switch is saved.
+
 ## 5.11.5 — 2026-11-28
 
 The settings page draws again on Obsidian 1.13+, and downloads ask each CDN for

@@ -506,7 +506,9 @@ export class AnimeSettingTab extends PluginSettingTab {
          * coverage test can read it without an Obsidian app.
          */
         getSettingDefinitions(): SettingDefinitionItem[] {
-                return settingGroups(Boolean(this.plugin.settings.settingsAdvanced), {
+                // A predicate, not a snapshot: the advanced groups' `visible` is
+                // re-read whenever Obsidian renders or refreshes the page.
+                return settingGroups(() => Boolean(this.plugin.settings.settingsAdvanced), {
                         exportDebugLog: () => void this.plugin.exportDebugLog(),
                 });
         }
@@ -533,6 +535,13 @@ export class AnimeSettingTab extends PluginSettingTab {
                         	this.plugin.debug('debug.enabled');
                 }
                 await this.plugin.saveSettings();
+                if (key === 'settingsAdvanced') {
+                        // The advanced groups exist either way and hide behind a
+                        // `visible` predicate, so flipping the switch only needs
+                        // the page re-evaluated — rebuilding it would also throw
+                        // away the scroll position.
+                        this.refreshDomState?.();
+                }
         }
 
 }
@@ -555,7 +564,10 @@ export function definedSettingKeys(): string[] {
  * nothing, and a `DEFS` entry no group references is unreachable — both are
  * asserted by `tests/settings.test.ts`, because neither is a type error.
  */
-export function settingGroups(advanced: boolean, actions: SettingActions): SettingDefinitionItem[] {
+export function settingGroups(
+        advanced: boolean | (() => boolean),
+        actions: SettingActions,
+): SettingDefinitionItem[] {
         return [
                 {
                         type: 'group',

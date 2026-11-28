@@ -32,10 +32,19 @@ function keysOnPage(): string[] {
                 .filter((key): key is string => typeof key === 'string');
 }
 
+type Group = ReturnType<typeof settingGroups>[number];
+
+/** Whether a group renders, evaluating the same predicate Obsidian does. */
+function shown(group: Group): boolean {
+        if (group.type !== 'group') return true;
+        const visible = group.visible;
+        return typeof visible === 'function' ? visible() : visible !== false;
+}
+
 /** The headings a page renders, with groups that hide themselves removed. */
-function headings(advanced: boolean): string[] {
+function headings(advanced: boolean | (() => boolean)): string[] {
         return settingGroups(advanced, actions)
-                .filter((group) => group.type === 'group' && group.visible !== false)
+                .filter((group) => shown(group))
                 .map((group) => ('heading' in group ? String(group.heading ?? '') : ''));
 }
 
@@ -87,6 +96,15 @@ describe('settings page covers every setting', () => {
 
         it('keeps one 18+ switch', () => {
                 expect(keysOnPage().filter((key) => key === 'showAdultContent')).toHaveLength(1);
+        });
+
+        it('re-evaluates the advanced groups against the live setting', () => {
+                let advanced = false;
+                expect(headings(() => advanced)).toHaveLength(4);
+                advanced = true;
+                expect(headings(() => advanced)).toHaveLength(9);
+                advanced = false;
+                expect(headings(() => advanced)).toHaveLength(4);
         });
 
         it('renders the switch itself in both modes', () => {
