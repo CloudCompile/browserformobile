@@ -13,6 +13,28 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.11.5 — 2026-11-28
+
+The settings page draws again on Obsidian 1.13+, and downloads ask each CDN for
+its files with the referer that CDN expects. No setting moves, and nothing in the
+vault or the library changes.
+
+- **The settings tab renders.** The subtitle delay row was listed in the advanced
+  groups but had no definition behind it, so building the page threw
+  `undefined is not iterable` before anything was drawn. It is a real slider
+  again (±5 s, 100 ms steps), and `npm test` now fails if a listed row and its
+  definition drift apart.
+- **One referer table.** Playback and downloads look the request's host up in the
+  table the web downloader uses — megaplay, hentaimama, nexabloom, hentaidoge,
+  gdvid, crystaldrift and the two echovideo mirrors — instead of always sending
+  the echovideo player's. Hosts that reject a foreign referer stop answering
+  403; a host the table does not know still gets the echovideo one.
+- **The same playlist parser as the web app.** Master playlists are parsed by the
+  shared code, so quality variants are read and ordered identically in the plugin
+  and on the web.
+- **Toolchain.** CI installs the plugin from its own lockfile again, with an
+  esbuild new enough for vitest's nested Vite.
+
 ## 5.10.5 — 2026-11-28
 
 Settings are quiet until you ask for more, the library is a real view instead of
