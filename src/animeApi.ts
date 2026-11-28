@@ -2,7 +2,12 @@ import { loadProviderSynopsis } from './providerPage';
 import {
  requestUrl } from 'obsidian';
 import type { AnimeCache } from './animeCache';
-import { serverNames, streamHeaders } from '@anime/hls';
+import {
+        parseMasterPlaylist as sharedMasterPlaylist,
+        serverNames,
+        streamHeaders,
+        STREAM_REFERER,
+} from '@anime/hls';
 
 /**
  * Client for the anime-api instance at animeapi.cjhauser.me. The catalogue is
@@ -44,7 +49,7 @@ export function setMetadataSink(sink: ((seriesId: string, payload: AnimePreview)
 }
 
 /** The `Referer` the CDN's HLS endpoints expect. Segments 404 without it. */
-export const STREAM_REFERER = 'https://play.echovideo.ru/';
+export { STREAM_REFERER };
 
 export interface SeriesSummary {
         id: string;
@@ -1137,23 +1142,19 @@ function splitAttributes(text: string): Map<string, string> {
 
 /** Parse an HLS master playlist into its quality variants. */
 export function parseMasterPlaylist(text: string, baseUrl: string): StreamVariant[] {
-        const lines = text.split(/\r?\n/);
-        const variants: StreamVariant[] = [];
-        for (let index = 0; index < lines.length; index++) {
-                const line = lines[index];
-                if (!line || !line.startsWith('#EXT-X-STREAM-INF')) continue;
-                const uri = lines[index + 1];
-                if (!uri || uri.startsWith('#')) continue;
-                const bandwidth = Number(/BANDWIDTH=(\d+)/.exec(line)?.[1] ?? 0);
-                const resolution = /RESOLUTION=(\d+)x(\d+)/.exec(line);
-                variants.push({
-                        width: resolution ? Number(resolution[1]) : 0,
-                        height: resolution ? Number(resolution[2]) : 0,
-                        bandwidth,
-                        url: resolveUrl(uri, baseUrl),
-                });
-        }
-        return variants.sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
+        return sharedMasterPlaylist(text)
+                .variants.map((variant) => {
+                        const [rawWidth, rawHeight] = (variant.resolution ?? '').split('x');
+	const width = Number(rawWidth);
+	const height = variant.height ?? Number(rawHeight);
+                        return {
+                                width: Number.isFinite(width) ? width : 0,
+                                height: Number.isFinite(height) ? height : 0,
+                                bandwidth: variant.bandwidth ?? 0,
+                                url: resolveUrl(variant.uri, baseUrl),
+                        };
+                })
+                .sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
 }
 
 export function resolveUrl(uri: string, baseUrl: string): string {

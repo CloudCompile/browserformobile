@@ -84,9 +84,12 @@ export function planDownload(options: {
   maxHeight?: number | null;
 }): DownloadPlan;
 export function rewritePlaylistUris(text: string, rewrite: (uri: string) => string): string;
-export function createRefererResolver(entries?: RefererEntry[]): (url: string) => string | null;
+export function createRefererResolver(
+  entries?: RefererEntry[],
+  fallback?: string | null,
+): (target: string) => string | null;
 export const DEFAULT_REFERERS: RefererEntry[];
-export const refererFor: (url: string) => string | null;
+export const refererFor: (target: string) => string | null;
 
 // ---------------------------------------------------------------------------
 // The downloader's playlist model

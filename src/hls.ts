@@ -3,6 +3,7 @@ import {
         createGateState,
         nextGate,
         parseDownloadPlaylist,
+        refererFor,
         shedConcurrency,
         type GateState,
 } from '@anime/hls';
@@ -145,8 +146,14 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
         });
 }
 
-function requestHeaders(headers?: Record<string, string>): Record<string, string> {
-        return headers && Object.keys(headers).length > 0 ? headers : { Referer: STREAM_REFERER };
+/**
+ * The headers a request needs. A provider-supplied set wins; otherwise the
+ * shared table answers for this host, and the echovideo player is the fallback
+ * for a host it does not know.
+ */
+function requestHeaders(url: string, headers?: Record<string, string>): Record<string, string> {
+        if (headers && Object.keys(headers).length > 0) return headers;
+        return { Referer: refererFor(url) ?? STREAM_REFERER };
 }
 
 async function fetchText(url: string, headers?: Record<string, string>): Promise<string> {
@@ -154,7 +161,7 @@ async function fetchText(url: string, headers?: Record<string, string>): Promise
                 requestUrl({
                         url,
                         method: 'GET',
-                        headers: requestHeaders(headers),
+                        headers: requestHeaders(url, headers),
                         throw: false,
                 }),
                 REQUEST_TIMEOUT_MS,
@@ -185,7 +192,7 @@ async function fetchSegment(
                                 requestUrl({
                                         url,
                                         method: 'GET',
-                                        headers: requestHeaders(headers),
+                                        headers: requestHeaders(url, headers),
                                         throw: false,
                                 }),
                                 REQUEST_TIMEOUT_MS,

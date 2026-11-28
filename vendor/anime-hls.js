@@ -296,31 +296,61 @@ export function rewritePlaylistUris(text, rewrite) {
 }
 
 /**
- * CDNs that refuse a segment without the player's origin as `Referer`.
+ * The player origin a request claims when its host is not in the table.
+ *
+ * It is the same origin the web proxy and the plugin have always used; the API
+ * passes its own fallback (`https://megaplay.buzz/`) because that is what its
+ * providers expect.
+ */
+export const STREAM_REFERER = "https://play.echovideo.ru/";
+
+/**
+ * Hosts that refuse a request without a player origin as `Referer`.
+ *
+ * An entry is keyed by the host actually being fetched, not by the player. A CDN
+ * edge (`nexabloom.top`) asks for the player it belongs to
+ * (`https://megaplay.buzz/`), and a player host that requires its own origin
+ * (`megaplay.buzz`) is simply an entry that maps to itself.
+ *
+ * This is the union of the three tables the API, the web app and the plugin each
+ * carried. `apps/api` cannot import this package (its deploy root is `apps/api`,
+ * so `packages/` is outside its build context and image), so it keeps a copy in
+ * `src/catalogue/download.js` that `tests/referers.test.js` holds to this list.
  *
  * Kept as data so a caller can extend it: `createRefererResolver` takes its own
- * table. `apps/api/src/catalogue/download.js` is the live source of truth for
- * the hosts the API can reach; this list is the subset every client shares.
+ * table and its own fallback.
  */
 export const DEFAULT_REFERERS = [
   { host: "megaplay.buzz", referer: "https://megaplay.buzz/" },
   { host: "hentaimama.io", referer: "https://hentaimama.io/" },
+  { host: "nexabloom.top", referer: "https://megaplay.buzz/" },
+  { host: "hentaidoge.org", referer: "https://hentaimama.io/" },
+  { host: "gdvid.info", referer: "https://hentaimama.io/" },
+  { host: "dpopdrop89.store", referer: "https://play.echovideo.ru/" },
+  { host: "roburnt10.store", referer: "https://play.echovideo.ru/" },
+  { host: "crystaldrift.world", referer: "https://megaplay.buzz/" },
 ];
 
-export function createRefererResolver(entries = DEFAULT_REFERERS) {
+/**
+ * Build a resolver. The returned function accepts a full URL or a bare hostname
+ * and answers with the table's referer, or `fallback` when the host is unknown.
+ */
+export function createRefererResolver(entries = DEFAULT_REFERERS, fallback = null) {
   const table = entries
     .map((entry) => ({ host: String(entry.host).toLowerCase(), referer: entry.referer }))
     .sort((a, b) => b.host.length - a.host.length);
 
-  return function refererFor(url) {
+  return function refererFor(target) {
     let hostname;
     try {
-      hostname = new URL(String(url)).hostname.toLowerCase();
+      const text = String(target).trim();
+      hostname = text.includes("://") ? new URL(text).hostname.toLowerCase() : text.toLowerCase();
     } catch {
-      return null;
+      return fallback;
     }
+    if (!hostname) return fallback;
     const match = table.find((entry) => hostname === entry.host || hostname.endsWith(`.${entry.host}`));
-    return match ? match.referer : null;
+    return match ? match.referer : fallback;
   };
 }
 
@@ -479,9 +509,6 @@ export function rankServers(servers, exclude) {
     .filter((server) => server?.serverName && server.serverName !== exclude)
     .sort((a, b) => rank(a) - rank(b));
 }
-
-/** The `Referer` a manifest CDN expects when the API published none. */
-export const STREAM_REFERER = "https://play.echovideo.ru/";
 
 function asText(value) {
   if (typeof value === "string" && value.trim()) return value.trim();
