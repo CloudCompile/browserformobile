@@ -17,3 +17,15 @@ export const Platform = {
         isAndroidApp: false,
         isIosApp: false,
 };
+
+/**
+ * The settings tab is a class in Obsidian. Nothing constructs it in a test —
+ * `settingGroups` is the pure half — but `settings.ts` extends it at module
+ * load, so the name has to exist.
+ */
+export class PluginSettingTab {
+        constructor(
+                public app: unknown,
+                public plugin: unknown,
+        ) {}
+}

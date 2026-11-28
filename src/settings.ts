@@ -1,7 +1,6 @@
 import {
         App,
         PluginSettingTab,
-        Setting,
         type SettingDefinition,
         type SettingDefinitionItem,
 } from 'obsidian';
@@ -195,30 +194,14 @@ export const DEFAULT_SETTINGS: AnimeSettings = {
         settingsAdvanced: false,
 };
 
-type TextControl = { type: 'text'; placeholder?: string };
-type ToggleControl = { type: 'toggle' };
-type DropdownControl = { type: 'dropdown'; options: Record<string, string> };
-type SliderControl = { type: 'slider'; min: number; max: number; step?: number };
 
-/** One row of the settings page. */
-interface SettingRow {
-        key: keyof AnimeSettings;
-        name: string;
-        desc: string;
-        control: TextControl | ToggleControl | DropdownControl | SliderControl;
-}
 
-/** One row that runs something instead of storing a value. */
-interface ActionRow {
-        name: string;
-        desc: string;
-        run: () => void;
-}
-
-type SettingsRow = SettingRow | ActionRow;
-
-/** A heading over the rows that follow it. */
-const DEFS: Record<string, SettingDefinition[]> = {
+/**
+ * One definition per setting. Typed as a total record over `AnimeSettings`, so
+ * adding a setting without a definition fails the build instead of rendering a
+ * group that throws.
+ */
+const DEFS: Record<keyof AnimeSettings, SettingDefinition[]> = {
         'settingsAdvanced': [
                 {
                         name: 'Advanced settings',
@@ -358,6 +341,13 @@ const DEFS: Record<string, SettingDefinition[]> = {
                                                 key: 'subtitleSize',
                                                 options: { small: 'Small', normal: 'Normal', large: 'Large' },
                                         },
+                },
+        ],
+        'subtitleDelayMs': [
+                {
+                        name: 'Subtitle delay',
+                        desc: 'Shift subtitles later by this many milliseconds, to line them up with an encode whose audio leads. Negative values move them earlier.',
+                        control: { type: 'slider', key: 'subtitleDelayMs', min: -5000, max: 5000, step: 100 },
                 },
         ],
         'autoPlayNext': [
@@ -500,10 +490,7 @@ const DEFS: Record<string, SettingDefinition[]> = {
                                         control: { type: 'toggle', key: 'confirmDestructiveActions' },
                 },
         ],
-        'Export debug log': [],
 };
-
-type Section = { title: string; rows: SettingsRow[] };
 
 export class AnimeSettingTab extends PluginSettingTab {
         plugin: AnimePlugin;
@@ -515,116 +502,14 @@ export class AnimeSettingTab extends PluginSettingTab {
 
 
         /**
-         * The whole settings page, as groups. The everyday groups are always
-         * shown; the rest appear once the user turns on Advanced settings.
+         * The page as groups. Built by the pure `settingGroups` below so the
+         * coverage test can read it without an Obsidian app.
          */
         getSettingDefinitions(): SettingDefinitionItem[] {
-                return [
-                        {
-                                type: 'group',
-                                heading: 'Essentials',
-                                items: [
-                                        ...DEFS['settingsAdvanced']!,
-                                        {
-                                                name: 'Export debug log',
-                                                desc: 'Move the current diagnostic log into the download folder as a copyable Markdown file, then remove the private plugin log.',
-                                                action: () => {
-                                                        void this.plugin.exportDebugLog();
-                                                },
-                                        },
-                                ],
-                        },
-                        {
-                                type: 'group',
-                                heading: 'Downloads and library',
-                                items: [
-                ...DEFS['downloadFolder']!,
-                ...DEFS['downloadQuality']!,
-                ...DEFS['downloadFormat']!,
-                ...DEFS['downloadSubtitles']!,
-                ...DEFS['autoPlayNext']!,
-                ...DEFS['confirmDestructiveActions']!,
-                                ],
-                        },
-                        {
-                                type: 'group',
-                                heading: 'Browser',
-                                items: [
-                ...DEFS['browserSearchEngine']!,
-                ...DEFS['browserDownloadFolder']!,
-                ...DEFS['browserCompatibility']!,
-                                ],
-                        },
-                        {
-                                type: 'group',
-                                heading: 'Library and catalogue',
-                                items: [
-                ...DEFS['showAdultContent']!,
-                ...DEFS['animeCacheEnabled']!,
-                                ],
-                        },
-                        {
-                                type: 'group',
-                                heading: 'Downloading',
-                                visible: () => Boolean(this.plugin.settings.settingsAdvanced),
-                                items: [
-                ...DEFS['animeApiBase']!,
-                ...DEFS['downloadFilenameTemplate']!,
-                ...DEFS['preferDub']!,
-                ...DEFS['downloadSegmentConcurrency']!,
-                ...DEFS['downloadMaxConcurrentJobs']!,
-                ...DEFS['autoResumeOnLaunch']!,
-                ...DEFS['downloadExternal']!,
-                                ],
-                        },
-                        {
-                                type: 'group',
-                                heading: 'Browser, technical',
-                                visible: () => Boolean(this.plugin.settings.settingsAdvanced),
-                                items: [
-                ...DEFS['browserUserAgent']!,
-                ...DEFS['browserInline']!,
-                                ],
-                        },
-                        {
-                                type: 'group',
-                                heading: 'Subtitles and player',
-                                visible: () => Boolean(this.plugin.settings.settingsAdvanced),
-                                items: [
-                ...DEFS['subtitlesOn']!,
-                ...DEFS['subtitleSize']!,
-                ...DEFS['subtitleDelayMs']!,
-                                ],
-                        },
-                        {
-                                type: 'group',
-                                heading: 'Recommendations and models',
-                                visible: () => Boolean(this.plugin.settings.settingsAdvanced),
-                                items: [
-                ...DEFS['recommendationModel']!,
-                ...DEFS['jevApiKey']!,
-                ...DEFS['llmProvider']!,
-                ...DEFS['llmLocalModel']!,
-                ...DEFS['llmBaseUrl']!,
-                ...DEFS['llmModel']!,
-                ...DEFS['llmApiKey']!,
-                ...DEFS['llmWebSearch']!,
-                ...DEFS['llmSearchUrl']!,
-                                ],
-                        },
-                        {
-                                type: 'group',
-                                heading: 'Diagnostics',
-                                visible: () => Boolean(this.plugin.settings.settingsAdvanced),
-                                items: [
-                ...DEFS['debugMode']!,
-                ...DEFS['glassEffect']!,
-                ...DEFS['Export debug log']!,
-                                ],
-                        },
-                ];
+                return settingGroups(Boolean(this.plugin.settings.settingsAdvanced), {
+                        exportDebugLog: () => void this.plugin.exportDebugLog(),
+                });
         }
-
 
         getControlValue(key: string): unknown {
                 return (this.plugin.settings as unknown as Record<string, unknown>)[key];
@@ -650,370 +535,126 @@ export class AnimeSettingTab extends PluginSettingTab {
                 await this.plugin.saveSettings();
         }
 
-        /**
-         * The everyday page. These are the choices that change what you get
-         * when you download or browse; everything else waits behind Advanced.
-         */
-        private everydaySections(): Section[] {
-                return [
-                        {
-                                title: 'Downloads and library',
-                                rows: [
-                                        {
-                                                key: 'downloadFolder',
-                                                name: 'Download folder',
-                                                desc: 'Folder for downloaded episodes, relative to the vault. On mobile the vault is the only place a plugin can write.',
-                                                control: { type: 'text', placeholder: 'Anime' },
-                                        },
-                                        {
-                                                key: 'downloadQuality',
-                                                name: 'Download quality',
-                                                desc: 'Preferred stream height. Sources are usually 720p, so the closest available is used.',
-                                                control: {
-                                                        type: 'dropdown',
-                                                        options: { '1080': '1080p', '720': '720p', '480': '480p', '360': '360p' },
-                                                },
-                                        },
-                                        {
-                                                key: 'downloadFormat',
-                                                name: 'Download format',
-                                                desc: 'MP4 is a single file that plays anywhere. TS keeps the raw stream for remuxing later, and players cannot open it.',
-                                                control: {
-                                                        type: 'dropdown',
-                                                        options: { mp4: 'MP4 (playable file)', ts: 'TS (raw stream, archive)' },
-                                                },
-                                        },
-                                        {
-                                                key: 'downloadSubtitles',
-                                                name: 'Save subtitles',
-                                                desc: 'Write the stream\u2019s subtitle track next to each video as a WebVTT file, and show it in the player. Streams without subtitles download as before.',
-                                                control: { type: 'toggle' },
-                                        },
-                                        {
-                                                key: 'autoPlayNext',
-                                                name: 'Auto-play the next episode',
-                                                desc: 'When an episode ends, start the next one of the same series.',
-                                                control: { type: 'toggle' },
-                                        },
-                                        {
-                                                key: 'confirmDestructiveActions',
-                                                name: 'Confirm destructive actions',
-                                                desc: 'Ask before deleting a downloaded file or clearing the download log.',
-                                                control: { type: 'toggle' },
-                                        },
-                                ],
-                        },
-                        {
-                                title: 'Browser',
-                                rows: [
-                                        {
-                                                key: 'browserSearchEngine',
-                                                name: 'Search engine',
-                                                desc: 'Used by the address bar and the browser\u2019s home page.',
-                                                control: {
-                                                        type: 'dropdown',
-                                                        options: Object.fromEntries(
-                                                                Object.entries(BROWSER_ENGINES).map(([key, value]) => [key, value.name]),
-                                                        ),
-                                                },
-                                        },
-                                        {
-                                                key: 'browserDownloadFolder',
-                                                name: 'Browser download folder',
-                                                desc: 'Folder for images, videos and files saved from the browser, relative to the vault.',
-                                                control: { type: 'text', placeholder: 'Browser' },
-                                        },
-                                        {
-                                                key: 'browserCompatibility',
-                                                name: 'Compatibility mode',
-                                                desc: 'Load a site directly at its own address when it allows embedding, so its own scripts, modules and cookies run. Turn it off if a site misbehaves; the per-site menu overrides this either way.',
-                                                control: { type: 'toggle' },
-                                        },
-                                        {
-                                                key: 'showAdultContent',
-                                                name: 'Show 18+ titles',
-                                                desc: 'Reveal the opt-in 18+ source in the finder and include its titles in downloader searches. One switch for both.',
-                                                control: { type: 'toggle' },
-                                        },
-                                        {
-                                                key: 'animeCacheEnabled',
-                                                name: 'Cache anime details',
-                                                desc: 'Keep searches, series details, episode lists and stream URLs on disk so a repeat lookup is instant. Only anime API answers are stored.',
-                                                control: { type: 'toggle' },
-                                        },
-                                ],
-                        },
-                ];
-        }
+}
 
-        private advancedSections(): Section[] {
-                return [
-                        {
-                                title: 'Downloading',
-                                rows: [
-                                        {
-                                                key: 'animeApiBase',
-                                                name: 'Anime API endpoint',
-                                                desc: 'Base URL of the catalogue used by the downloader. Change it if you self-host the API.',
-                                                control: { type: 'text', placeholder: DEFAULT_API_BASE },
-                                        },
-                                        {
-                                                key: 'downloadFilenameTemplate',
-                                                name: 'Filename template',
-                                                desc: 'Use {series}, {seriesFolder}, {ep}, {ep:02}, {title} and {ext}. The default puts each series in its own folder.',
-                                                control: { type: 'text', placeholder: DEFAULT_FILENAME_TEMPLATE },
-                                        },
-                                        {
-                                                key: 'preferDub',
-                                                name: 'Prefer dub',
-                                                desc: 'Try dubbed servers first when the default one offers no file. Many series are subbed only, and for those this changes nothing.',
-                                                control: { type: 'toggle' },
-                                        },
-                                        {
-                                                key: 'downloadSegmentConcurrency',
-                                                name: 'Parallel segments',
-                                                desc: 'Segments fetched at once per episode. The CDN refuses requests above a few in flight, and the download halves this by itself when it is refused.',
-                                                control: { type: 'slider', min: 1, max: 16, step: 1 },
-                                        },
-                                        {
-                                                key: 'downloadMaxConcurrentJobs',
-                                                name: 'Parallel episodes',
-                                                desc: 'Episodes downloaded at the same time. Total load is this multiplied by the segment limit.',
-                                                control: { type: 'slider', min: 1, max: 4, step: 1 },
-                                        },
-                                        {
-                                                key: 'autoResumeOnLaunch',
-                                                name: 'Resume downloads on launch',
-                                                desc: 'Continue queued and paused downloads when Obsidian starts. A connection the device reports as metered holds this until you start it yourself.',
-                                                control: { type: 'toggle' },
-                                        },
-                                        {
-                                                key: 'downloadExternal',
-                                                name: 'Save outside the vault',
-                                                desc: 'Desktop only. Write downloads to an absolute path such as a mounted SD card. Ignored on mobile.',
-                                                control: { type: 'toggle' },
-                                        },
-                                ],
-                        },
-                        {
-                                title: 'Browser, technical',
-                                rows: [
-                                        {
-                                                key: 'browserUserAgent',
-                                                name: 'Browser user agent',
-                                                desc: 'Automatic uses this device\u2019s own browser identity with WebView markers removed. Enter a custom string only to override it; a desktop string gives desktop layouts.',
-                                                control: { type: 'text', placeholder: 'Automatic (this device)' },
-                                        },
-                                        {
-                                                key: 'browserInline',
-                                                name: 'Inline styles and scripts',
-                                                desc: 'Fetch pages\u2019 stylesheets, scripts, modules, fonts and images natively and embed them, because an embedded page inherits the app\u2019s content security policy. Turn it off only to test a rendering problem.',
-                                                control: { type: 'toggle' },
-                                        },
-                                ],
-                        },
-                        {
-                                title: 'Subtitles and player',
-                                rows: [
-                                        {
-                                                key: 'subtitlesOn',
-                                                name: 'Show subtitles in the player',
-                                                desc: 'Whether a downloaded subtitle file starts visible. The player\u2019s own controls change this too.',
-                                                control: { type: 'toggle' },
-                                        },
-                                        {
-                                                key: 'subtitleSize',
-                                                name: 'Subtitle text size',
-                                                desc: 'How large subtitles render in the player.',
-                                                control: { type: 'dropdown', options: { small: 'Small', normal: 'Normal', large: 'Large' } },
-                                        },
-                                        {
-                                                key: 'subtitleDelayMs',
-                                                name: 'Subtitle delay',
-                                                desc: 'Shift subtitles later by this many milliseconds, to line them up with an encode whose audio leads.',
-                                                control: { type: 'slider', min: -5000, max: 5000, step: 100 },
-                                        },
-                                ],
-                        },
-                        {
-                                title: 'Recommendations and models',
-                                rows: [
-                                        {
-                                                key: 'recommendationModel',
-                                                name: 'Recommendation model',
-                                                desc: 'Catalogue only needs nothing extra. Local fetches a 6 MB model once and runs it on this device. Hosted sends your history and the candidate titles to TypeSafe (typesafe.ai).',
-                                                control: {
-                                                        type: 'dropdown',
-                                                        options: {
-                                                                off: 'Catalogue only',
-                                                                local: 'Local decision model (offline, 6 MB)',
-                                                                hosted: 'Hosted decision model (Jev)',
-                                                        },
-                                                },
-                                        },
-                                        {
-                                                key: 'jevApiKey',
-                                                name: 'Jev API key',
-                                                desc: 'Only used by the hosted model. Leave empty to keep the catalogue ranking.',
-                                                control: { type: 'text', placeholder: 'TYPESAFE_API_KEY' },
-                                        },
-                                        {
-                                                key: 'llmProvider',
-                                                name: 'Curate with a language model',
-                                                desc: 'Re-order and prune the recommendations with a model. Model server keeps everything on your network; hosted API needs no setup but sends your history there.',
-                                                control: {
-                                                        type: 'dropdown',
-                                                        options: {
-                                                                off: 'Off',
-                                                                'in-process': 'In this plugin (offline, ~150 MB)',
-                                                                server: 'Model server on my machine',
-                                                                api: 'Hosted API',
-                                                        },
-                                                },
-                                        },
-                                        {
-                                                key: 'llmLocalModel',
-                                                name: 'Local model',
-                                                desc: 'Runs inside the plugin through WebAssembly. It needs roughly the model size in free memory, and the runtime (~9 MB) is downloaded once.',
-                                                control: {
-                                                        type: 'dropdown',
-                                                        options: Object.fromEntries(LOCAL_MODELS.map((model) => [model.id, model.label])),
-                                                },
-                                        },
-                                        {
-                                                key: 'llmBaseUrl',
-                                                name: 'Model server URL',
-                                                desc: 'OpenAI-compatible base URL: Ollama http://localhost:11434/v1, LM Studio http://localhost:1234/v1.',
-                                                control: { type: 'text', placeholder: DEFAULT_SERVER_BASE },
-                                        },
-                                        {
-                                                key: 'llmModel',
-                                                name: 'Model name',
-                                                desc: 'Any instruction-tuned model works. Small ones run alongside Obsidian, e.g. ollama pull hf.co/LiquidAI/LFM2.5-230M-GGUF.',
-                                                control: { type: 'text', placeholder: DEFAULT_SERVER_MODEL },
-                                        },
-                                        {
-                                                key: 'llmApiKey',
-                                                name: 'Model API key',
-                                                desc: 'Only for a hosted API. Leave empty for a server on your own machine.',
-                                                control: { type: 'text', placeholder: 'sk-...' },
-                                        },
-                                        {
-                                                key: 'llmWebSearch',
-                                                name: 'Let the model search the web',
-                                                desc: 'Off by default: it is the only part that sends a query to a third party of your choosing.',
-                                                control: { type: 'toggle' },
-                                        },
-                                        {
-                                                key: 'llmSearchUrl',
-                                                name: 'Search endpoint',
-                                                desc: 'Used only when web search is on. Any URL that accepts a q parameter and returns text or JSON.',
-                                                control: { type: 'text', placeholder: 'https://example.com/search?q=' },
-                                        },
-                                ],
-                        },
-                        {
-                                title: 'Diagnostics',
-                                rows: [
-                                        {
-                                                key: 'debugMode',
-                                                name: 'Debug mode',
-                                                desc: 'Write a detailed log of downloads, scans and repairs to the plugin data folder.',
-                                                control: { type: 'toggle' },
-                                        },
-                                        {
-                                                name: 'Export debug log',
-                                                desc: 'Copy the current log into the download folder as a Markdown file, then remove the private plugin log.',
-                                                run: () => void this.plugin.exportDebugLog(),
-                                        },
-                                        {
-                                                key: 'glassEffect',
-                                                name: 'Glass effect',
-                                                desc: 'A translucent surface for the plugin\u2019s panels. Desktop only: blurring is too costly on a phone.',
-                                                control: { type: 'toggle' },
-                                        },
-                                ],
-                        },
-                ];
-        }
+/** The side effects a settings row can run; injected so `settingGroups` stays pure. */
+export interface SettingActions {
+        exportDebugLog(): void;
+}
 
-        /**
-         * The imperative page, used before 1.13 or when the declarative API is
-         * not available. Everyday settings come first and always; Advanced adds
-         * the rest below them.
-         */
-        display(): void {
-                const { containerEl } = this;
-                containerEl.empty();
-                containerEl.addClass('bfm-settings');
+/** Every setting key that has a definition, for the coverage test. */
+export function definedSettingKeys(): string[] {
+        return Object.keys(DEFS);
+}
 
-                const advanced = new Setting(containerEl)
-                        .setName('Advanced settings')
-                        .setDesc(
-                                'Show every setting: cache limits, parallel downloads, model endpoints and diagnostics. Leave it off to keep this page to the choices that matter day to day.',
-                        )
-                        .addToggle((toggle) =>
-                                toggle.setValue(Boolean(this.plugin.settings.settingsAdvanced)).onChange(async (value) => {
-                                        this.plugin.settings.settingsAdvanced = value;
-                                        await this.plugin.saveSettings();
-                                        this.display();
-                                }),
-                        );
-                advanced.settingEl.addClass('bfm-settings-advanced');
-
-                this.render(containerEl, this.everydaySections());
-                if (this.plugin.settings.settingsAdvanced) {
-                        this.render(containerEl, this.advancedSections());
-                }
-        }
-
-        private render(containerEl: HTMLElement, sections: Section[]): void {
-                for (const section of sections) {
-                        new Setting(containerEl).setName(section.title).setHeading();
-                        for (const row of section.rows) this.renderRow(containerEl, row);
-                }
-        }
-
-        private renderRow(containerEl: HTMLElement, row: SettingsRow): void {
-                const setting = new Setting(containerEl).setName(row.name).setDesc(row.desc);
-                if (!('control' in row)) {
-                        setting.addButton((button) => button.setButtonText('Run').onClick(() => row.run()));
-                        return;
-                }
-                const key = row.key;
-                const value = this.plugin.settings[key];
-                const save = async (next: unknown): Promise<void> => {
-                        await this.setControlValue(key, next);
-                };
-                const control = row.control;
-                switch (control.type) {
-                        case 'toggle':
-                                setting.addToggle((toggle) => toggle.setValue(Boolean(value)).onChange(save));
-                                break;
-                        case 'text':
-                                setting.addText((text) =>
-                                        text
-                                                .setPlaceholder(control.placeholder ?? '')
-                                                .setValue(typeof value === 'string' ? value : '')
-                                                .onChange(save),
-                                );
-                                break;
-                        case 'dropdown':
-                                setting.addDropdown((dropdown) => {
-                                        for (const [optionKey, label] of Object.entries(control.options)) {
-                                                dropdown.addOption(optionKey, label);
-                                        }
-                                        return dropdown.setValue(String(value ?? '')).onChange(save);
-                                });
-                                break;
-                        case 'slider':
-                                setting.addSlider((slider) =>
-                                        slider
-                                                .setLimits(control.min, control.max, control.step ?? 1)
-                                                .setValue(Number(value ?? 0))
-                                                .onChange(save),
-                                );
-                                break;
-                }
-        }
+/**
+ * The whole settings page, as groups.
+ *
+ * The everyday groups are always rendered; the rest appear once *Advanced
+ * settings* is on. A group declared here but missing from `DEFS` renders
+ * nothing, and a `DEFS` entry no group references is unreachable — both are
+ * asserted by `tests/settings.test.ts`, because neither is a type error.
+ */
+export function settingGroups(advanced: boolean, actions: SettingActions): SettingDefinitionItem[] {
+        return [
+                {
+                        type: 'group',
+                        heading: 'Essentials',
+                        items: [
+                                ...DEFS['settingsAdvanced'],
+                                {
+                                        name: 'Export debug log',
+                                        desc: 'Move the current diagnostic log into the download folder as a copyable Markdown file, then remove the private plugin log.',
+                                        action: () => actions.exportDebugLog(),
+                                },
+                        ],
+                },
+                {
+                        type: 'group',
+                        heading: 'Downloads and library',
+                        items: [
+                                ...DEFS['downloadFolder'],
+                                ...DEFS['downloadQuality'],
+                                ...DEFS['downloadFormat'],
+                                ...DEFS['downloadSubtitles'],
+                                ...DEFS['autoPlayNext'],
+                                ...DEFS['confirmDestructiveActions'],
+                        ],
+                },
+                {
+                        type: 'group',
+                        heading: 'Browser',
+                        items: [
+                                ...DEFS['browserSearchEngine'],
+                                ...DEFS['browserDownloadFolder'],
+                                ...DEFS['browserCompatibility'],
+                        ],
+                },
+                {
+                        type: 'group',
+                        heading: 'Library and catalogue',
+                        items: [
+                                ...DEFS['showAdultContent'],
+                                ...DEFS['animeCacheEnabled'],
+                        ],
+                },
+                {
+                        type: 'group',
+                        heading: 'Downloading',
+                        visible: advanced,
+                        items: [
+                                ...DEFS['animeApiBase'],
+                                ...DEFS['downloadFilenameTemplate'],
+                                ...DEFS['preferDub'],
+                                ...DEFS['downloadSegmentConcurrency'],
+                                ...DEFS['downloadMaxConcurrentJobs'],
+                                ...DEFS['autoResumeOnLaunch'],
+                                ...DEFS['downloadExternal'],
+                        ],
+                },
+                {
+                        type: 'group',
+                        heading: 'Browser, technical',
+                        visible: advanced,
+                        items: [
+                                ...DEFS['browserUserAgent'],
+                                ...DEFS['browserInline'],
+                        ],
+                },
+                {
+                        type: 'group',
+                        heading: 'Subtitles and player',
+                        visible: advanced,
+                        items: [
+                                ...DEFS['subtitlesOn'],
+                                ...DEFS['subtitleSize'],
+                                ...DEFS['subtitleDelayMs'],
+                        ],
+                },
+                {
+                        type: 'group',
+                        heading: 'Recommendations and models',
+                        visible: advanced,
+                        items: [
+                                ...DEFS['recommendationModel'],
+                                ...DEFS['jevApiKey'],
+                                ...DEFS['llmProvider'],
+                                ...DEFS['llmLocalModel'],
+                                ...DEFS['llmBaseUrl'],
+                                ...DEFS['llmModel'],
+                                ...DEFS['llmApiKey'],
+                                ...DEFS['llmWebSearch'],
+                                ...DEFS['llmSearchUrl'],
+                        ],
+                },
+                {
+                        type: 'group',
+                        heading: 'Diagnostics',
+                        visible: advanced,
+                        items: [
+                                ...DEFS['debugMode'],
+                                ...DEFS['glassEffect'],
+                        ],
+                },
+        ];
 }

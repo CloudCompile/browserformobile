@@ -275,12 +275,18 @@ This repo is the **Anime for Mobile** plugin (folder and plugin id stay
 `browser-for-mobile` so existing installs upgrade in place). Everything below is
 specific to this codebase.
 
-**The web browser was removed in 3.0.0.** A plugin cannot embed a real engine on
-mobile, so the iframe/proxy renderer was never reliable. Do not reintroduce a
-browser: there is no `src/view.ts`, `renderer.ts`, `proxy.ts`, `bridge.ts`,
-`store.ts`, `cookieStore.ts`, `tabs.ts`, `sheet.ts`, `viewport.ts` or
-`types.ts` any more. The plugin is now the downloader, the library, the details
-page and the recommendations.
+**There is an embedded browser, and it is not the 3.0.0 one.** That stack was
+removed because an iframe over a proxy layer cannot run a real site. What ships
+now is `src/browser/` — a native request engine, a document inliner, an injected
+page script and a workspace view — and it renders a cleaned document into an
+`srcdoc` frame, with a per-site *compatibility* mode that hands the page to a
+real same-origin iframe where the site allows framing. See **The embedded
+browser** below before touching it: several of its behaviours exist only to stop
+a specific site from breaking.
+
+A plugin still cannot embed a platform browser engine, so anything that requires
+one (WebRTC, service workers, cross-origin storage) will not work here. Do not
+claim otherwise.
 
 ### Architecture
 
@@ -299,8 +305,10 @@ page and the recommendations.
 - `src/downloadModal.ts` — the downloader window (search, episode picker, queue).
 - `src/downloadManagerView.ts` — an `ItemView` that scans the download folder and
   offers per-file repair.
-- `src/library.ts` / `src/libraryModal.ts` / `src/playerModal.ts` — the offline
-  library: filename parsing, the list, and playback with saved position.
+- `src/library.ts` / `src/libraryGroups.ts` / `src/libraryView.ts` /
+  `src/playerModal.ts` — the offline library: the folder scan and filename
+  parsing, the pure series/season grouping, the workspace view, and playback
+  with saved position. There is no `libraryModal.ts` any more.
 - `src/detailsModal.ts` — the full details page, including the recommendation
   section. It renders through `src/seriesDetails.ts` so the library page and the
   downloader's pre-download page share one set of blocks.
@@ -356,9 +364,65 @@ page and the recommendations.
   200 ceiling against a pathological history, not a policy — do not reintroduce a
   small cap, because a library of thirty series then reports itself as four.
 - `src/stats.ts` / `src/statsModal.ts` — the run log and its summary page.
-- `src/settings.ts` — uses the **declarative settings API**
-  (`getSettingDefinitions`). Do not re-add an imperative `display()`; lint flags
-  it once `minAppVersion` is 1.13.0.
+- `src/settings.ts` — the **declarative settings API**, and nothing else. The
+  page is `settingGroups(advanced, actions)`, a pure function of the Advanced
+  switch; `getSettingDefinitions()` calls it. There is no imperative `display()`
+  and no pre-1.13 fallback: `minAppVersion` is 1.13.0, so Obsidian refuses to
+  load the plugin on a version that would need one.
+
+  **The three-part rule:** a new setting goes into `AnimeSettings`,
+  `DEFAULT_SETTINGS` and `DEFS` *and* into one group in `settingGroups`. `DEFS`
+  is typed `Record<keyof AnimeSettings, SettingDefinition[]>`, so forgetting the
+  definition fails `tsc`; `tests/settings.test.ts` catches the rest (a
+  definition no group renders, or a control pointing at a key that does not
+  exist). Both halves matter: a group spreading `undefined` throws while the tab
+  is being built, which takes the whole settings page down, not just that row.
+
+  `getControlValue`/`setControlValue` are the bind Obsidian calls; side effects
+  that must apply immediately (`animeCacheEnabled`, `recommendationModel`,
+  `glassEffect`, `debugMode`) live in `setControlValue`, because assigning the
+  field is not enough on its own.
+
+### The embedded browser
+
+`src/browser/` is a browser written against Obsidian's native HTTP layer rather
+than a platform engine. The shape:
+
+- `engine.ts` — the tab registry and the request layer. `buildDoc` cleans a
+  fetched document (drops CSP/X-Frame metas, inlines the bridge), and
+  `inlineResources` embeds styles, fonts, images and scripts, because a rendered
+  document inherits the app's own content security policy.
+- `injected.ts` — the script put into every page. It is serialised with
+  `Function.prototype.toString()`, so **every identifier it uses at runtime must
+  be declared inside the function**; nothing from module scope is visible to it.
+  It installs `fetch`, `XMLHttpRequest`, `document.cookie`, `window.open`, the
+  click/auxclick/submit handlers, lazy-script and failed-image retries, and the
+  page flags below.
+- `view.ts` — the workspace view: tabs, history, the per-site mode switch, the
+  media picker and the downloads tray.
+- `modules.ts` — an ES-module inliner and import-map resolver, built on
+  `es-module-lexer`. `http.ts`, `cookies.ts`, `assets.ts`, `media.ts`,
+  `downloads.ts`, `ua.ts`, `compat.ts`, `config.ts` are the supporting layers.
+
+Traps worth keeping, each of which was a real breakage:
+
+- **A page must wait for the bridge.** `BrowserEngine` installs `__bfmBrowser`
+  on the view window; a page that arrives first (a reused frame, a tab opened
+  during a reload) would otherwise install no handlers at all and fall back to
+  raw browser behaviour — which is exactly how a DuckDuckGo result left for the
+  system browser. `withBridge` retries every 100 ms for five seconds before
+  giving up.
+- **Sites decide "JavaScript is off" from three things**, and none of them is the
+  fetch shim: a `<noscript>` block that a scripted browser never renders, a
+  `cookieEnabled` of `false` for the opaque `about:srcdoc` origin, and a document
+  that reports `hidden`. The injected script hides `<noscript>` (including ones
+  added later), reports cookies as enabled, and reports the document as visible.
+- **Search engines stay in download mode.** `canUseDirect` refuses a direct
+  frame for `isSearchEngineHost`, because a cross-origin frame's `target="_blank"`
+  links escape to the system browser.
+- **Direct mode cannot be inspected.** The frame is cross-origin, so media
+  capture and download controls are unavailable there by design; the banner says
+  so rather than silently doing nothing.
 
 ### Key constraints
 
@@ -465,15 +529,21 @@ npm run build   # tsc --noEmit && esbuild production
 npm run lint    # eslint, must be clean (0 errors, 0 warnings)
 ```
 
-**Vitest is now the committed test runner** (`npm test`), with
-`tests/obsidian-stub.ts` aliased for the `obsidian` module. Current suites:
-`utils`, `destination`, `library`, `perf`, `animeApi`, `animeCache`,
-`recommend`, `decision`, and `mp4`. `tests/mp4.test.ts` covers the progressive
+**Vitest is the committed test runner** (`npm test`), with
+`tests/obsidian-stub.ts` aliased for the `obsidian` module. Suites:
+`utils`, `destination`, `library`, `libraryGroups`, `perf`, `perf-budget`,
+`queue`, `animeApi`, `animeCache`, `apiContract`, `browse`, `metadataStore`,
+`recommend`, `recommendService`, `decision`, `llm`, `llmLocal`, `finder`,
+`seriesDetails`, `subtitles`, `dataExport`, `episodeGroups`, `mp4`,
+`browserCompat`, `browserCookies`, `browserMedia`, `browserModules`,
+`browserUserAgent`, and `settings`. `tests/mp4.test.ts` covers the progressive
 writer, the resume index, and the doctor's conversion, including the real mux.js
-fixture. Earlier ad-hoc harnesses under `/tmp/bfmtest` and
-`/tmp/bfmh` (built with esbuild `--alias:obsidian=...` plus jsdom) covered the
-removed browser view and the downloader internals; the downloader ones are
-still the reference for staging, resume, rate limiting, and MP4 conversion.
+fixture. `tests/settings.test.ts` asserts the three-part settings rule below —
+it exists because a definition the page referenced but never declared threw
+while the tab was being built.
+
+Everything under `tests/` is offline. Browser-network behaviour is asserted with
+fakes, not by fetching a site.
 
 ## Anime downloader — project notes
 
@@ -599,8 +669,16 @@ else.
   parsing, and the per-path watch-progress map. No index file; the folder is the
   index, so a file added or deleted outside the plugin is picked up on the next
   open.
-- `src/libraryModal.ts` — the browse UI: search, the all/unwatched/in-progress
-  filter, progress bars, play, and delete.
+- `src/libraryGroups.ts` — the pure model: one group per series, its episodes in
+  season-then-episode order, the watched count, the resume target and the
+  progress fraction. No DOM, so `tests/libraryGroups.test.ts` drives it directly.
+- `src/libraryView.ts` — the `ItemView` (view type `browser-for-mobile-library`):
+  a *Continue watching* shelf, one card per series with poster and progress, and
+  a series page with season tabs and episode rows. Search and sort live in the
+  view, and it repaints when the vault changes — the folder is still the index.
+  Next/previous in the player resolve through the same grouping, so an episode
+  after a season break is still "next". The old flat `libraryModal.ts` is gone;
+  do not reintroduce a modal for this.
 - `src/playerModal.ts` — `PlayerModal`: a `<video>` pointed at the file's
   resource path, with resume, periodic progress saves, and start-over.
 
