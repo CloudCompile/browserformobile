@@ -13,6 +13,25 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.15.5 — 2026-11-28
+
+Every site gets its own browser storage, and nested frames and workers can no
+longer reach the app's.
+
+- **Sites keep their own `localStorage`, `sessionStorage` and IndexedDB.** The
+  page runs from `srcdoc`, so those APIs were Obsidian's own store: every site
+  shared one namespace with the app and with every other site. A script injected
+  ahead of the page now gives each origin a prefixed view of the real stores —
+  `localStorage` and IndexedDB shared across the site's tabs, `sessionStorage`
+  scoped to one tab and one app run. Named keys, `Object.keys`, `length`,
+  transactions, indexes, cursors and version changes behave as they do in a
+  browser, and `indexedDB.databases()` shows only the site's own databases.
+- **Child frames and workers get the same view.** A same-origin child frame,
+  including one built with `srcdoc`, installs the site's storage before its own
+  scripts run, and blob workers and shared workers are wrapped so their
+  IndexedDB opens under the site's prefix. A nested realm no longer reads
+  Obsidian's unprefixed keys.
+
 ## 5.14.5 — 2026-11-28
 
 Search reaches the site DuckDuckGo actually serves, and the human check is left

@@ -400,6 +400,9 @@ than a platform engine. The shape:
   page flags below.
 - `view.ts` — the workspace view: tabs, history, the per-site mode switch, the
   media picker and the downloads tray.
+- `storage.ts` — the per-site storage view injected as its own script ahead of
+  `injected.ts`, plus the prefix helpers `engine.ts` passes in. It is serialised
+  with `toString()` too, so the same self-containment rule applies.
 - `modules.ts` — an ES-module inliner and import-map resolver, built on
   `es-module-lexer`. `http.ts`, `cookies.ts`, `assets.ts`, `media.ts`,
   `downloads.ts`, `ua.ts`, `compat.ts`, `config.ts` are the supporting layers.
@@ -419,6 +422,15 @@ Traps worth keeping, each of which was a real breakage:
   added later), reports cookies as enabled, and reports the document as visible.
   `buildDoc` ignores a `<meta http-equiv="refresh">` inside `<noscript>` for the
   same reason: DuckDuckGo's sent every search to `html.duckduckgo.com`.
+- **Storage is namespaced, not native.** The page frame shares Obsidian's
+  origin, so `localStorage`, `sessionStorage` and `indexedDB` would be the app's
+  own store. `storage.ts` installs prefixed views
+  (`bfm:v1:l|s|i:<origin>:…`) into the page, same-origin child frames and blob
+  workers; only the page's own keys are visible, and `indexedDB.databases()` is
+  filtered. Never call native `localStorage.clear()` from the app: it would wipe
+  every site's data. Android WebView delivers no `storage` events between these
+  srcdoc frames, so cross-tab `storage` events never reach a page; the script's
+  listener only exists to keep native app keys from leaking if one ever arrives.
 - **Search engines stay in download mode.** `canUseDirect` refuses a direct
   frame for `isSearchEngineHost`, because a cross-origin frame's `target="_blank"`
   links escape to the system browser.

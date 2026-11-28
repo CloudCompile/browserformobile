@@ -7,6 +7,7 @@ import { BrowserCookieJar } from './cookies';
 import { base64ToBytes, decodeText, nativeRequest, type NativeResponse } from './http';
 import { injectedBrowserScript } from './injected';
 import { selectSrcset, type BrowserMediaItem } from './media';
+import { browserStorageScript, storagePrefixes } from './storage';
 import { resolveBrowserUserAgent } from './ua';
 import {
 	normaliseImportMap,
@@ -93,6 +94,8 @@ export class BrowserEngine {
 	private readonly assets = new BrowserAssetCache();
 	private readonly moduleBlobs = new Map<string, Set<string>>();
 	private saveTimer: number | null = null;
+	/** Keeps one plugin run's `sessionStorage` out of the next run's. */
+	private readonly storageSession = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
 	constructor(private readonly plugin: AnimePlugin) {
 		this.cookies = new BrowserCookieJar(plugin.browserCookies ?? []);
@@ -280,7 +283,14 @@ export class BrowserEngine {
 		}).replace(/</g, '\\u003c');
 		const script = doc.createElement('script');
 		script.textContent = `(${injectedBrowserScript.toString()})(${config});`;
+		// Storage first: page scripts must never see Obsidian's own store.
+		const storageConfig = JSON.stringify(
+			storagePrefixes(finalUrl, this.storageSession, tabId),
+		).replace(/</g, '\\u003c');
+		const storageScript = doc.createElement('script');
+		storageScript.textContent = `(${browserStorageScript.toString()})(${storageConfig});`;
 		head.prepend(script);
+		head.prepend(storageScript);
 		head.prepend(base);
 		return { doc, baseUrl, title: (doc.title || '').trim(), refresh };
 	}
