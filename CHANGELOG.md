@@ -13,6 +13,34 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.10.5 — 2026-11-28
+
+Settings are quiet until you ask for more, the library is a real view instead of
+a flat file list, and pages that told you JavaScript was off now load their
+scripts.
+
+- **Everyday settings, then the rest.** The settings page shows what people
+  change — where downloads go, the library, the browser basics — and hides the
+  rest behind a new *Advanced settings* switch: downloading behaviour, browser
+  internals, subtitles and player, recommendations and models, diagnostics.
+  Nothing was removed; on Obsidian 1.13+ the page uses the declarative API, so
+  the switch takes effect without reopening the tab.
+- **A library view, not a modal.** The video library opens as a workspace view
+  with a *Continue watching* shelf, one card per series with its poster and
+  progress, and a series page with season tabs and an episode list. Search and
+  sort live in the view, and it repaints itself when a download finishes.
+- **Next and previous cross seasons.** The player's next/previous now follows
+  the library's own series order across season boundaries instead of only
+  looking at MP4 files with the same name, so an episode after a season break
+  is no longer "the last episode".
+- **Pages stop saying JavaScript is off.** The in-page script now hides
+  `<noscript>` blocks the way a scripted browser does, reports cookies as
+  enabled (they are — the native jar serves them), and reports the document as
+  visible, which several sites require before they render their app.
+- **Search results stay in the plugin.** Result links on DuckDuckGo (and other
+  search engines) no longer escape to the system browser while the bridge is
+  starting up; the page waits for it before wiring its links.
+
 ## 5.9.5 — 2026-11-27
 
 The downloader and the catalogue cache now run the same code as the web app, so a

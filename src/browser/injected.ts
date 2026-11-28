@@ -43,6 +43,30 @@ interface InjectedConfig {
 }
 
 export function injectedBrowserScript(cfg: InjectedConfig): void {
+	// Serialised by `toString()`, so the body cannot call a helper by name: the
+	// runnable part has to travel inside this function, as a closure. The view
+	// installs the bridge once per plugin load, so it should always be there; a
+	// page that arrives first — a reused frame, a tab opened during
+	// unload/reload — would otherwise lose every click handler for good and fall
+	// back to raw browser behaviour: target="_blank" leaves for the system
+	// browser, and the frame then loads it in place behind the app.
+	const withBridge = (run: () => void): void => {
+		if ((window.parent as Window & { __bfmBrowser?: BrowserBridge }).__bfmBrowser) {
+			run();
+			return;
+		}
+		let attempts = 0;
+		const timer = window.setInterval(() => {
+			attempts++;
+			if ((window.parent as Window & { __bfmBrowser?: BrowserBridge }).__bfmBrowser) {
+				window.clearInterval(timer);
+				run();
+			} else if (attempts >= 50) {
+				window.clearInterval(timer);
+			}
+		}, 100);
+	};
+	withBridge(() => {
 	const bridge = (window.parent as Window & { __bfmBrowser?: BrowserBridge }).__bfmBrowser;
 	if (!bridge) return;
 	const B = bridge;
@@ -699,6 +723,69 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 	};
 	if (cfg.inline !== false) installLazyScripts();
 
+	// -------------------------------------------------------------- page flags
+	//
+	// The document is a sandboxed-adjacent `srcdoc` document: same origin as
+	// the app, but no site context. Sites detect that "JavaScript is off" from
+	// three things this frame gets wrong, none of which the fetch/XHR shims
+	// cover: a `<noscript>` block that an unwrapped page would hide once its
+	// script ran, a `cookieEnabled` of false for the opaque `about:srcdoc`
+	// origin, and a document that reports hidden because the iframe has not
+	// been given a focus yet.
+	try {
+		const hideNoscript = (root: ParentNode): void => {
+			// Before scripting, browsers parse `<noscript>` as text; after, as an
+			// element that is never rendered. The serialised page still holds the
+			// element, so hide it as the browser would.
+			for (const node of Array.from(root.querySelectorAll('noscript'))) node.remove();
+		};
+		hideNoscript(document);
+		if (document.readyState === 'loading') {
+			// Client-rendered shells often build their DOM after parsing; a
+			// late `<noscript>` would otherwise flash its "enable JavaScript" copy.
+			new MutationObserver((records) => {
+				for (const record of records) {
+					for (const node of Array.from(record.addedNodes)) {
+						if (node.nodeType !== 1) continue;
+						if ((node as Element).tagName === 'NOSCRIPT') (node as Element).remove();
+						else hideNoscript(node as ParentNode);
+					}
+				}
+			}).observe(document.documentElement, { childList: true, subtree: true });
+		}
+	} catch {
+		/* A page that forbids traversal still gets every other shim. */
+	}
+	try {
+		Object.defineProperty(document, 'cookieEnabled', {
+			configurable: true,
+			get: () => true,
+		});
+	} catch {
+		/* Not every WebView allows redefining it. */
+	}
+	// The frame is visible and interactive; it only reports `hidden` because
+	// nothing inside it had focus yet. Pages gate rendering on this flag.
+	const revealDocument = (): void => {
+		try {
+			Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+			Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+		} catch {
+			/* Best effort. */
+		}
+	};
+	revealDocument();
+	document.addEventListener(
+		'visibilitychange',
+		() => {
+			if (!document.hidden) return;
+			// Re-assert the override; some page script drops it back to the
+			// real value before checking it.
+			revealDocument();
+		},
+		false,
+	);
+
 	/** Retry hotlink- or CSP-blocked images through the native HTTP bridge. */
 	const retriedImages = new WeakSet<HTMLImageElement>();
 	const retryImage = (image: HTMLImageElement): void => {
@@ -826,4 +913,5 @@ export function injectedBrowserScript(cfg: InjectedConfig): void {
 	} catch {
 		/* Title reporting is best effort. */
 	}
+	});
 }

@@ -14,7 +14,8 @@ import { DownloadModal, type DownloadModalOptions } from './downloadModal';
 import { repairByteBudget, repairFolder, RepairLedger } from './doctor';
 import { externalStorageAvailable, sanitizePath } from './destination';
 import { VideoLibrary, watchFraction, type LibraryEntry, type LibraryItem, type WatchRecord } from './library';
-import { LibraryModal } from './libraryModal';
+import { LibraryView, VIEW_TYPE_LIBRARY } from './libraryView';
+import { groupBySeries, neighbourInGroup, type SeriesGroup } from './libraryGroups';
 import { PlayerModal } from './playerModal';
 import { DEFAULT_FILENAME_TEMPLATE, DEFAULT_SETTINGS, AnimeSettingTab, type AnimeSettings } from './settings';
 import { StatsStore, buildStatsCsv, parseDataExport, type DataExport, type DownloadRun } from './stats';
@@ -108,12 +109,12 @@ export default class AnimePlugin extends Plugin {
 	animeCache!: AnimeCache;
 
 	private downloadModal: DownloadModal | null = null;
-	private libraryModal: LibraryModal | null = null;
 	private playerModal: PlayerModal | null = null;
 	private statsModal: StatsModal | null = null;
 	private detailsModal: DetailsModal | null = null;
 	private recommendationsModal: RecommendationsModal | null = null;
 	private findModal: FindModal | null = null;
+
 	/** The embedded browser's native request/document layer. */
 	browserEngine!: BrowserEngine;
 	/** File downloads started by the browser, kept separate from anime jobs. */
@@ -261,6 +262,9 @@ export default class AnimePlugin extends Plugin {
 		this.browserEngine.install();
 		this.registerView(BROWSER_VIEW_TYPE, (leaf: WorkspaceLeaf) => new BrowserView(leaf, this));
 		this.registerView(VIEW_TYPE_DOWNLOADS, (leaf: WorkspaceLeaf) => new DownloadManagerView(leaf, this));
+		this.registerView(VIEW_TYPE_LIBRARY, (leaf: WorkspaceLeaf) => {
+			return new LibraryView(leaf, this);
+		});
 
 		this.addRibbonIcon('globe', 'Open browser', () => {
 			void this.openBrowser();
@@ -372,40 +376,49 @@ export default class AnimePlugin extends Plugin {
 	 * Open the video library, re-scanning the folder first so a file added
 	 * outside the plugin still shows up.
 	 */
-	openLibrary(): void {
-		if (this.libraryModal) {
-			this.libraryModal.close();
-			this.libraryModal = null;
+	/** The library as series groups, for the library view. */
+	libraryGroups(): SeriesGroup[] {
+		return groupBySeries(this.library.items());
+	}
+
+	/** One series group by its key, or null when it is gone. */
+	libraryGroup(key: string, _template?: string): SeriesGroup | null {
+		return this.libraryGroups().find((group) => group.key === key) ?? null;
+	}
+
+	/** Poster URLs by lowercased series name, from the metadata store and cache. */
+	libraryPosters(): Map<string, string> {
+		const posters = collectPosters(this.animeCacheRecords);
+		for (const entry of Object.values(this.metadataStore.toJSON())) {
+			if (entry.poster && !posters.has(entry.key)) posters.set(entry.key, entry.poster);
 		}
-		const modal = new LibraryModal(this.app, this.library, {
-			onPlay: (item) => void this.playItem(item),
-			onDelete: (item) => this.deleteItem(item),
-			onRefresh: () => this.refreshLibrary(),
-			onDetails: (series) => this.openDetails(series),
-			initialView: this.libraryView,
-			onViewChange: (view) => {
-				this.libraryView = view;
-				void this.saveSettings();
-			},
-			// Posters come from the persistent store first, then the cached
-			// API answers, so the grid costs no network: a series never
-			// browsed gets a fallback card instead, and a browsed one keeps
-			// its poster even when the TTL cache has expired.
-			posters: () => {
-				const posters = collectPosters(this.animeCacheRecords);
-				for (const entry of Object.values(this.metadataStore.toJSON())) {
-					if (entry.poster && !posters.has(entry.key)) posters.set(entry.key, entry.poster);
-				}
-				return posters;
-			},
-			onClosed: () => {
-				this.libraryModal = null;
-			},
-			emptyHint: this.externalLibraryHint(),
-		});
-		this.libraryModal = modal;
-		modal.open();
-		void modal.refresh();
+		return posters;
+	}
+
+	/** Shown in the library's empty state. */
+	libraryEmptyHint(): string {
+		return this.externalLibraryHint();
+	}
+
+	/** Whether a details page can be shown for this series name. */
+	canOpenSeriesDetails(series: string): boolean {
+		return series.trim().length > 0;
+	}
+
+	openLibrary(): void {
+		void this.openLibraryView();
+	}
+
+	/** Open the library view, reusing its leaf when it is already open. */
+	async openLibraryView(): Promise<void> {
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_LIBRARY)[0];
+		if (existing) {
+			await this.app.workspace.revealLeaf(existing);
+			return;
+		}
+		const leaf = this.app.workspace.getLeaf('tab');
+		await leaf.setViewState({ type: VIEW_TYPE_LIBRARY, active: true });
+		await this.app.workspace.revealLeaf(leaf);
 	}
 
 	/**
@@ -1098,7 +1111,11 @@ export default class AnimePlugin extends Plugin {
 		await this.playItem(item);
 	}
 
-	async playItem(item: LibraryItem): Promise<void> {
+	/**
+	 * Play an item. `onClosed` fires when the player goes away, which the
+	 * library view uses to repaint the episode it just watched.
+	 */
+	async playItem(item: LibraryItem, onClosed?: () => void): Promise<void> {
 		if (this.playerModal) {
 			this.playerModal.close();
 			this.playerModal = null;
@@ -1151,6 +1168,7 @@ export default class AnimePlugin extends Plugin {
 				},
 				onClosed: () => {
 					this.playerModal = null;
+					onClosed?.();
 				},
 			},
 		);
@@ -1164,13 +1182,11 @@ export default class AnimePlugin extends Plugin {
 	 * about the next episode is held in memory.
 	 */
 	private adjacentEpisode(item: LibraryItem, direction: 'previous' | 'next'): LibraryItem | null {
-		const candidates = this.library
-			.items()
-			.filter((entry) => entry.series === item.series && entry.ext === 'mp4')
-			.sort((left, right) => left.episode - right.episode || left.name.localeCompare(right.name));
-		const index = candidates.findIndex((entry) => entry.path === item.path);
-		if (index < 0) return null;
-		return candidates[index + (direction === 'next' ? 1 : -1)] ?? null;
+		for (const group of this.libraryGroups()) {
+			const next = neighbourInGroup(group, item.path, direction);
+			if (next) return next;
+		}
+		return null;
 	}
 
 	private recordProgress(path: string, position: number, duration: number): void {
