@@ -1,4 +1,4 @@
-import { ItemView, Notice, setIcon, type WorkspaceLeaf } from 'obsidian';
+import { ItemView, Menu, Notice, setIcon, type WorkspaceLeaf } from 'obsidian';
 import { formatDuration } from './hls';
 import { type LibraryItem, type VideoLibrary } from './library';
 import {
@@ -14,6 +14,28 @@ import type AnimePlugin from './main';
 export const VIEW_TYPE_LIBRARY = 'browser-for-mobile-library';
 
 type Sort = 'recent' | 'title' | 'episodes';
+
+const SORT_OPTIONS: readonly { value: Sort; label: string }[] = [
+	{ value: 'recent', label: 'Recently added' },
+	{ value: 'title', label: 'Title' },
+	{ value: 'episodes', label: 'Most episodes' },
+];
+
+/**
+ * A stable hue per title. A library with no artwork would otherwise be a grid
+ * of identical grey rectangles; the tint gives each series a face.
+ */
+function titleHue(title: string): number {
+	let hash = 0;
+	for (let i = 0; i < title.length; i += 1) hash = (hash * 31 + title.charCodeAt(i)) % 360;
+	return hash;
+}
+
+/** Up to two initials, so the placeholder reads as a poster, not a monogram. */
+function initials(title: string): string {
+	const words = title.trim().split(/\s+/).filter(Boolean);
+	return `${words[0]?.charAt(0) ?? '?'}${words[1]?.charAt(0) ?? ''}`.toUpperCase();
+}
 
 /** A season tab inside a series page. */
 type SeasonTab = 'all' | number;
@@ -48,6 +70,7 @@ export class LibraryView extends ItemView {
 	private headEl!: HTMLElement;
 	private bodyEl!: HTMLElement;
 	private scrollTo: string | null = null;
+	private searchTimer: number | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -87,6 +110,10 @@ export class LibraryView extends ItemView {
 	}
 
 	override async onClose(): Promise<void> {
+		if (this.searchTimer !== null) {
+			window.clearTimeout(this.searchTimer);
+			this.searchTimer = null;
+		}
 		this.contentEl.empty();
 	}
 
@@ -134,6 +161,83 @@ export class LibraryView extends ItemView {
 	// ---------------------------------------------------------------- shelves
 
 	private renderShelves(): void {
+		this.renderToolbar();
+		this.renderShelfContent();
+	}
+
+	/** Search, sort and the one action that puts something new in the library. */
+	private renderToolbar(): void {
+		const bar = this.headEl.createDiv({ cls: 'bfm-library-bar' });
+		const wrap = bar.createDiv({ cls: 'bfm-library-search-wrap' });
+		const search = wrap.createEl('input', {
+			cls: 'bfm-library-search',
+			attr: {
+				type: 'search',
+				placeholder: 'Search series and episodes',
+				'aria-label': 'Search series and episodes',
+			},
+		});
+		search.value = this.query;
+		const clear = wrap.createEl('button', {
+			cls: 'bfm-library-search-clear',
+			attr: { 'aria-label': 'Clear search' },
+		});
+		setIcon(clear, 'x');
+		clear.toggleClass('is-hidden', !this.query);
+		clear.addEventListener('click', () => {
+			this.query = '';
+			search.value = '';
+			clear.addClass('is-hidden');
+			this.renderShelfContent();
+			search.focus();
+		});
+		search.addEventListener('input', () => {
+			this.query = search.value;
+			clear.toggleClass('is-hidden', !this.query);
+			// Repaint the results only. Rebuilding this bar on every keystroke stole
+			// the caret and made fast typing feel like it was fighting the field.
+			if (this.searchTimer !== null) window.clearTimeout(this.searchTimer);
+			this.searchTimer = window.setTimeout(() => {
+				this.searchTimer = null;
+				if (!this.openKey) this.renderShelfContent();
+			}, 140);
+		});
+
+		const tools = bar.createDiv({ cls: 'bfm-library-tools' });
+		const sortButton = tools.createEl('button', {
+			cls: 'bfm-library-sort',
+			attr: { 'aria-label': 'Sort series' },
+		});
+		setIcon(sortButton, 'arrow-up-down');
+		sortButton.createSpan({
+			text: SORT_OPTIONS.find((choice) => choice.value === this.sort)?.label ?? 'Recently added',
+		});
+		setIcon(sortButton.createSpan({ cls: 'bfm-library-sort-chevron' }), 'chevron-down');
+		sortButton.addEventListener('click', (event) => {
+			const menu = new Menu();
+			for (const choice of SORT_OPTIONS) {
+				menu.addItem((item) => {
+					item.setTitle(choice.label);
+					item.setIcon(this.sort === choice.value ? 'check' : 'list');
+					item.onClick(() => {
+						this.sort = choice.value;
+						this.render();
+					});
+				});
+			}
+			menu.showAtMouseEvent(event);
+		});
+
+		const add = tools.createEl('button', {
+			cls: 'bfm-library-add',
+			attr: { 'aria-label': 'Find anime to download', title: 'Find anime' },
+		});
+		setIcon(add, 'plus');
+		add.addEventListener('click', () => this.plugin.openFind());
+	}
+
+	private renderShelfContent(): void {
+		this.bodyEl.empty();
 		const library: VideoLibrary = this.plugin.library;
 		const groups = sortGroups(
 			library.entries.length > 0
@@ -141,35 +245,6 @@ export class LibraryView extends ItemView {
 				: [],
 			this.sort,
 		);
-
-		const bar = this.headEl.createDiv({ cls: 'bfm-library-bar' });
-		const search = bar.createEl('input', {
-			cls: 'bfm-library-search',
-			attr: { type: 'search', placeholder: 'Search series and episodes' },
-		});
-		search.value = this.query;
-		search.addEventListener('input', () => {
-			this.query = search.value;
-			this.render();
-			// The re-render rebuilds the bar; keep focus in the field.
-			const next = this.headEl.querySelector<HTMLInputElement>('.bfm-library-search');
-			next?.focus();
-			next?.setSelectionRange(next.value.length, next.value.length);
-		});
-
-		const sort = bar.createEl('select', { cls: 'bfm-library-sort', attr: { 'aria-label': 'Sort series' } });
-		for (const choice of [
-			{ value: 'recent', label: 'Recently added' },
-			{ value: 'title', label: 'Title' },
-			{ value: 'episodes', label: 'Most episodes' },
-		] as const) {
-			sort.createEl('option', { text: choice.label, value: choice.value }).selected = this.sort === choice.value;
-		}
-		sort.addEventListener('change', () => {
-			this.sort = sort.value as Sort;
-			this.render();
-		});
-
 		const all = this.plugin.libraryGroups();
 		if (all.length === 0) {
 			this.renderEmpty();
@@ -237,9 +312,11 @@ export class LibraryView extends ItemView {
 			if (url) {
 				poster.createEl('img', { cls: 'bfm-library-card-poster-image', attr: { src: url, alt: '', loading: 'lazy' } });
 			} else {
+				poster.addClass('is-placeholder');
+				poster.style.setProperty('--bfm-poster-hue', String(titleHue(group.title)));
 				poster.createDiv({
 					cls: 'bfm-library-card-poster-placeholder',
-					text: group.title.charAt(0).toUpperCase() || '?',
+					text: initials(group.title),
 				});
 			}
 			const count = group.episodes.length;

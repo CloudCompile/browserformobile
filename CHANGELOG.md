@@ -13,6 +13,40 @@ the plugin; 3.0.0 removed the browser and renamed the product.
 
 ---
 
+## 5.13.5 — 2026-11-28
+
+The library is a shelf you can scan on a phone, compact settings stop leading
+with diagnostics, and the browser chrome gives the page back its screen.
+
+- **The library fits three series across a phone.** Its 112px minimum missed a
+  375px screen by one pixel, so every phone got two 167px cards per row and a
+  poster-shaped hole where artwork would be. The phone grid is 100px minimum,
+  titles clamp to two lines at a smaller size, and a series with no poster gets
+  a stable tint and its initials instead of a grey rectangle. Search gained a
+  clear button, and typing repaints only the results instead of rebuilding the
+  bar and stealing the caret.
+- **Sort is a menu, not a mystery chip.** Android WebView hides a native
+  select's chevron, so "Recently added" read as a filter tag. It is now a button
+  with a sort icon and a chevron that opens a menu with a check on the active
+  choice. A **+** button opens **Find anime** — the library finally has a way to
+  add something on mobile, where the ribbon is hidden.
+- **Compact settings are about using the app.** The advanced switch's five-line
+  explanation is one sentence, and **Export debug log** moved from Essentials to
+  the Diagnostics group where it belongs. **Download folder** is what you see
+  first.
+- **The browser gives the page its screen back.** A single tab no longer draws a
+  tab strip, and the address bar shows the host on mobile — tap to edit the full
+  URL, and no more `https://html.duckduckgo.c`. Reload, bookmark and media
+  download moved into the browser menu. The compatibility banner is one sentence
+  and its dismiss button sits in the corner instead of wrapping onto a line of
+  its own.
+- **Touch targets follow the platform, not the pointer.** The 40px browser
+  controls and 42px library fields now key off Obsidian's `is-mobile` class as
+  well as `pointer: coarse`, because a WebView that reports a mouse (emulators,
+  desktop-mode shells, trackpads) skipped the touch rules. The library also
+  clears the floating mobile toolbar at the end of the list, and its chrome uses
+  the interface font instead of the vault's reading font.
+
 ## 5.12.5 — 2026-11-28
 
 The library fills its tab instead of rendering as a clipped strip, and the

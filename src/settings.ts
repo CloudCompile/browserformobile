@@ -205,7 +205,7 @@ const DEFS: Record<keyof AnimeSettings, SettingDefinition[]> = {
         'settingsAdvanced': [
                 {
                         name: 'Advanced settings',
-                        desc: 'Show every setting, including API endpoints, parallel downloads, model servers and diagnostics. Off keeps this page to the choices that matter day to day.',
+                        desc: 'Show API endpoints, model servers and diagnostic settings. Off keeps the page to the choices that matter day to day.',
                         control: { type: 'toggle', key: 'settingsAdvanced' },
                 },
         ],
@@ -572,14 +572,7 @@ export function settingGroups(
                 {
                         type: 'group',
                         heading: 'Essentials',
-                        items: [
-                                ...DEFS['settingsAdvanced'],
-                                {
-                                        name: 'Export debug log',
-                                        desc: 'Move the current diagnostic log into the download folder as a copyable Markdown file, then remove the private plugin log.',
-                                        action: () => actions.exportDebugLog(),
-                                },
-                        ],
+                        items: [...DEFS['settingsAdvanced']],
                 },
                 {
                         type: 'group',
@@ -666,6 +659,11 @@ export function settingGroups(
                         items: [
                                 ...DEFS['debugMode'],
                                 ...DEFS['glassEffect'],
+                                {
+                                        name: 'Export debug log',
+                                        desc: 'Write the diagnostic log to the download folder as Markdown, then clear it.',
+                                        action: () => actions.exportDebugLog(),
+                                },
                         ],
                 },
         ];

@@ -57,8 +57,6 @@ export class BrowserView extends ItemView {
 	private input!: HTMLInputElement;
 	private backBtn!: HTMLButtonElement;
 	private fwdBtn!: HTMLButtonElement;
-	private starBtn!: HTMLButtonElement;
-	private mediaBtn!: HTMLButtonElement;
 	private unsubscribe: (() => void) | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: AnimePlugin) {
@@ -85,16 +83,18 @@ export class BrowserView extends ItemView {
 		this.bar = this.contentEl.createDiv({ cls: 'bfm-browser-bar' });
 		this.backBtn = this.mkButton('arrow-left', 'Back', () => this.go(-1));
 		this.fwdBtn = this.mkButton('arrow-right', 'Forward', () => this.go(1));
-		this.mkButton('rotate-cw', 'Reload', () => {
-			if (this.active) void this.loadTab(this.active);
-		});
 		this.input = this.bar.createEl('input', { cls: 'bfm-browser-url', type: 'text' });
 		this.input.setAttribute('placeholder', 'Search or enter address');
 		this.input.setAttribute('autocapitalize', 'off');
 		this.input.setAttribute('autocorrect', 'off');
 		this.input.setAttribute('spellcheck', 'false');
 		this.input.setAttribute('enterkeyhint', 'go');
-		this.input.addEventListener('focus', () => this.input.select());
+		this.input.addEventListener('focus', () => {
+			// The bar shows the host so it never clips; editing needs the full URL.
+			this.input.value = this.active?.url ?? '';
+			this.input.select();
+		});
+		this.input.addEventListener('blur', () => this.refresh());
 		this.input.addEventListener('keydown', (event) => {
 			if (event.key !== 'Enter') return;
 			const url = normalizeBrowserInput(this.input.value, this.plugin.browserEngine.searchUrl());
@@ -102,8 +102,6 @@ export class BrowserView extends ItemView {
 			void this.navigate(this.active, { url });
 			this.input.blur();
 		});
-		this.starBtn = this.mkButton('star', 'Bookmark', () => this.toggleBookmark());
-		this.mediaBtn = this.mkButton('download', 'Download media', () => this.openMediaPicker());
 		this.mkButton('more-vertical', 'Browser menu', (event) => this.openMenu(event));
 		this.progressEl = this.contentEl.createDiv({ cls: 'bfm-browser-progress' });
 		this.bannerEl = this.contentEl.createDiv({ cls: 'bfm-browser-banner' });
@@ -143,6 +141,25 @@ export class BrowserView extends ItemView {
 
 	private openMenu(event: MouseEvent): void {
 		const menu = new Menu();
+		const tab = this.active;
+		const bookmarked =
+			Boolean(tab?.url) &&
+			this.plugin.browserBookmarks.some((bookmark) => bookmark.url === tab?.url);
+		menu.addItem((item) =>
+			item
+				.setTitle('Reload')
+				.setIcon('rotate-cw')
+				.onClick(() => {
+					if (tab) void this.loadTab(tab);
+				}),
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle(bookmarked ? 'Remove bookmark' : 'Bookmark this page')
+				.setIcon('star')
+				.onClick(() => this.toggleBookmark()),
+		);
+		menu.addSeparator();
 		menu.addItem((item) =>
 			item
 				.setTitle('New tab')
@@ -170,6 +187,14 @@ export class BrowserView extends ItemView {
 				.setIcon('download')
 				.onClick(() => this.plugin.openBrowserDownload({ referer: this.active?.url })),
 		);
+		if (tab && tab.mode !== 'direct' && tab.media.length > 0) {
+			menu.addItem((item) =>
+				item
+					.setTitle(`Download media (${tab.media.length})`)
+					.setIcon('download')
+					.onClick(() => this.openMediaPicker()),
+			);
+		}
 		menu.addItem((item) =>
 			item
 				.setTitle('Open in system browser')
@@ -178,7 +203,6 @@ export class BrowserView extends ItemView {
 					if (this.active?.url) this.plugin.browserEngine.openExternal(this.active.url);
 				}),
 		);
-		const tab = this.active;
 		const host = tab?.url ? hostOf(tab.url) : '';
 		if (tab && host) {
 			menu.addSeparator();
@@ -574,7 +598,6 @@ export class BrowserView extends ItemView {
 		if (!item.url || tab.media.some((entry) => entry.url === item.url)) return;
 		tab.media.push(item);
 		if (tab.media.length > 100) tab.media.shift();
-		if (this.active === tab) this.mediaBtn.addClass('has-media');
 	}
 
 	private collectMedia(tab: BrowserTab): BrowserMediaItem[] {
@@ -719,17 +742,25 @@ export class BrowserView extends ItemView {
 		const plus = this.tabsEl.createEl('button', { cls: 'bfm-browser-new-tab', attr: { 'aria-label': 'New tab' } });
 		setIcon(plus, 'plus');
 		plus.addEventListener('click', () => this.newTab());
+		// A single tab is not a tab strip; hiding it gives the page back a row.
+		this.tabsEl.toggleClass('is-collapsed', this.tabs.length <= 1);
 		const tab = this.active;
 		if (!tab) return;
 		this.backBtn.disabled = tab.idx <= 0;
 		this.fwdBtn.disabled = tab.idx >= tab.hist.length - 1;
 		this.bar.toggleClass('is-loading', tab.loading);
 		this.progressEl.toggleClass('is-active', tab.loading);
-		if (document.activeElement !== this.input) this.input.value = tab.url || '';
-		this.starBtn.toggleClass('is-on', Boolean(tab.url) && this.plugin.browserBookmarks.some((bookmark) => bookmark.url === tab.url));
-		this.mediaBtn.toggleClass('has-media', tab.media.length > 0);
-		this.mediaBtn.disabled = !tab.url || tab.mode === 'direct';
+		if (document.activeElement !== this.input) {
+			this.input.value = this.addressFor(tab.url);
+			this.input.setAttribute('title', tab.url || '');
+		}
 		this.renderBanner();
+	}
+
+	/** Mobile chrome shows the host, the way a phone browser does. */
+	private addressFor(url: string): string {
+		if (!url || !document.body.classList.contains('is-mobile')) return url || '';
+		return hostOf(url) || url;
 	}
 
 	private renderBanner(): void {
@@ -748,7 +779,7 @@ export class BrowserView extends ItemView {
 		});
 		copy.createSpan({
 			text: isDirect
-				? `The page runs at its own address on ${hostOf(tab.url)}. Downloads and media capture are unavailable here.`
+				? `Runs at ${hostOf(tab.url)} — downloads and media capture are unavailable in this mode.`
 				: tab.problem || 'The page rendered no visible content.',
 		});
 		const actions = this.bannerEl.createDiv({ cls: 'bfm-browser-banner-actions' });

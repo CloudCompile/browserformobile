@@ -1,6 +1,6 @@
 {
   "name": "obsidian-browser-for-mobile",
-  "version": "5.12.5",
+  "version": "5.13.5",
   "description": "Browse the web and download anime, images, videos and files from Obsidian mobile, with series details, an offline video library and recommendations.",
   "main": "main.js",
   "type": "module",
